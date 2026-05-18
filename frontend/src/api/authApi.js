@@ -18,16 +18,8 @@ async function parseResponse(response, fallbackMessage) {
   throw new Error(message);
 }
 
-export async function fetchModels() {
-  const response = await fetch(`${API_BASE_URL}/models`, {
-    credentials: 'include'
-  });
-
-  return parseResponse(response, '模型列表加载失败');
-}
-
-export async function sendChatMessage(payload) {
-  const response = await fetch(`${API_BASE_URL}/chat`, {
+export async function login(payload) {
+  const response = await fetch(`${API_BASE_URL}/auth/login`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -36,5 +28,22 @@ export async function sendChatMessage(payload) {
     body: JSON.stringify(payload)
   });
 
-  return parseResponse(response, '消息发送失败');
+  return parseResponse(response, '登录失败');
+}
+
+export async function fetchCurrentUser() {
+  const response = await fetch(`${API_BASE_URL}/auth/me`, {
+    credentials: 'include'
+  });
+
+  return parseResponse(response, '登录状态校验失败');
+}
+
+export async function logout() {
+  const response = await fetch(`${API_BASE_URL}/auth/logout`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+
+  return parseResponse(response, '退出登录失败');
 }

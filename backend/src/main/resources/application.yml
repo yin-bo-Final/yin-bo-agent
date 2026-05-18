@@ -1,5 +1,11 @@
 server:
   port: 8080
+  servlet:
+    session:
+      timeout: 30m
+      cookie:
+        http-only: true
+        same-site: lax
 
 spring:
   config:
@@ -17,6 +23,12 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
+  session:
+    redis:
+      namespace: yinbo:agent:session
+  sql:
+    init:
+      mode: always
   ai:
     openai:
       base-url: ${OPENAI_BASE_URL:https://api.siliconflow.cn}
@@ -48,3 +60,6 @@ app:
         name: DeepSeek V4 Flash
         provider: siliconflow
         enabled: true
+  auth:
+    seed-admin-username: ${AUTH_SEED_ADMIN_USERNAME:}
+    seed-admin-password: ${AUTH_SEED_ADMIN_PASSWORD:}
