@@ -1,0 +1,49 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: yinbo-agent-backend
+  datasource:
+    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/yinbo_agent}
+    username: ${POSTGRES_USERNAME:postgres}
+    password: ${POSTGRES_PASSWORD:postgres}
+    hikari:
+      initialization-fail-timeout: -1
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  ai:
+    mcp:
+      server:
+        name: yinbo-agent-mcp
+        version: 0.0.1
+        protocol: STREAMABLE
+
+rocketmq:
+  name-server: ${ROCKETMQ_NAME_SERVER:localhost:9876}
+  producer:
+    group: yinbo-agent-producer
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+app:
+  ai:
+    models:
+      - id: qwen-plus
+        name: Qwen Plus（待接入）
+        provider: dashscope
+        enabled: true
+      - id: deepseek-chat
+        name: DeepSeek Chat（待接入）
+        provider: openai-compatible
+        enabled: true
+      - id: gpt-4.1-mini
+        name: GPT-4.1 Mini（待接入）
+        provider: openai
+        enabled: true
