@@ -16,6 +16,30 @@
 
 真实 LLM 调用暂未接入。等你确定 API key、供应商和模型列表后，只需要替换后端 `ChatService` 的实现。
 
+## IDEA 打开方式
+
+为了让 IntelliJ IDEA 自动识别 Maven 项目结构，现在仓库根目录已经提供聚合 `pom.xml`。
+
+推荐直接打开仓库根目录：
+
+```text
+SpringAI-Program/
+```
+
+打开后确认两件事：
+
+1. `Project SDK` 设为 Java 17
+2. Maven 面板里能看到根项目和 `backend` 模块
+
+如果 IDEA 仍然没有自动导入，可以在根目录的 [pom.xml](pom.xml) 上点击 `Load Maven Project`。
+
+如果你之前已经用错误结构打开过项目，建议再补一步：
+
+1. 删除 IDEA 已生成的临时模块配置
+2. 在 IDEA 中重新从根目录 [pom.xml](pom.xml) 导入
+
+这样通常就能把 `backend/src/main/java` 正确识别为 Maven 源码目录，并把 `jakarta.*` 依赖同步进来。
+
 ## 快速启动
 
 ### 前端

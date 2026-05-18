@@ -5,36 +5,15 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.9</version>
-        <relativePath/>
+        <groupId>com.yinbo</groupId>
+        <artifactId>yinbo-agent-parent</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <groupId>com.yinbo</groupId>
     <artifactId>yinbo-agent-backend</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
     <name>yinbo-agent-backend</name>
     <description>音波AI agent 智能助手平台后端</description>
-
-    <properties>
-        <java.version>17</java.version>
-        <spring-ai.version>1.1.6</spring-ai.version>
-        <spring-ai-alibaba.version>1.1.2.3</spring-ai-alibaba.version>
-        <rocketmq-spring.version>2.3.5</rocketmq-spring.version>
-    </properties>
-
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>org.springframework.ai</groupId>
-                <artifactId>spring-ai-bom</artifactId>
-                <version>${spring-ai.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
 
     <dependencies>
         <dependency>

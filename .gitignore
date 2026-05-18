@@ -1,6 +1,7 @@
 .idea/
 .vscode/
 .DS_Store
+*.iml
 
 # Java / Maven
 target/
