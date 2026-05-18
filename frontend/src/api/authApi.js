@@ -31,6 +31,19 @@ export async function login(payload) {
   return parseResponse(response, '登录失败');
 }
 
+export async function register(payload) {
+  const response = await fetch(`${API_BASE_URL}/auth/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload)
+  });
+
+  return parseResponse(response, '注册失败');
+}
+
 export async function fetchCurrentUser() {
   const response = await fetch(`${API_BASE_URL}/auth/me`, {
     credentials: 'include'
@@ -46,4 +59,17 @@ export async function logout() {
   });
 
   return parseResponse(response, '退出登录失败');
+}
+
+export async function cancelAccount(payload) {
+  const response = await fetch(`${API_BASE_URL}/auth/cancel`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload)
+  });
+
+  return parseResponse(response, '账号注销失败');
 }

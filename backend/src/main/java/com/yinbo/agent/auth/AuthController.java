@@ -1,9 +1,11 @@
 package com.yinbo.agent.auth;
 
 import com.yinbo.agent.auth.dto.CurrentUserResponse;
+import com.yinbo.agent.auth.dto.DeleteAccountRequest;
 import com.yinbo.agent.auth.dto.LoginRequest;
 import com.yinbo.agent.auth.dto.LoginResponse;
 import com.yinbo.agent.auth.dto.LogoutResponse;
+import com.yinbo.agent.auth.dto.RegisterRequest;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,6 +24,11 @@ public class AuthController {
         this.authService = authService;
     }
 
+    @PostMapping("/register")
+    public LoginResponse register(@Valid @RequestBody RegisterRequest request, HttpServletRequest httpRequest) {
+        return authService.register(request, httpRequest);
+    }
+
     @PostMapping("/login")
     public LoginResponse login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest) {
         return authService.login(request, httpRequest);
@@ -35,5 +42,10 @@ public class AuthController {
     @PostMapping("/logout")
     public LogoutResponse logout(HttpServletRequest httpRequest) {
         return authService.logout(httpRequest);
+    }
+
+    @PostMapping("/cancel")
+    public LogoutResponse deleteAccount(@Valid @RequestBody DeleteAccountRequest request, HttpServletRequest httpRequest) {
+        return authService.deleteAccount(request, httpRequest);
     }
 }

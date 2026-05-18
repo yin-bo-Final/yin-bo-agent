@@ -3,9 +3,11 @@ package com.yinbo.agent.auth;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yinbo.agent.auth.dto.AuthUserView;
 import com.yinbo.agent.auth.dto.CurrentUserResponse;
+import com.yinbo.agent.auth.dto.DeleteAccountRequest;
 import com.yinbo.agent.auth.dto.LoginRequest;
 import com.yinbo.agent.auth.dto.LoginResponse;
 import com.yinbo.agent.auth.dto.LogoutResponse;
+import com.yinbo.agent.auth.dto.RegisterRequest;
 import com.yinbo.agent.auth.entity.AuthUser;
 import com.yinbo.agent.auth.mapper.AuthUserMapper;
 import com.yinbo.agent.auth.session.LoginUser;
@@ -19,6 +21,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class SessionAuthService implements AuthService {
@@ -32,14 +35,39 @@ public class SessionAuthService implements AuthService {
     }
 
     @Override
-    public LoginResponse login(LoginRequest request, HttpServletRequest httpRequest) {
+    @Transactional
+    public LoginResponse register(RegisterRequest request, HttpServletRequest httpRequest) {
+        String username = normalizeUsername(request.username());
+        ensureUsernameAvailable(username);
 
-        AuthUser authUser = findSingleActiveUserByUsername(request.username());
+        AuthUser authUser = new AuthUser();
+        authUser.setUsername(username);
+        authUser.setPasswordHash(passwordEncoder.encode(request.password()));
+        authUser.setDisplayName(username);
+        authUser.setStatus(1);
+
+        try {
+            authUserMapper.insert(authUser);
+        } catch (DuplicateKeyException exception) {
+            throw new BusinessException(HttpStatus.CONFLICT, "用户名已被占用，请换一个");
+        }
+
+        return createLoginSession(authUser, httpRequest);
+    }
+
+    @Override
+    @Transactional
+    public LoginResponse login(LoginRequest request, HttpServletRequest httpRequest) {
+        AuthUser authUser = findSingleActiveUserByUsername(normalizeUsername(request.username()));
 
         if (!passwordEncoder.matches(request.password(), authUser.getPasswordHash())) {
             throw new BusinessException(HttpStatus.UNAUTHORIZED, "用户名或密码错误");
         }
 
+        return createLoginSession(authUser, httpRequest);
+    }
+
+    private LoginResponse createLoginSession(AuthUser authUser, HttpServletRequest httpRequest) {
         authUser.setLastLoginAt(LocalDateTime.now());
         authUserMapper.updateById(authUser);
 
@@ -80,9 +108,27 @@ public class SessionAuthService implements AuthService {
         return new LogoutResponse("退出登录成功", Instant.now());
     }
 
+    @Override
+    @Transactional
+    public LogoutResponse deleteAccount(DeleteAccountRequest request, HttpServletRequest httpRequest) {
+        AuthUser authUser = requireActiveUser(httpRequest);
+        if (!passwordEncoder.matches(request.password(), authUser.getPasswordHash())) {
+            throw new BusinessException(HttpStatus.UNAUTHORIZED, "密码校验失败，无法注销当前账号");
+        }
+
+        authUser.setStatus(0);
+        authUserMapper.updateById(authUser);
+
+        HttpSession session = httpRequest.getSession(false);
+        if (session != null) {
+            session.invalidate();
+        }
+        return new LogoutResponse("账号已注销", Instant.now());
+    }
+
     public AuthUser createSeedUser(String username, String rawPassword, String displayName) {
         AuthUser authUser = new AuthUser();
-        authUser.setUsername(username);
+        authUser.setUsername(normalizeUsername(username));
         authUser.setPasswordHash(passwordEncoder.encode(rawPassword));
         authUser.setDisplayName(displayName);
         authUser.setStatus(1);
@@ -90,7 +136,8 @@ public class SessionAuthService implements AuthService {
             authUserMapper.insert(authUser);
         } catch (DuplicateKeyException exception) {
             return authUserMapper.selectOne(new LambdaQueryWrapper<AuthUser>()
-                    .eq(AuthUser::getUsername, username)
+                    .eq(AuthUser::getUsername, normalizeUsername(username))
+                    .eq(AuthUser::getStatus, 1)
                     .last("LIMIT 1"));
         }
         return authUser;
@@ -127,6 +174,19 @@ public class SessionAuthService implements AuthService {
             throw new BusinessException(HttpStatus.CONFLICT, "该用户名存在多个有效账号，当前登录规则无法唯一定位用户");
         }
         return authUsers.get(0);
+    }
+
+    private void ensureUsernameAvailable(String username) {
+        Long activeCount = authUserMapper.selectCount(new LambdaQueryWrapper<AuthUser>()
+                .eq(AuthUser::getUsername, username)
+                .eq(AuthUser::getStatus, 1));
+        if (activeCount != null && activeCount > 0) {
+            throw new BusinessException(HttpStatus.CONFLICT, "用户名已被占用，请换一个");
+        }
+    }
+
+    private String normalizeUsername(String username) {
+        return username == null ? "" : username.trim();
     }
 
     private AuthUserView toView(AuthUser authUser) {

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue';
-import { fetchCurrentUser, login, logout } from './api/authApi';
+import { cancelAccount, fetchCurrentUser, login, logout, register } from './api/authApi';
 import { fetchModels, sendChatMessage } from './api/chatApi';
 
 const fallbackModels = [
@@ -27,11 +27,18 @@ const conversationId = ref('');
 const isSending = ref(false);
 const isCheckingLogin = ref(true);
 const isLoggingIn = ref(false);
+const isRegistering = ref(false);
+const isCancellingAccount = ref(false);
 const loadError = ref('');
 const loginError = ref('');
+const cancelError = ref('');
+const authMode = ref('login');
 const authForm = ref({
   username: 'admin',
   password: 'admin'
+});
+const cancelForm = ref({
+  password: ''
 });
 const messageList = ref(null);
 
@@ -41,6 +48,15 @@ const selectedModel = computed(() => {
 
 const canSend = computed(() => inputText.value.trim().length > 0 && !isSending.value);
 const isAuthenticated = computed(() => currentUser.value !== null);
+const authSubmitText = computed(() => {
+  if (authMode.value === 'login') {
+    return isLoggingIn.value ? '登录中...' : '登录';
+  }
+  return isRegistering.value ? '注册中...' : '注册';
+});
+const isAuthSubmitting = computed(() => {
+  return authMode.value === 'login' ? isLoggingIn.value : isRegistering.value;
+});
 
 onMounted(async () => {
   await restoreSession();
@@ -85,6 +101,25 @@ async function submitLogin() {
     loginError.value = error.message;
   } finally {
     isLoggingIn.value = false;
+  }
+}
+
+async function submitRegister() {
+  if (isRegistering.value) {
+    return;
+  }
+
+  loginError.value = '';
+  isRegistering.value = true;
+  try {
+    const response = await register(authForm.value);
+    currentUser.value = response.user;
+    authMode.value = 'login';
+    startNewChat();
+  } catch (error) {
+    loginError.value = error.message;
+  } finally {
+    isRegistering.value = false;
   }
 }
 
@@ -170,6 +205,41 @@ async function handleLogout() {
   }
 }
 
+async function handleCancelAccount() {
+  if (isCancellingAccount.value) {
+    return;
+  }
+
+  cancelError.value = '';
+  isCancellingAccount.value = true;
+  try {
+    await cancelAccount(cancelForm.value);
+    currentUser.value = null;
+    cancelForm.value.password = '';
+    conversationId.value = '';
+    inputText.value = '';
+    messages.value = [
+      {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: '账号已经注销。这个用户名现在可以再次注册使用。'
+      }
+    ];
+  } catch (error) {
+    cancelError.value = error.message;
+  } finally {
+    isCancellingAccount.value = false;
+  }
+}
+
+async function submitAuthForm() {
+  if (authMode.value === 'login') {
+    await submitLogin();
+    return;
+  }
+  await submitRegister();
+}
+
 async function scrollToBottom() {
   await nextTick();
   if (messageList.value) {
@@ -211,9 +281,40 @@ async function scrollToBottom() {
           <p>用户名：{{ currentUser.username }}</p>
           <p>ID：{{ currentUser.id }}</p>
           <button class="ghost-button" type="button" @click="handleLogout">退出登录</button>
+          <label for="cancel-password" class="danger-label">注销账号</label>
+          <input
+            id="cancel-password"
+            v-model="cancelForm.password"
+            class="sidebar-input"
+            type="password"
+            placeholder="再次输入密码确认"
+            autocomplete="current-password"
+          />
+          <p v-if="cancelError" class="error-text">{{ cancelError }}</p>
+          <button class="danger-button" type="button" @click="handleCancelAccount">
+            {{ isCancellingAccount ? '注销中...' : '确认注销' }}
+          </button>
         </template>
         <template v-else>
-          <p>测试账号：admin / admin</p>
+          <div class="auth-tabs">
+            <button
+              type="button"
+              class="tab-button"
+              :class="{ active: authMode === 'login' }"
+              @click="authMode = 'login'"
+            >
+              登录
+            </button>
+            <button
+              type="button"
+              class="tab-button"
+              :class="{ active: authMode === 'register' }"
+              @click="authMode = 'register'"
+            >
+              注册
+            </button>
+          </div>
+          <p>{{ authMode === 'login' ? '测试账号：admin / admin' : '用户名不可重复，注销后可重新注册' }}</p>
         </template>
       </section>
 
@@ -259,10 +360,16 @@ async function scrollToBottom() {
       </template>
 
       <section v-else class="login-shell">
-        <form class="login-panel" @submit.prevent="submitLogin">
+        <form class="login-panel" @submit.prevent="submitAuthForm">
           <div class="login-copy">
-            <h2>登录系统</h2>
-            <p>先用测试账号进来，把登录链路跑通。后面我们再继续补注册、权限和会话管理。</p>
+            <h2>{{ authMode === 'login' ? '登录系统' : '注册账号' }}</h2>
+            <p>
+              {{
+                authMode === 'login'
+                  ? '先登录，再继续使用音波AI agent。'
+                  : '注册只需要用户名和密码。当前有效用户名不能重复。'
+              }}
+            </p>
           </div>
 
           <label for="username">用户名</label>
@@ -276,11 +383,13 @@ async function scrollToBottom() {
             autocomplete="current-password"
           />
 
-          <p class="hint">默认测试账号：admin / admin</p>
+          <p class="hint">
+            {{ authMode === 'login' ? '默认测试账号：admin / admin' : '密码长度需要至少 6 位' }}
+          </p>
           <p v-if="loginError" class="error-text">{{ loginError }}</p>
 
-          <button class="login-button" type="submit" :disabled="isLoggingIn">
-            {{ isLoggingIn ? '登录中...' : '登录' }}
+          <button class="login-button" type="submit" :disabled="isAuthSubmitting">
+            {{ authSubmitText }}
           </button>
         </form>
       </section>
