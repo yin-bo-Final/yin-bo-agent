@@ -40,6 +40,22 @@ SpringAI-Program/
 
 这样通常就能把 `backend/src/main/java` 正确识别为 Maven 源码目录，并把 `jakarta.*` 依赖同步进来。
 
+## 本地密钥文件
+
+项目根目录支持一个不入库的本地配置文件：
+
+```text
+local-secrets.yml
+```
+
+这个文件用于保存：
+
+- PostgreSQL 用户名和密码
+- Redis 密码
+- 硅基流动 API Key
+
+仓库里提供了示例文件 [local-secrets.example.yml](local-secrets.example.yml)，可以按它的结构准备你自己的本地配置。
+
 ## 快速启动
 
 ### 前端
@@ -71,6 +87,14 @@ mvn spring-boot:run
 
 ```text
 http://localhost:8080
+```
+
+### 中间件端口
+
+```text
+PostgreSQL: 5432
+Redis: 6379
+RocketMQ NameServer: 9876
 ```
 
 更多目录说明见 [项目结构文档](docs/project-structure.md)。

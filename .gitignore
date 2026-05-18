@@ -18,3 +18,4 @@ dist/
 .env
 .env.local
 application-local.yml
+local-secrets.yml

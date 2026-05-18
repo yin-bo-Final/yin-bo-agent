@@ -3,9 +3,12 @@ import { computed, nextTick, onMounted, ref } from 'vue';
 import { fetchModels, sendChatMessage } from './api/chatApi';
 
 const fallbackModels = [
-  { id: 'qwen-plus', name: 'Qwen Plus（待接入）', provider: 'dashscope', enabled: true },
-  { id: 'deepseek-chat', name: 'DeepSeek Chat（待接入）', provider: 'openai-compatible', enabled: true },
-  { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini（待接入）', provider: 'openai', enabled: true }
+  {
+    id: 'deepseek-ai/DeepSeek-V4-Flash',
+    name: 'DeepSeek V4 Flash',
+    provider: 'siliconflow',
+    enabled: true
+  }
 ];
 
 const models = ref(fallbackModels);
