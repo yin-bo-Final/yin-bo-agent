@@ -1,10 +1,22 @@
 package com.yinbo.agent.chat;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.yinbo.agent.auth.entity.AuthUser;
 import com.yinbo.agent.chat.dto.ChatMessage;
 import com.yinbo.agent.chat.dto.ChatRequest;
 import com.yinbo.agent.chat.dto.ChatResponse;
+import com.yinbo.agent.chat.dto.ConversationDetailResponse;
+import com.yinbo.agent.chat.dto.ConversationMessageResponse;
+import com.yinbo.agent.chat.dto.ConversationSummaryResponse;
+import com.yinbo.agent.chat.entity.ChatConversation;
+import com.yinbo.agent.chat.entity.ChatMessageEntity;
+import com.yinbo.agent.chat.mapper.ChatConversationMapper;
+import com.yinbo.agent.chat.mapper.ChatMessageMapper;
+import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.config.AiModelProperties;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -16,7 +28,9 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class PlaceholderChatService implements ChatService {
@@ -30,38 +44,109 @@ public class PlaceholderChatService implements ChatService {
 
     private final AiModelProperties aiModelProperties;
     private final ObjectProvider<ChatModel> chatModelProvider;
+    private final ChatConversationMapper chatConversationMapper;
+    private final ChatMessageMapper chatMessageMapper;
 
-    public PlaceholderChatService(AiModelProperties aiModelProperties, ObjectProvider<ChatModel> chatModelProvider) {
+    public PlaceholderChatService(
+            AiModelProperties aiModelProperties,
+            ObjectProvider<ChatModel> chatModelProvider,
+            ChatConversationMapper chatConversationMapper,
+            ChatMessageMapper chatMessageMapper
+    ) {
         this.aiModelProperties = aiModelProperties;
         this.chatModelProvider = chatModelProvider;
+        this.chatConversationMapper = chatConversationMapper;
+        this.chatMessageMapper = chatMessageMapper;
     }
 
     @Override
-    public ChatResponse chat(ChatRequest request) {
+    @Transactional
+    public ChatResponse chat(AuthUser authUser, ChatRequest request) {
         AiModelProperties.ModelOption model = aiModelProperties.findById(request.modelId());
+        ChatMessage latestUserMessage = latestUserMessageOf(request);
+        ChatConversation conversation = resolveConversation(authUser, request, latestUserMessage, model.id());
         ChatModel chatModel = chatModelProvider.getIfAvailable();
 
+        persistMessage(conversation.getId(), authUser.getId(), "user", latestUserMessage.content(), model.id());
+
+        String conversationId = conversation.getConversationNo();
+        String content;
         if (chatModel == null) {
-            return fallbackResponse(request, model);
+            content = fallbackResponseContent(request, model);
+        } else {
+            content = callModel(chatModel, conversation.getId(), request.modelId());
         }
 
-        String conversationId = conversationIdOf(request);
-        String content = callModel(chatModel, request);
-        return new ChatResponse(conversationId, model.id(), "assistant", content, Instant.now());
+        ChatMessageEntity assistantMessage = persistMessage(
+                conversation.getId(),
+                authUser.getId(),
+                "assistant",
+                content,
+                model.id()
+        );
+        touchConversation(conversation, model.id(), latestUserMessage.content(), assistantMessage.getCreatedAt());
+        return new ChatResponse(conversationId, model.id(), "assistant", content, toInstant(assistantMessage.getCreatedAt()));
     }
 
-    private String callModel(ChatModel chatModel, ChatRequest request) {
+    @Override
+    public List<ConversationSummaryResponse> listConversations(AuthUser authUser) {
+        return chatConversationMapper.selectList(new LambdaQueryWrapper<ChatConversation>()
+                        .eq(ChatConversation::getUserId, authUser.getId())
+                        .orderByDesc(ChatConversation::getLastMessageAt)
+                        .orderByDesc(ChatConversation::getCreatedAt))
+                .stream()
+                .map(conversation -> new ConversationSummaryResponse(
+                        conversation.getConversationNo(),
+                        conversation.getTitle(),
+                        conversation.getModelId(),
+                        toInstant(conversation.getLastMessageAt()),
+                        toInstant(conversation.getCreatedAt())
+                ))
+                .toList();
+    }
+
+    @Override
+    public ConversationDetailResponse getConversationDetail(AuthUser authUser, String conversationId) {
+        ChatConversation conversation = requireOwnedConversation(authUser.getId(), conversationId);
+        List<ConversationMessageResponse> messages = chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessageEntity>()
+                        .eq(ChatMessageEntity::getConversationId, conversation.getId())
+                        .eq(ChatMessageEntity::getUserId, authUser.getId())
+                        .orderByAsc(ChatMessageEntity::getCreatedAt)
+                        .orderByAsc(ChatMessageEntity::getId))
+                .stream()
+                .map(message -> new ConversationMessageResponse(
+                        message.getRole(),
+                        message.getContent(),
+                        message.getModelId(),
+                        toInstant(message.getCreatedAt())
+                ))
+                .toList();
+
+        return new ConversationDetailResponse(
+                conversation.getConversationNo(),
+                conversation.getTitle(),
+                conversation.getModelId(),
+                toInstant(conversation.getCreatedAt()),
+                messages
+        );
+    }
+
+    private String callModel(ChatModel chatModel, Long conversationId, String modelId) {
         List<Message> promptMessages = new ArrayList<>();
         promptMessages.add(new SystemMessage(DEFAULT_SYSTEM_PROMPT));
 
-        for (ChatMessage message : request.messages()) {
-            promptMessages.add(toSpringAiMessage(message));
-        }
+        chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessageEntity>()
+                        .eq(ChatMessageEntity::getConversationId, conversationId)
+                        .orderByAsc(ChatMessageEntity::getCreatedAt)
+                        .orderByAsc(ChatMessageEntity::getId))
+                .stream()
+                .map(this::toSpringAiMessage)
+                .forEach(promptMessages::add);
 
         Prompt prompt = new Prompt(
                 promptMessages,
                 OpenAiChatOptions.builder()
-                        .model(request.modelId())
+                        .model(modelId)
                         .build()
         );
 
@@ -75,37 +160,116 @@ public class PlaceholderChatService implements ChatService {
     }
 
     private Message toSpringAiMessage(ChatMessage message) {
-        return switch (message.role().toLowerCase()) {
-            case "assistant" -> new AssistantMessage(message.content());
-            case "system" -> new SystemMessage(message.content());
-            case "user" -> new UserMessage(message.content());
-            default -> new UserMessage(message.content());
+        return toSpringAiMessage(message.role(), message.content());
+    }
+
+    private Message toSpringAiMessage(ChatMessageEntity message) {
+        return toSpringAiMessage(message.getRole(), message.getContent());
+    }
+
+    private Message toSpringAiMessage(String role, String content) {
+        return switch (role.toLowerCase()) {
+            case "assistant" -> new AssistantMessage(content);
+            case "system" -> new SystemMessage(content);
+            case "user" -> new UserMessage(content);
+            case "tool" -> new AssistantMessage(content);
+            default -> new UserMessage(content);
         };
     }
 
-    private ChatResponse fallbackResponse(ChatRequest request, AiModelProperties.ModelOption model) {
+    private String fallbackResponseContent(ChatRequest request, AiModelProperties.ModelOption model) {
         String latestUserMessage = request.messages().stream()
                 .filter(message -> "user".equalsIgnoreCase(message.role()))
                 .reduce((previous, current) -> current)
                 .map(ChatMessage::content)
                 .orElse("");
 
-        String conversationId = conversationIdOf(request);
-
-        String content = """
+        return """
                 我已经收到你的消息：%s
 
                 当前选择模型：%s（%s）
 
                 当前没有检测到可用的模型客户端。请先在项目根目录配置 `local-secrets.yml`，填入硅基流动 API Key 和中间件密码，然后重新启动后端。
                 """.formatted(latestUserMessage, model.name(), model.id());
-
-        return new ChatResponse(conversationId, model.id(), "assistant", content, Instant.now());
     }
 
-    private String conversationIdOf(ChatRequest request) {
-        return request.conversationId() == null || request.conversationId().isBlank()
-                ? UUID.randomUUID().toString()
-                : request.conversationId();
+    private ChatConversation resolveConversation(
+            AuthUser authUser,
+            ChatRequest request,
+            ChatMessage latestUserMessage,
+            String modelId
+    ) {
+        if (request.conversationId() == null || request.conversationId().isBlank()) {
+            ChatConversation conversation = new ChatConversation();
+            conversation.setConversationNo(UUID.randomUUID().toString());
+            conversation.setUserId(authUser.getId());
+            conversation.setTitle(buildConversationTitle(latestUserMessage.content()));
+            conversation.setModelId(modelId);
+            conversation.setLastMessageAt(LocalDateTime.now());
+            chatConversationMapper.insert(conversation);
+            return conversation;
+        }
+        return requireOwnedConversation(authUser.getId(), request.conversationId());
+    }
+
+    private ChatConversation requireOwnedConversation(Long userId, String conversationId) {
+        ChatConversation conversation = chatConversationMapper.selectOne(new LambdaQueryWrapper<ChatConversation>()
+                .eq(ChatConversation::getConversationNo, conversationId)
+                .eq(ChatConversation::getUserId, userId)
+                .last("LIMIT 1"));
+        if (conversation == null) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "会话不存在，或者你没有权限访问它");
+        }
+        return conversation;
+    }
+
+    private ChatMessage latestUserMessageOf(ChatRequest request) {
+        return request.messages().stream()
+                .filter(message -> "user".equalsIgnoreCase(message.role()))
+                .reduce((previous, current) -> current)
+                .orElseThrow(() -> new BusinessException(HttpStatus.BAD_REQUEST, "消息列表里至少要有一条用户消息"));
+    }
+
+    private ChatMessageEntity persistMessage(
+            Long conversationId,
+            Long userId,
+            String role,
+            String content,
+            String modelId
+    ) {
+        ChatMessageEntity messageEntity = new ChatMessageEntity();
+        messageEntity.setConversationId(conversationId);
+        messageEntity.setUserId(userId);
+        messageEntity.setRole(role);
+        messageEntity.setContent(content);
+        messageEntity.setModelId(modelId);
+        chatMessageMapper.insert(messageEntity);
+        return messageEntity;
+    }
+
+    private void touchConversation(
+            ChatConversation conversation,
+            String modelId,
+            String latestUserContent,
+            LocalDateTime lastMessageAt
+    ) {
+        conversation.setModelId(modelId);
+        conversation.setLastMessageAt(lastMessageAt);
+        if (conversation.getTitle() == null || conversation.getTitle().isBlank()) {
+            conversation.setTitle(buildConversationTitle(latestUserContent));
+        }
+        chatConversationMapper.updateById(conversation);
+    }
+
+    private String buildConversationTitle(String content) {
+        String normalized = content == null ? "" : content.trim().replaceAll("\\s+", " ");
+        if (normalized.isBlank()) {
+            return "新的对话";
+        }
+        return normalized.length() <= 30 ? normalized : normalized.substring(0, 30) + "...";
+    }
+
+    private Instant toInstant(LocalDateTime value) {
+        return value == null ? Instant.now() : value.atZone(ZoneId.systemDefault()).toInstant();
     }
 }

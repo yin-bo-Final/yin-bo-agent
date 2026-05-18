@@ -38,3 +38,19 @@ export async function sendChatMessage(payload) {
 
   return parseResponse(response, '消息发送失败');
 }
+
+export async function fetchConversations() {
+  const response = await fetch(`${API_BASE_URL}/conversations`, {
+    credentials: 'include'
+  });
+
+  return parseResponse(response, '会话列表加载失败');
+}
+
+export async function fetchConversationDetail(conversationId) {
+  const response = await fetch(`${API_BASE_URL}/conversations/${conversationId}`, {
+    credentials: 'include'
+  });
+
+  return parseResponse(response, '会话消息加载失败');
+}

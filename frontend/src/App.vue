@@ -1,7 +1,12 @@
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue';
 import { cancelAccount, fetchCurrentUser, login, logout, register } from './api/authApi';
-import { fetchModels, sendChatMessage } from './api/chatApi';
+import {
+  fetchConversationDetail,
+  fetchConversations,
+  fetchModels,
+  sendChatMessage
+} from './api/chatApi';
 
 const fallbackModels = [
   {
@@ -15,23 +20,21 @@ const fallbackModels = [
 const models = ref(fallbackModels);
 const selectedModelId = ref(fallbackModels[0].id);
 const currentUser = ref(null);
-const messages = ref([
-  {
-    id: crypto.randomUUID(),
-    role: 'assistant',
-    content: '你好，我是音波AI agent。先登录，然后我们继续聊技术和项目。'
-  }
-]);
+const messages = ref(buildLoggedOutMessages());
 const inputText = ref('');
 const conversationId = ref('');
+const conversations = ref([]);
 const isSending = ref(false);
 const isCheckingLogin = ref(true);
 const isLoggingIn = ref(false);
 const isRegistering = ref(false);
 const isCancellingAccount = ref(false);
+const isLoadingConversations = ref(false);
+const isLoadingConversationDetail = ref(false);
 const loadError = ref('');
 const loginError = ref('');
 const cancelError = ref('');
+const conversationError = ref('');
 const authMode = ref('login');
 const authForm = ref({
   username: 'admin',
@@ -46,7 +49,13 @@ const selectedModel = computed(() => {
   return models.value.find((model) => model.id === selectedModelId.value) || models.value[0];
 });
 
-const canSend = computed(() => inputText.value.trim().length > 0 && !isSending.value);
+const activeConversationTitle = computed(() => {
+  const matchedConversation = conversations.value.find((item) => item.conversationId === conversationId.value);
+  return matchedConversation?.title || '新会话';
+});
+const canSend = computed(() => {
+  return inputText.value.trim().length > 0 && !isSending.value && !isLoadingConversationDetail.value;
+});
 const isAuthenticated = computed(() => currentUser.value !== null);
 const authSubmitText = computed(() => {
   if (authMode.value === 'login') {
@@ -66,7 +75,8 @@ onMounted(async () => {
     if (Array.isArray(remoteModels) && remoteModels.length > 0) {
       const enabledModels = remoteModels.filter((model) => model.enabled !== false);
       models.value = enabledModels.length > 0 ? enabledModels : fallbackModels;
-      selectedModelId.value = models.value[0]?.id || fallbackModels[0].id;
+      const matchedModel = models.value.find((model) => model.id === selectedModelId.value);
+      selectedModelId.value = matchedModel?.id || models.value[0]?.id || fallbackModels[0].id;
     }
   } catch (error) {
     loadError.value = '后端未启动时会使用前端内置模型列表。';
@@ -78,8 +88,18 @@ async function restoreSession() {
   try {
     const response = await fetchCurrentUser();
     currentUser.value = response.user;
+    await loadConversations();
+    if (conversations.value.length > 0) {
+      const opened = await openConversation(conversations.value[0].conversationId);
+      if (!opened) {
+        startNewChat();
+      }
+      return;
+    }
+    startNewChat();
   } catch (_error) {
     currentUser.value = null;
+    resetConversationState();
   } finally {
     isCheckingLogin.value = false;
   }
@@ -96,6 +116,7 @@ async function submitLogin() {
     const response = await login(authForm.value);
     currentUser.value = response.user;
     loginError.value = '';
+    await loadConversations();
     startNewChat();
   } catch (error) {
     loginError.value = error.message;
@@ -115,6 +136,7 @@ async function submitRegister() {
     const response = await register(authForm.value);
     currentUser.value = response.user;
     authMode.value = 'login';
+    await loadConversations();
     startNewChat();
   } catch (error) {
     loginError.value = error.message;
@@ -142,6 +164,7 @@ async function submitMessage() {
   });
 
   isSending.value = true;
+  conversationError.value = '';
   await scrollToBottom();
 
   try {
@@ -160,9 +183,11 @@ async function submitMessage() {
       role: response.role,
       content: response.content
     });
+    await loadConversations();
   } catch (error) {
     if (error.message.includes('未登录') || error.message.includes('会话已过期')) {
       currentUser.value = null;
+      resetConversationState();
     }
     messages.value.push({
       id: crypto.randomUUID(),
@@ -178,13 +203,8 @@ async function submitMessage() {
 function startNewChat() {
   conversationId.value = '';
   inputText.value = '';
-  messages.value = [
-    {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: '新的对话已经开始。选择模型，然后告诉我你想做什么。'
-    }
-  ];
+  conversationError.value = '';
+  messages.value = buildNewConversationMessages();
 }
 
 async function handleLogout() {
@@ -192,16 +212,9 @@ async function handleLogout() {
     await logout();
   } finally {
     currentUser.value = null;
-    conversationId.value = '';
-    inputText.value = '';
+    resetConversationState();
     loginError.value = '';
-    messages.value = [
-      {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: '你已经退出登录。重新登录后可以继续使用对话功能。'
-      }
-    ];
+    messages.value = buildLoggedOutMessages('你已经退出登录。重新登录后可以继续使用对话功能。');
   }
 }
 
@@ -216,15 +229,8 @@ async function handleCancelAccount() {
     await cancelAccount(cancelForm.value);
     currentUser.value = null;
     cancelForm.value.password = '';
-    conversationId.value = '';
-    inputText.value = '';
-    messages.value = [
-      {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: '账号已经注销。这个用户名现在可以再次注册使用。'
-      }
-    ];
+    resetConversationState();
+    messages.value = buildLoggedOutMessages('账号已经注销。这个用户名现在可以再次注册使用。');
   } catch (error) {
     cancelError.value = error.message;
   } finally {
@@ -238,6 +244,87 @@ async function submitAuthForm() {
     return;
   }
   await submitRegister();
+}
+
+async function loadConversations() {
+  if (!isAuthenticated.value) {
+    return;
+  }
+
+  isLoadingConversations.value = true;
+  conversationError.value = '';
+  try {
+    const response = await fetchConversations();
+    conversations.value = Array.isArray(response) ? response : [];
+  } catch (error) {
+    conversations.value = [];
+    conversationError.value = error.message;
+  } finally {
+    isLoadingConversations.value = false;
+  }
+}
+
+async function openConversation(targetConversationId) {
+  if (!targetConversationId || isLoadingConversationDetail.value || targetConversationId === conversationId.value) {
+    return false;
+  }
+
+  const previousConversationId = conversationId.value;
+  const previousSelectedModelId = selectedModelId.value;
+  const previousMessages = [...messages.value];
+
+  isLoadingConversationDetail.value = true;
+  conversationError.value = '';
+  try {
+    const response = await fetchConversationDetail(targetConversationId);
+    conversationId.value = response.conversationId;
+    selectedModelId.value = response.modelId || selectedModelId.value;
+    messages.value = response.messages.map((message, index) => ({
+      id: `${response.conversationId}-${message.createdAt}-${index}`,
+      role: message.role,
+      content: message.content
+    }));
+    if (messages.value.length === 0) {
+      messages.value = buildNewConversationMessages();
+    }
+    await scrollToBottom();
+    return true;
+  } catch (error) {
+    conversationId.value = previousConversationId;
+    selectedModelId.value = previousSelectedModelId;
+    messages.value = previousMessages;
+    conversationError.value = error.message;
+    return false;
+  } finally {
+    isLoadingConversationDetail.value = false;
+  }
+}
+
+function resetConversationState() {
+  conversationId.value = '';
+  inputText.value = '';
+  conversations.value = [];
+  conversationError.value = '';
+}
+
+function buildLoggedOutMessages(content = '你好，我是音波AI agent。先登录，然后我们继续聊技术和项目。') {
+  return [
+    {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content
+    }
+  ];
+}
+
+function buildNewConversationMessages() {
+  return [
+    {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: '新的对话已经开始。选择模型，然后告诉我你想做什么。'
+    }
+  ];
 }
 
 async function scrollToBottom() {
@@ -260,6 +347,33 @@ async function scrollToBottom() {
       </div>
 
       <button class="new-chat-button" type="button" @click="startNewChat">新对话</button>
+
+      <section class="conversation-panel">
+        <div class="conversation-panel-header">
+          <strong>历史会话</strong>
+          <span v-if="isLoadingConversations">加载中...</span>
+        </div>
+
+        <p v-if="conversationError" class="conversation-tip conversation-error">{{ conversationError }}</p>
+        <p v-else-if="!isAuthenticated" class="conversation-tip">登录后可以查看自己的历史会话。</p>
+        <p v-else-if="conversations.length === 0 && !isLoadingConversations" class="conversation-tip">
+          还没有历史会话，发一条消息试试看。
+        </p>
+
+        <div v-else class="conversation-list">
+          <button
+            v-for="conversation in conversations"
+            :key="conversation.conversationId"
+            type="button"
+            class="conversation-item"
+            :class="{ active: conversation.conversationId === conversationId }"
+            @click="openConversation(conversation.conversationId)"
+          >
+            <strong>{{ conversation.title }}</strong>
+            <span>{{ conversation.lastMessageAt ? new Date(conversation.lastMessageAt).toLocaleString() : '刚刚' }}</span>
+          </button>
+        </div>
+      </section>
 
       <section class="panel">
         <label for="model-select">模型</label>
@@ -324,10 +438,18 @@ async function scrollToBottom() {
     <section class="chat">
       <header class="chat-header">
         <div>
-          <span>{{ isAuthenticated ? '当前模型' : '登录账号' }}</span>
+          <span>{{ isAuthenticated ? activeConversationTitle : '登录账号' }}</span>
           <strong>{{ isAuthenticated ? selectedModel?.name : 'admin / admin' }}</strong>
         </div>
-        <small>{{ isAuthenticated ? conversationId || '新会话' : '会话式登录已启用' }}</small>
+        <small>
+          {{
+            isAuthenticated
+              ? isLoadingConversationDetail
+                ? '历史消息加载中...'
+                : conversationId || '新会话'
+              : '会话式登录已启用'
+          }}
+        </small>
       </header>
 
       <template v-if="isAuthenticated">

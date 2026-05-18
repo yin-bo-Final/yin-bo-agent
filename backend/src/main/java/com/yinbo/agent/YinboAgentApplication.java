@@ -9,7 +9,10 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 
 @SpringBootApplication
 @EnableConfigurationProperties({AiModelProperties.class, AuthProperties.class})
-@MapperScan("com.yinbo.agent.auth.mapper")
+@MapperScan({
+        "com.yinbo.agent.auth.mapper",
+        "com.yinbo.agent.chat.mapper"
+})
 public class YinboAgentApplication {
 
     public static void main(String[] args) {

@@ -32,6 +32,12 @@ public class WebConfig implements WebMvcConfigurer {
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(loginInterceptor)
-                .addPathPatterns("/api/auth/me", "/api/auth/logout", "/api/chat");
+                .addPathPatterns(
+                        "/api/auth/me",
+                        "/api/auth/logout",
+                        "/api/chat",
+                        "/api/conversations",
+                        "/api/conversations/**"
+                );
     }
 }

@@ -19,7 +19,7 @@ SpringAI-Program/
 │        │     │  ├─ SessionAuthService.java
 │        │     │  ├─ LoginInterceptor.java
 │        │     │  └─ AuthBootstrapRunner.java
-│        │     ├─ chat/                  # 对话 API、DTO、服务接口
+│        │     ├─ chat/                  # 对话 API、DTO、服务接口、会话持久化
 │        │     ├─ common/                # 通用异常、错误响应
 │        │     └─ config/                # 配置类
 │        │        ├─ AiModelProperties.java
@@ -29,7 +29,7 @@ SpringAI-Program/
 │        │        └─ WebConfig.java
 │        └─ resources/
 │           ├─ application.yml
-│           └─ schema.sql                # 用户表与索引初始化脚本
+│           └─ schema.sql                # 用户/会话/消息表与索引初始化脚本
 ├─ frontend/                              # Vue 3 前端工程
 │  ├─ src/
 │  │  ├─ App.vue                         # 登录、注册、聊天一体页面
@@ -77,14 +77,23 @@ SpringAI-Program/
 
 ### 2. `chat/`
 
-聊天模块，目前仍然是骨架实现：
+聊天模块，当前已经包含会话持久化基础能力：
 
 - `ChatController`：聊天接口入口
 - `ChatService`：聊天服务抽象
 - `PlaceholderChatService`：当前占位实现
+- `entity/`：聊天会话、聊天消息实体
+- `mapper/`：聊天会话、消息数据访问层
 - `dto/`：聊天请求与响应对象
 
-后续接入真实模型时，主要就是从这里继续扩展。
+当前已支持：
+
+- 发送消息时自动创建会话
+- 将用户消息和 assistant 回复写入数据库
+- 查询当前用户的会话列表
+- 查询指定会话的消息历史
+
+后续接入真实模型时，主要还是从这里继续扩展。
 
 ### 3. `common/`
 
@@ -125,6 +134,21 @@ SpringAI-Program/
 
 这依赖 `schema.sql` 中的部分唯一索引实现。
 
+当前聊天相关还新增了两张表：
+
+- `chat_conversation`
+  - `conversation_no`：对外暴露的会话号，前后端通过它关联
+  - `user_id`：会话所属用户
+  - `title`：会话标题，首次从用户消息截取
+  - `model_id`：最近一次使用的模型
+  - `last_message_at`：最近一条消息时间
+- `chat_message`
+  - `conversation_id`：所属会话主键
+  - `user_id`：所属用户
+  - `role`：消息角色，当前主要是 `user` / `assistant`
+  - `content`：消息正文
+  - `model_id`：本条消息对应模型
+
 ## 前端分层
 
 ### 1. `App.vue`
@@ -135,6 +159,8 @@ SpringAI-Program/
 - 当前登录状态展示
 - 注销账号确认
 - 模型选择
+- 历史会话列表
+- 点击回放历史消息
 - 聊天消息列表
 - 输入与发送区域
 
@@ -154,6 +180,8 @@ SpringAI-Program/
 
 - `/api/models`
 - `/api/chat`
+- `/api/conversations`
+- `/api/conversations/{conversationId}`
 
 ### 4. `styles.css`
 
@@ -162,6 +190,7 @@ SpringAI-Program/
 - 登录/注册区域样式
 - 聊天区域样式
 - 侧边栏样式
+- 历史会话列表样式
 - 注销确认按钮与输入框样式
 
 ## 当前开发链路
@@ -180,8 +209,8 @@ SpringAI-Program/
 
 1. 接入真实模型调用
 2. 支持流式响应
-3. 引入聊天会话表和消息表
-4. 把聊天数据和当前登录用户绑定
+3. 增加会话重命名、删除和分页查询
+4. 支持会话搜索与最近访问排序
 5. 引入 PGVector 做 RAG
 6. 增加用户资料、密码修改、权限控制
 7. 把工具能力逐步接入 MCP Tool Server
