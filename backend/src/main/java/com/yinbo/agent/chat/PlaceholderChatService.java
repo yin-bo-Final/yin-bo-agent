@@ -20,6 +20,8 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -34,6 +36,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class PlaceholderChatService implements ChatService {
+
+    private static final Logger log = LoggerFactory.getLogger(PlaceholderChatService.class);
 
     private static final String DEFAULT_SYSTEM_PROMPT = """
             你是“音波AI agent 智能助手平台”的智能助手。
@@ -73,8 +77,11 @@ public class PlaceholderChatService implements ChatService {
         String content;
         if (chatModel == null) {
             content = fallbackResponseContent(request, model);
-        } else {
+        } else try {
             content = callModel(chatModel, conversation.getId(), request.modelId());
+        } catch (Exception exception) {
+            log.warn("Chat model call failed. conversationId={}, modelId={}", conversationId, model.id(), exception);
+            content = modelFailureResponseContent(model, latestUserMessage.content());
         }
 
         ChatMessageEntity assistantMessage = persistMessage(
@@ -190,6 +197,17 @@ public class PlaceholderChatService implements ChatService {
                 当前选择模型：%s（%s）
 
                 当前没有检测到可用的模型客户端。请先在项目根目录配置 `local-secrets.yml`，填入硅基流动 API Key 和中间件密码，然后重新启动后端。
+                """.formatted(latestUserMessage, model.name(), model.id());
+    }
+
+    private String modelFailureResponseContent(AiModelProperties.ModelOption model, String latestUserMessage) {
+        return """
+                我已经收到你的消息：%s
+
+                当前选择模型：%s（%s）
+
+                这次模型调用失败了。通常是模型服务网络波动、连接被重置，或者上游暂时不可用。
+                你可以先点击“新对话”重试一次；如果还是失败，稍后再试会更稳。
                 """.formatted(latestUserMessage, model.name(), model.id());
     }
 

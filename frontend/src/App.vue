@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { cancelAccount, fetchCurrentUser, login, logout, register } from './api/authApi';
 import {
   fetchConversationDetail,
@@ -37,17 +37,27 @@ const cancelError = ref('');
 const conversationError = ref('');
 const authMode = ref('login');
 const authForm = ref({
-  username: 'admin',
-  password: 'admin'
+  username: '',
+  password: ''
 });
 const cancelForm = ref({
   password: ''
 });
 const messageList = ref(null);
+const authPointer = ref({
+  x: 0,
+  y: 0
+});
+let pendingAuthPointer = { x: 0, y: 0 };
+let pointerAnimationFrame = 0;
 
 const selectedModel = computed(() => {
   return models.value.find((model) => model.id === selectedModelId.value) || models.value[0];
 });
+const authPageStyle = computed(() => ({
+  '--pointer-x': `${authPointer.value.x}px`,
+  '--pointer-y': `${authPointer.value.y}px`
+}));
 
 const activeConversationTitle = computed(() => {
   const matchedConversation = conversations.value.find((item) => item.conversationId === conversationId.value);
@@ -68,6 +78,13 @@ const isAuthSubmitting = computed(() => {
 });
 
 onMounted(async () => {
+  const centerPoint = {
+    x: window.innerWidth / 2,
+    y: window.innerHeight / 2
+  };
+  pendingAuthPointer = centerPoint;
+  authPointer.value = centerPoint;
+
   await restoreSession();
 
   try {
@@ -83,19 +100,16 @@ onMounted(async () => {
   }
 });
 
+onUnmounted(() => {
+  stopPointerFrame();
+});
+
 async function restoreSession() {
   isCheckingLogin.value = true;
   try {
     const response = await fetchCurrentUser();
     currentUser.value = response.user;
     await loadConversations();
-    if (conversations.value.length > 0) {
-      const opened = await openConversation(conversations.value[0].conversationId);
-      if (!opened) {
-        startNewChat();
-      }
-      return;
-    }
     startNewChat();
   } catch (_error) {
     currentUser.value = null;
@@ -189,10 +203,12 @@ async function submitMessage() {
       currentUser.value = null;
       resetConversationState();
     }
+    const assistantErrorMessage = error?.message?.trim()
+      || '消息发送失败了。请确认你已经登录，并且后端、Redis、PostgreSQL 都已经启动。';
     messages.value.push({
       id: crypto.randomUUID(),
       role: 'assistant',
-      content: '消息发送失败了。请确认你已经登录，并且后端、Redis、PostgreSQL 都已经启动。'
+      content: assistantErrorMessage
     });
   } finally {
     isSending.value = false;
@@ -333,10 +349,103 @@ async function scrollToBottom() {
     messageList.value.scrollTop = messageList.value.scrollHeight;
   }
 }
+
+function handleAuthPointerMove(event) {
+  const rect = event.currentTarget.getBoundingClientRect();
+  pendingAuthPointer = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top
+  };
+  schedulePointerFrame();
+}
+
+function resetAuthPointer() {
+  pendingAuthPointer = {
+    x: window.innerWidth / 2,
+    y: window.innerHeight / 2
+  };
+  schedulePointerFrame();
+}
+
+function schedulePointerFrame() {
+  if (pointerAnimationFrame) {
+    return;
+  }
+  pointerAnimationFrame = window.requestAnimationFrame(() => {
+    authPointer.value = { ...pendingAuthPointer };
+    pointerAnimationFrame = 0;
+  });
+}
+
+function stopPointerFrame() {
+  if (!pointerAnimationFrame) {
+    return;
+  }
+  window.cancelAnimationFrame(pointerAnimationFrame);
+  pointerAnimationFrame = 0;
+}
 </script>
 
 <template>
-  <main class="app-shell">
+  <main
+    v-if="!isAuthenticated"
+    class="auth-page"
+    :style="authPageStyle"
+    @pointermove="handleAuthPointerMove"
+    @pointerleave="resetAuthPointer"
+  >
+    <div class="honeycomb-field" aria-hidden="true">
+      <div class="honeycomb-grid"></div>
+      <div class="honeycomb-spotlight"></div>
+    </div>
+
+    <section class="auth-window">
+      <div class="auth-title">
+        <span>yin-bo-agent</span>
+      </div>
+
+      <div class="auth-switch" aria-label="认证方式">
+        <button
+          type="button"
+          class="auth-switch-button"
+          :class="{ active: authMode === 'login' }"
+          @click="authMode = 'login'"
+        >
+          登录
+        </button>
+        <button
+          type="button"
+          class="auth-switch-button"
+          :class="{ active: authMode === 'register' }"
+          @click="authMode = 'register'"
+        >
+          注册
+        </button>
+      </div>
+
+      <form class="auth-form" @submit.prevent="submitAuthForm">
+        <label for="username">用户名</label>
+        <input id="username" v-model="authForm.username" type="text" autocomplete="username" />
+
+        <label for="password">密码</label>
+        <input
+          id="password"
+          v-model="authForm.password"
+          type="password"
+          :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'"
+        />
+
+        <p v-if="authMode === 'register'" class="hint">密码长度需要至少 6 位</p>
+        <p v-if="loginError" class="error-text">{{ loginError }}</p>
+
+        <button class="auth-submit" type="submit" :disabled="isAuthSubmitting">
+          {{ authSubmitText }}
+        </button>
+      </form>
+    </section>
+  </main>
+
+  <main v-else class="app-shell">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">音</div>
@@ -438,83 +547,44 @@ async function scrollToBottom() {
     <section class="chat">
       <header class="chat-header">
         <div>
-          <span>{{ isAuthenticated ? activeConversationTitle : '登录账号' }}</span>
-          <strong>{{ isAuthenticated ? selectedModel?.name : 'admin / admin' }}</strong>
+          <span>{{ activeConversationTitle }}</span>
+          <strong>{{ selectedModel?.name }}</strong>
         </div>
         <small>
           {{
-            isAuthenticated
-              ? isLoadingConversationDetail
-                ? '历史消息加载中...'
-                : conversationId || '新会话'
-              : '会话式登录已启用'
+            isLoadingConversationDetail
+              ? '历史消息加载中...'
+              : conversationId || '新会话'
           }}
         </small>
       </header>
 
-      <template v-if="isAuthenticated">
-        <div ref="messageList" class="message-list">
-          <article
-            v-for="message in messages"
-            :key="message.id"
-            class="message-row"
-            :class="message.role"
-          >
-            <div class="avatar">{{ message.role === 'user' ? '你' : 'AI' }}</div>
-            <div class="message-bubble">{{ message.content }}</div>
-          </article>
+      <div ref="messageList" class="message-list">
+        <article
+          v-for="message in messages"
+          :key="message.id"
+          class="message-row"
+          :class="message.role"
+        >
+          <div class="avatar">{{ message.role === 'user' ? '你' : 'AI' }}</div>
+          <div class="message-bubble">{{ message.content }}</div>
+        </article>
 
-          <article v-if="isSending" class="message-row assistant">
-            <div class="avatar">AI</div>
-            <div class="message-bubble thinking">正在思考</div>
-          </article>
-        </div>
+        <article v-if="isSending" class="message-row assistant">
+          <div class="avatar">AI</div>
+          <div class="message-bubble thinking">正在思考</div>
+        </article>
+      </div>
 
-        <form class="composer" @submit.prevent="submitMessage">
-          <textarea
-            v-model="inputText"
-            placeholder="给音波AI agent 发送消息"
-            rows="1"
-            @keydown.enter.exact.prevent="submitMessage"
-          />
-          <button type="submit" :disabled="!canSend">发送</button>
-        </form>
-      </template>
-
-      <section v-else class="login-shell">
-        <form class="login-panel" @submit.prevent="submitAuthForm">
-          <div class="login-copy">
-            <h2>{{ authMode === 'login' ? '登录系统' : '注册账号' }}</h2>
-            <p>
-              {{
-                authMode === 'login'
-                  ? '先登录，再继续使用音波AI agent。'
-                  : '注册只需要用户名和密码。当前有效用户名不能重复。'
-              }}
-            </p>
-          </div>
-
-          <label for="username">用户名</label>
-          <input id="username" v-model="authForm.username" type="text" autocomplete="username" />
-
-          <label for="password">密码</label>
-          <input
-            id="password"
-            v-model="authForm.password"
-            type="password"
-            autocomplete="current-password"
-          />
-
-          <p class="hint">
-            {{ authMode === 'login' ? '默认测试账号：admin / admin' : '密码长度需要至少 6 位' }}
-          </p>
-          <p v-if="loginError" class="error-text">{{ loginError }}</p>
-
-          <button class="login-button" type="submit" :disabled="isAuthSubmitting">
-            {{ authSubmitText }}
-          </button>
-        </form>
-      </section>
+      <form class="composer" @submit.prevent="submitMessage">
+        <textarea
+          v-model="inputText"
+          placeholder="给音波AI agent 发送消息"
+          rows="1"
+          @keydown.enter.exact.prevent="submitMessage"
+        />
+        <button type="submit" :disabled="!canSend">发送</button>
+      </form>
     </section>
   </main>
 </template>
