@@ -1,5 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+import DOMPurify from 'dompurify';
+import { marked } from 'marked';
 import { cancelAccount, fetchCurrentUser, login, logout, register } from './api/authApi';
 import {
   fetchConversationDetail,
@@ -12,6 +14,30 @@ const fallbackModels = [
   {
     id: 'deepseek-ai/DeepSeek-V4-Flash',
     name: 'DeepSeek V4 Flash',
+    provider: 'siliconflow',
+    enabled: true
+  },
+  {
+    id: 'Pro/moonshotai/Kimi-K2.6',
+    name: 'Kimi K2.6 Pro',
+    provider: 'siliconflow',
+    enabled: true
+  },
+  {
+    id: 'Pro/zai-org/GLM-5.1',
+    name: 'GLM 5.1 Pro',
+    provider: 'siliconflow',
+    enabled: true
+  },
+  {
+    id: 'Pro/MiniMaxAI/MiniMax-M2.5',
+    name: 'MiniMax M2.5 Pro',
+    provider: 'siliconflow',
+    enabled: true
+  },
+  {
+    id: 'Qwen/Qwen3.6-27B',
+    name: 'Qwen3.6 27B',
     provider: 'siliconflow',
     enabled: true
   }
@@ -40,19 +66,43 @@ const authForm = ref({
   username: '',
   password: ''
 });
+const isPasswordVisible = ref(false);
+const isUserMenuOpen = ref(false);
+const isCancelMenuOpen = ref(false);
+const isSidebarCollapsed = ref(false);
+const isRecentPopoverOpen = ref(false);
+const isModelMenuOpen = ref(false);
+const searchText = ref('');
 const cancelForm = ref({
   password: ''
 });
 const messageList = ref(null);
+const searchInput = ref(null);
+const modelMenu = ref(null);
 const authPointer = ref({
   x: 0,
   y: 0
 });
 let pendingAuthPointer = { x: 0, y: 0 };
 let pointerAnimationFrame = 0;
+const renderedMessageCache = new WeakMap();
 
 const selectedModel = computed(() => {
   return models.value.find((model) => model.id === selectedModelId.value) || models.value[0];
+});
+const groupedModels = computed(() => {
+  const groupedMap = new Map();
+  models.value.forEach((model) => {
+    const providerName = model.provider || '默认供应商';
+    if (!groupedMap.has(providerName)) {
+      groupedMap.set(providerName, []);
+    }
+    groupedMap.get(providerName).push(model);
+  });
+  return Array.from(groupedMap.entries()).map(([provider, items]) => ({
+    provider,
+    items
+  }));
 });
 const authPageStyle = computed(() => ({
   '--pointer-x': `${authPointer.value.x}px`,
@@ -62,6 +112,15 @@ const authPageStyle = computed(() => ({
 const activeConversationTitle = computed(() => {
   const matchedConversation = conversations.value.find((item) => item.conversationId === conversationId.value);
   return matchedConversation?.title || '新会话';
+});
+const filteredConversations = computed(() => {
+  const keyword = searchText.value.trim().toLowerCase();
+  if (!keyword) {
+    return conversations.value;
+  }
+  return conversations.value.filter((conversation) => {
+    return conversation.title?.toLowerCase().includes(keyword);
+  });
 });
 const canSend = computed(() => {
   return inputText.value.trim().length > 0 && !isSending.value && !isLoadingConversationDetail.value;
@@ -76,6 +135,17 @@ const authSubmitText = computed(() => {
 const isAuthSubmitting = computed(() => {
   return authMode.value === 'login' ? isLoggingIn.value : isRegistering.value;
 });
+const isFreshConversation = computed(() => {
+  return isAuthenticated.value && !conversationId.value && messages.value.length === 0;
+});
+const greetingName = computed(() => {
+  return currentUser.value?.displayName || currentUser.value?.username || '朋友';
+});
+
+marked.setOptions({
+  breaks: true,
+  gfm: true
+});
 
 onMounted(async () => {
   const centerPoint = {
@@ -85,13 +155,17 @@ onMounted(async () => {
   pendingAuthPointer = centerPoint;
   authPointer.value = centerPoint;
 
+  window.addEventListener('popstate', handlePopState);
+  window.addEventListener('keydown', handleGlobalKeydown);
+  window.addEventListener('pointerdown', handleWindowPointerDown);
+
   await restoreSession();
 
   try {
     const remoteModels = await fetchModels();
     if (Array.isArray(remoteModels) && remoteModels.length > 0) {
       const enabledModels = remoteModels.filter((model) => model.enabled !== false);
-      models.value = enabledModels.length > 0 ? enabledModels : fallbackModels;
+      models.value = mergeModels(enabledModels.length > 0 ? enabledModels : fallbackModels, fallbackModels);
       const matchedModel = models.value.find((model) => model.id === selectedModelId.value);
       selectedModelId.value = matchedModel?.id || models.value[0]?.id || fallbackModels[0].id;
     }
@@ -101,6 +175,9 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  window.removeEventListener('popstate', handlePopState);
+  window.removeEventListener('keydown', handleGlobalKeydown);
+  window.removeEventListener('pointerdown', handleWindowPointerDown);
   stopPointerFrame();
 });
 
@@ -110,7 +187,7 @@ async function restoreSession() {
     const response = await fetchCurrentUser();
     currentUser.value = response.user;
     await loadConversations();
-    startNewChat();
+    await syncConversationWithRoute({ replaceHistory: true });
   } catch (_error) {
     currentUser.value = null;
     resetConversationState();
@@ -131,7 +208,7 @@ async function submitLogin() {
     currentUser.value = response.user;
     loginError.value = '';
     await loadConversations();
-    startNewChat();
+    await syncConversationWithRoute({ replaceHistory: true });
   } catch (error) {
     loginError.value = error.message;
   } finally {
@@ -150,8 +227,9 @@ async function submitRegister() {
     const response = await register(authForm.value);
     currentUser.value = response.user;
     authMode.value = 'login';
+    isPasswordVisible.value = false;
     await loadConversations();
-    startNewChat();
+    await syncConversationWithRoute({ replaceHistory: true });
   } catch (error) {
     loginError.value = error.message;
   } finally {
@@ -192,6 +270,7 @@ async function submitMessage() {
     });
 
     conversationId.value = response.conversationId;
+    updateBrowserUrl(response.conversationId, { replace: true });
     messages.value.push({
       id: crypto.randomUUID(),
       role: response.role,
@@ -220,13 +299,23 @@ function startNewChat() {
   conversationId.value = '';
   inputText.value = '';
   conversationError.value = '';
+  isModelMenuOpen.value = false;
   messages.value = buildNewConversationMessages();
+  updateBrowserUrl('', { replace: false });
+}
+
+function startNewChatFromNavigation() {
+  isRecentPopoverOpen.value = false;
+  startNewChat();
 }
 
 async function handleLogout() {
   try {
     await logout();
   } finally {
+    isUserMenuOpen.value = false;
+    isCancelMenuOpen.value = false;
+    isModelMenuOpen.value = false;
     currentUser.value = null;
     resetConversationState();
     loginError.value = '';
@@ -243,6 +332,8 @@ async function handleCancelAccount() {
   isCancellingAccount.value = true;
   try {
     await cancelAccount(cancelForm.value);
+    isUserMenuOpen.value = false;
+    isCancelMenuOpen.value = false;
     currentUser.value = null;
     cancelForm.value.password = '';
     resetConversationState();
@@ -260,6 +351,147 @@ async function submitAuthForm() {
     return;
   }
   await submitRegister();
+}
+
+function togglePasswordVisibility() {
+  isPasswordVisible.value = !isPasswordVisible.value;
+}
+
+function toggleUserMenu() {
+  isUserMenuOpen.value = !isUserMenuOpen.value;
+  if (isUserMenuOpen.value) {
+    isModelMenuOpen.value = false;
+  } else {
+    isCancelMenuOpen.value = false;
+  }
+}
+
+function toggleSidebar() {
+  isSidebarCollapsed.value = !isSidebarCollapsed.value;
+  isRecentPopoverOpen.value = false;
+  isModelMenuOpen.value = false;
+  if (isSidebarCollapsed.value) {
+    isUserMenuOpen.value = false;
+    isCancelMenuOpen.value = false;
+  }
+}
+
+function openSidebar() {
+  isSidebarCollapsed.value = false;
+  isRecentPopoverOpen.value = false;
+  isModelMenuOpen.value = false;
+  isCancelMenuOpen.value = false;
+}
+
+function openUserMenuFromRail() {
+  isSidebarCollapsed.value = false;
+  isUserMenuOpen.value = true;
+  isRecentPopoverOpen.value = false;
+  isModelMenuOpen.value = false;
+  isCancelMenuOpen.value = false;
+}
+
+async function openSearch() {
+  isSidebarCollapsed.value = false;
+  isRecentPopoverOpen.value = false;
+  isModelMenuOpen.value = false;
+  await nextTick();
+  searchInput.value?.focus();
+}
+
+function toggleRecentPopover() {
+  isModelMenuOpen.value = false;
+  isRecentPopoverOpen.value = !isRecentPopoverOpen.value;
+}
+
+function toggleModelMenu() {
+  isRecentPopoverOpen.value = false;
+  isUserMenuOpen.value = false;
+  isCancelMenuOpen.value = false;
+  isModelMenuOpen.value = !isModelMenuOpen.value;
+}
+
+function selectModel(modelId) {
+  selectedModelId.value = modelId;
+  isModelMenuOpen.value = false;
+}
+
+function mergeModels(primaryModels, fallbackModels) {
+  const modelMap = new Map();
+  [...primaryModels, ...fallbackModels].forEach((model) => {
+    if (model?.id && !modelMap.has(model.id)) {
+      modelMap.set(model.id, model);
+    }
+  });
+  return Array.from(modelMap.values());
+}
+
+async function openConversationFromPopover(targetConversationId) {
+  isRecentPopoverOpen.value = false;
+  await openConversation(targetConversationId);
+}
+
+function formatConversationTime(value) {
+  return value ? new Date(value).toLocaleString() : '刚刚';
+}
+
+function handleGlobalKeydown(event) {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault();
+    void openSearch();
+  }
+}
+
+function handleWindowPointerDown(event) {
+  if (isModelMenuOpen.value && modelMenu.value && !modelMenu.value.contains(event.target)) {
+    isModelMenuOpen.value = false;
+  }
+}
+
+function openCancelMenu() {
+  if (isCancelMenuOpen.value) {
+    closeCancelMenu();
+    return;
+  }
+  cancelError.value = '';
+  isCancelMenuOpen.value = true;
+}
+
+function closeCancelMenu() {
+  isCancelMenuOpen.value = false;
+  cancelError.value = '';
+  cancelForm.value.password = '';
+}
+
+function renderMessageContent(message) {
+  const cachedMessage = renderedMessageCache.get(message);
+  if (cachedMessage?.content === message.content && cachedMessage.role === message.role) {
+    return cachedMessage.html;
+  }
+
+  let html = '';
+  if (message.role !== 'assistant') {
+    html = escapeHtml(message.content || '');
+  } else {
+    const renderedHtml = marked.parse(message.content || '');
+    html = DOMPurify.sanitize(renderedHtml);
+  }
+
+  renderedMessageCache.set(message, {
+    content: message.content,
+    role: message.role,
+    html
+  });
+  return html;
+}
+
+function escapeHtml(content) {
+  return String(content || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 async function loadConversations() {
@@ -303,6 +535,7 @@ async function openConversation(targetConversationId) {
     if (messages.value.length === 0) {
       messages.value = buildNewConversationMessages();
     }
+    updateBrowserUrl(response.conversationId, { replace: false });
     await scrollToBottom();
     return true;
   } catch (error) {
@@ -321,9 +554,92 @@ function resetConversationState() {
   inputText.value = '';
   conversations.value = [];
   conversationError.value = '';
+  updateBrowserUrl('', { replace: true });
 }
 
-function buildLoggedOutMessages(content = '你好，我是音波AI agent。先登录，然后我们继续聊技术和项目。') {
+function handlePopState() {
+  if (!isAuthenticated.value) {
+    return;
+  }
+  void syncConversationWithRoute({ replaceHistory: true });
+}
+
+async function syncConversationWithRoute({ replaceHistory }) {
+  const routeConversationId = conversationIdFromLocation();
+  if (!routeConversationId) {
+    startNewChatForRoute(replaceHistory);
+    return;
+  }
+
+  const opened = await openConversationFromRoute(routeConversationId, replaceHistory);
+  if (!opened) {
+    startNewChatForRoute(replaceHistory);
+  }
+}
+
+async function openConversationFromRoute(targetConversationId, replaceHistory) {
+  if (!targetConversationId) {
+    return false;
+  }
+
+  const previousConversationId = conversationId.value;
+  const previousSelectedModelId = selectedModelId.value;
+  const previousMessages = [...messages.value];
+
+  isLoadingConversationDetail.value = true;
+  conversationError.value = '';
+  try {
+    const response = await fetchConversationDetail(targetConversationId);
+    conversationId.value = response.conversationId;
+    selectedModelId.value = response.modelId || selectedModelId.value;
+    messages.value = response.messages.map((message, index) => ({
+      id: `${response.conversationId}-${message.createdAt}-${index}`,
+      role: message.role,
+      content: message.content
+    }));
+    if (messages.value.length === 0) {
+      messages.value = buildNewConversationMessages();
+    }
+    updateBrowserUrl(response.conversationId, { replace: replaceHistory });
+    await scrollToBottom();
+    return true;
+  } catch (error) {
+    conversationId.value = previousConversationId;
+    selectedModelId.value = previousSelectedModelId;
+    messages.value = previousMessages;
+    conversationError.value = error.message;
+    return false;
+  } finally {
+    isLoadingConversationDetail.value = false;
+  }
+}
+
+function startNewChatForRoute(replaceHistory) {
+  conversationId.value = '';
+  inputText.value = '';
+  conversationError.value = '';
+  messages.value = buildNewConversationMessages();
+  updateBrowserUrl('', { replace: replaceHistory });
+}
+
+function conversationIdFromLocation() {
+  const pathname = window.location.pathname || '/';
+  const matched = pathname.match(/^\/c\/([^/]+)$/);
+  return matched ? decodeURIComponent(matched[1]) : '';
+}
+
+function updateBrowserUrl(targetConversationId, { replace }) {
+  const targetPath = targetConversationId ? `/c/${encodeURIComponent(targetConversationId)}` : '/';
+  const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (currentPath === targetPath) {
+    return;
+  }
+
+  const historyMethod = replace ? 'replaceState' : 'pushState';
+  window.history[historyMethod]({}, '', targetPath);
+}
+
+function buildLoggedOutMessages(content = '你好，我是 yin-bo-agent 智能助手平台。先登录，然后我们继续聊技术和项目。') {
   return [
     {
       id: crypto.randomUUID(),
@@ -334,13 +650,7 @@ function buildLoggedOutMessages(content = '你好，我是音波AI agent。先�
 }
 
 function buildNewConversationMessages() {
-  return [
-    {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: '新的对话已经开始。选择模型，然后告诉我你想做什么。'
-    }
-  ];
+  return [];
 }
 
 async function scrollToBottom() {
@@ -359,10 +669,11 @@ function handleAuthPointerMove(event) {
   schedulePointerFrame();
 }
 
-function resetAuthPointer() {
+function resetAuthPointer(event) {
+  const targetRect = event?.currentTarget?.getBoundingClientRect?.();
   pendingAuthPointer = {
-    x: window.innerWidth / 2,
-    y: window.innerHeight / 2
+    x: targetRect ? targetRect.width / 2 : window.innerWidth / 2,
+    y: targetRect ? targetRect.height / 2 : window.innerHeight / 2
   };
   schedulePointerFrame();
 }
@@ -388,8 +699,7 @@ function stopPointerFrame() {
 
 <template>
   <main
-    v-if="!isAuthenticated"
-    class="auth-page"
+    class="experience-page"
     :style="authPageStyle"
     @pointermove="handleAuthPointerMove"
     @pointerleave="resetAuthPointer"
@@ -399,152 +709,311 @@ function stopPointerFrame() {
       <div class="honeycomb-spotlight"></div>
     </div>
 
-    <section class="auth-window">
-      <div class="auth-title">
-        <span>yin-bo-agent</span>
-      </div>
-
-      <div class="auth-switch" aria-label="认证方式">
-        <button
-          type="button"
-          class="auth-switch-button"
-          :class="{ active: authMode === 'login' }"
-          @click="authMode = 'login'"
-        >
-          登录
-        </button>
-        <button
-          type="button"
-          class="auth-switch-button"
-          :class="{ active: authMode === 'register' }"
-          @click="authMode = 'register'"
-        >
-          注册
-        </button>
-      </div>
-
-      <form class="auth-form" @submit.prevent="submitAuthForm">
-        <label for="username">用户名</label>
-        <input id="username" v-model="authForm.username" type="text" autocomplete="username" />
-
-        <label for="password">密码</label>
-        <input
-          id="password"
-          v-model="authForm.password"
-          type="password"
-          :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'"
-        />
-
-        <p v-if="authMode === 'register'" class="hint">密码长度需要至少 6 位</p>
-        <p v-if="loginError" class="error-text">{{ loginError }}</p>
-
-        <button class="auth-submit" type="submit" :disabled="isAuthSubmitting">
-          {{ authSubmitText }}
-        </button>
-      </form>
-    </section>
-  </main>
-
-  <main v-else class="app-shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark">音</div>
-        <div>
-          <h1>音波AI agent</h1>
-          <p>智能助手平台</p>
+    <Transition name="shell-transition" mode="out-in">
+      <section
+      v-if="!isAuthenticated"
+      key="auth"
+      class="auth-page"
+    >
+      <section class="auth-window">
+        <div class="auth-logo" aria-hidden="true">
+          <svg class="yinbo-logo" viewBox="0 0 32 32">
+            <circle cx="16" cy="16" r="2.2" />
+            <path d="M16 5.5c4.4 0 7.7 2.6 7.7 6.2 0 2.8-2 4.8-5.6 5.7" />
+            <path d="M25.1 20.6c-2.2 3.8-6.1 5.3-9.2 3.5-2.4-1.4-3.2-4.1-2.2-7.7" />
+            <path d="M6.9 20.6c-2.2-3.8-1.6-7.9 1.5-9.7 2.4-1.4 5.2-.7 7.8 2" />
+            <path d="M16 26.5c-4.4 0-7.7-2.6-7.7-6.2 0-2.8 2-4.8 5.6-5.7" />
+            <path d="M6.9 11.4c2.2-3.8 6.1-5.3 9.2-3.5 2.4 1.4 3.2 4.1 2.2 7.7" />
+            <path d="M25.1 11.4c2.2 3.8 1.6 7.9-1.5 9.7-2.4 1.4-5.2.7-7.8-2" />
+          </svg>
         </div>
-      </div>
-
-      <button class="new-chat-button" type="button" @click="startNewChat">新对话</button>
-
-      <section class="conversation-panel">
-        <div class="conversation-panel-header">
-          <strong>历史会话</strong>
-          <span v-if="isLoadingConversations">加载中...</span>
+        <div class="auth-title">
+          <span>yin-bo-agent</span>
         </div>
 
-        <p v-if="conversationError" class="conversation-tip conversation-error">{{ conversationError }}</p>
-        <p v-else-if="!isAuthenticated" class="conversation-tip">登录后可以查看自己的历史会话。</p>
-        <p v-else-if="conversations.length === 0 && !isLoadingConversations" class="conversation-tip">
-          还没有历史会话，发一条消息试试看。
-        </p>
-
-        <div v-else class="conversation-list">
+        <div class="auth-switch" :class="`is-${authMode}`" aria-label="认证方式">
+          <span class="auth-switch-indicator" aria-hidden="true"></span>
           <button
-            v-for="conversation in conversations"
-            :key="conversation.conversationId"
             type="button"
-            class="conversation-item"
-            :class="{ active: conversation.conversationId === conversationId }"
-            @click="openConversation(conversation.conversationId)"
+            class="auth-switch-button"
+            :class="{ active: authMode === 'login' }"
+            @click="authMode = 'login'"
           >
-            <strong>{{ conversation.title }}</strong>
-            <span>{{ conversation.lastMessageAt ? new Date(conversation.lastMessageAt).toLocaleString() : '刚刚' }}</span>
+            登录
+          </button>
+          <button
+            type="button"
+            class="auth-switch-button"
+            :class="{ active: authMode === 'register' }"
+            @click="authMode = 'register'"
+          >
+            注册
           </button>
         </div>
-      </section>
 
-      <section class="panel">
-        <label for="model-select">模型</label>
-        <select id="model-select" v-model="selectedModelId">
-          <option v-for="model in models" :key="model.id" :value="model.id">
-            {{ model.name }}
-          </option>
-        </select>
-        <p>{{ selectedModel?.provider || 'provider' }}</p>
-      </section>
+        <form class="auth-form" @submit.prevent="submitAuthForm">
+          <label for="username">用户名</label>
+          <input id="username" v-model="authForm.username" type="text" autocomplete="username" />
 
-      <section class="panel">
-        <label>登录状态</label>
-        <template v-if="isCheckingLogin">
-          <p>正在恢复会话...</p>
-        </template>
-        <template v-else-if="isAuthenticated">
-          <strong class="panel-title">{{ currentUser.displayName }}</strong>
-          <p>用户名：{{ currentUser.username }}</p>
-          <p>ID：{{ currentUser.id }}</p>
-          <button class="ghost-button" type="button" @click="handleLogout">退出登录</button>
-          <label for="cancel-password" class="danger-label">注销账号</label>
-          <input
-            id="cancel-password"
-            v-model="cancelForm.password"
-            class="sidebar-input"
-            type="password"
-            placeholder="再次输入密码确认"
-            autocomplete="current-password"
-          />
-          <p v-if="cancelError" class="error-text">{{ cancelError }}</p>
-          <button class="danger-button" type="button" @click="handleCancelAccount">
-            {{ isCancellingAccount ? '注销中...' : '确认注销' }}
-          </button>
-        </template>
-        <template v-else>
-          <div class="auth-tabs">
+          <label for="password">密码</label>
+          <div class="password-field">
+            <input
+              id="password"
+              v-model="authForm.password"
+              :type="isPasswordVisible ? 'text' : 'password'"
+              :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'"
+            />
             <button
               type="button"
-              class="tab-button"
-              :class="{ active: authMode === 'login' }"
-              @click="authMode = 'login'"
+              class="password-toggle"
+              :class="{ visible: isPasswordVisible }"
+              :aria-label="isPasswordVisible ? '隐藏密码' : '显示密码'"
+              :title="isPasswordVisible ? '隐藏密码' : '显示密码'"
+              @click="togglePasswordVisibility"
             >
-              登录
-            </button>
-            <button
-              type="button"
-              class="tab-button"
-              :class="{ active: authMode === 'register' }"
-              @click="authMode = 'register'"
-            >
-              注册
+              <svg
+                class="password-icon password-icon-eye"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  d="M2.25 12s3.75-6.75 9.75-6.75S21.75 12 21.75 12s-3.75 6.75-9.75 6.75S2.25 12 2.25 12Z"
+                />
+                <circle cx="12" cy="12" r="3.25" />
+              </svg>
+              <svg
+                class="password-icon password-icon-eye-off"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  d="M3 3l18 18"
+                />
+                <path
+                  d="M10.58 5.14A10.76 10.76 0 0 1 12 5.25c6 0 9.75 6.75 9.75 6.75a18.72 18.72 0 0 1-4.1 4.94M6.61 6.61A19.13 19.13 0 0 0 2.25 12S6 18.75 12 18.75a10.9 10.9 0 0 0 3.42-.53M9.88 9.88A3 3 0 0 0 9 12a3 3 0 0 0 4.12 2.79"
+                />
+              </svg>
             </button>
           </div>
-          <p>{{ authMode === 'login' ? '测试账号：admin / admin' : '用户名不可重复，注销后可重新注册' }}</p>
-        </template>
+
+          <div class="auth-feedback" :class="{ 'has-error': Boolean(loginError) }">
+            <p v-if="loginError" class="error-text">{{ loginError }}</p>
+          </div>
+
+          <button class="auth-submit" type="submit" :disabled="isAuthSubmitting">
+            {{ authSubmitText }}
+          </button>
+        </form>
       </section>
+    </section>
+
+  <section v-else key="app" class="app-shell" :class="{ 'sidebar-collapsed': isSidebarCollapsed }">
+    <nav v-if="isSidebarCollapsed" class="sidebar-rail" aria-label="快捷导航">
+      <div class="rail-top">
+        <button class="rail-button rail-logo logo-morph" type="button" data-tooltip="展开导航栏" @click="toggleSidebar">
+          <span class="logo-text">
+            <svg class="yinbo-logo" viewBox="0 0 32 32" aria-hidden="true">
+              <circle cx="16" cy="16" r="2.2" />
+              <path d="M16 5.5c4.4 0 7.7 2.6 7.7 6.2 0 2.8-2 4.8-5.6 5.7" />
+              <path d="M25.1 20.6c-2.2 3.8-6.1 5.3-9.2 3.5-2.4-1.4-3.2-4.1-2.2-7.7" />
+              <path d="M6.9 20.6c-2.2-3.8-1.6-7.9 1.5-9.7 2.4-1.4 5.2-.7 7.8 2" />
+              <path d="M16 26.5c-4.4 0-7.7-2.6-7.7-6.2 0-2.8 2-4.8 5.6-5.7" />
+              <path d="M6.9 11.4c2.2-3.8 6.1-5.3 9.2-3.5 2.4 1.4 3.2 4.1 2.2 7.7" />
+              <path d="M25.1 11.4c2.2 3.8 1.6 7.9-1.5 9.7-2.4 1.4-5.2.7-7.8-2" />
+            </svg>
+          </span>
+          <svg class="logo-hover-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="5" width="16" height="14" rx="3" />
+            <path d="M9 5v14" />
+          </svg>
+        </button>
+        <button class="rail-button" type="button" aria-label="新对话" data-tooltip="新对话" @click="startNewChatFromNavigation">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 5h7" />
+            <path d="M19 5v7" />
+            <path d="M18.5 13.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7.5a2 2 0 0 1 2-2h4.5" />
+            <path d="M13 11l6-6" />
+          </svg>
+        </button>
+        <button class="rail-button" type="button" aria-label="搜索聊天" data-tooltip="搜索聊天" @click="openSearch">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="6.5" />
+            <path d="M16 16l4 4" />
+          </svg>
+        </button>
+        <button class="rail-button" type="button" aria-label="历史会话" data-tooltip="历史会话" @click="toggleRecentPopover">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 12a8.5 8.5 0 0 1-8.5 8.5H6l-3 2v-6.5A8.5 8.5 0 1 1 21 12Z" />
+          </svg>
+        </button>
+
+        <div v-if="isRecentPopoverOpen" class="recent-popover">
+          <strong>最近聊天</strong>
+          <button
+            v-for="conversation in conversations.slice(0, 10)"
+            :key="conversation.conversationId"
+            type="button"
+            class="recent-popover-item"
+            @click="openConversationFromPopover(conversation.conversationId)"
+          >
+            <span>{{ conversation.title }}</span>
+            <small>最近使用：{{ formatConversationTime(conversation.lastMessageAt) }}</small>
+          </button>
+          <p v-if="conversations.length === 0" class="conversation-tip">还没有历史会话。</p>
+        </div>
+      </div>
+
+      <button class="rail-user" type="button" aria-label="用户信息" data-tooltip="用户信息" @click="openUserMenuFromRail">
+        {{ currentUser.displayName?.slice(0, 1) || '音' }}
+      </button>
+    </nav>
+
+    <aside v-else class="sidebar">
+      <div class="sidebar-main">
+        <div class="brand">
+          <div class="brand-mark">
+            <svg class="yinbo-logo" viewBox="0 0 32 32" aria-hidden="true">
+              <circle cx="16" cy="16" r="2.2" />
+              <path d="M16 5.5c4.4 0 7.7 2.6 7.7 6.2 0 2.8-2 4.8-5.6 5.7" />
+              <path d="M25.1 20.6c-2.2 3.8-6.1 5.3-9.2 3.5-2.4-1.4-3.2-4.1-2.2-7.7" />
+              <path d="M6.9 20.6c-2.2-3.8-1.6-7.9 1.5-9.7 2.4-1.4 5.2-.7 7.8 2" />
+              <path d="M16 26.5c-4.4 0-7.7-2.6-7.7-6.2 0-2.8 2-4.8 5.6-5.7" />
+              <path d="M6.9 11.4c2.2-3.8 6.1-5.3 9.2-3.5 2.4 1.4 3.2 4.1 2.2 7.7" />
+              <path d="M25.1 11.4c2.2 3.8 1.6 7.9-1.5 9.7-2.4 1.4-5.2.7-7.8-2" />
+            </svg>
+          </div>
+          <div class="brand-copy">
+            <h1>yin-bo-agent</h1>
+            <p>智能助手平台</p>
+          </div>
+          <button class="sidebar-toggle" type="button" data-tooltip="隐藏导航栏" @click="toggleSidebar">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="5" width="16" height="14" rx="3" />
+              <path d="M9 5v14" />
+            </svg>
+          </button>
+        </div>
+
+        <button class="sidebar-action-button" type="button" @click="startNewChatFromNavigation">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 5h7" />
+            <path d="M19 5v7" />
+            <path d="M18.5 13.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7.5a2 2 0 0 1 2-2h4.5" />
+            <path d="M13 11l6-6" />
+          </svg>
+          <span>新对话</span>
+        </button>
+
+        <label class="sidebar-search">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="6.5" />
+            <path d="M16 16l4 4" />
+          </svg>
+          <input ref="searchInput" v-model="searchText" type="search" placeholder="搜索聊天" />
+          <kbd>Ctrl K</kbd>
+        </label>
+
+        <section class="conversation-panel">
+          <div class="conversation-panel-header">
+            <strong>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21 12a8.5 8.5 0 0 1-8.5 8.5H6l-3 2v-6.5A8.5 8.5 0 1 1 21 12Z" />
+              </svg>
+              历史会话
+            </strong>
+            <span v-if="isLoadingConversations">加载中...</span>
+          </div>
+
+          <p v-if="conversationError" class="conversation-tip conversation-error">{{ conversationError }}</p>
+          <p v-else-if="conversations.length === 0 && !isLoadingConversations" class="conversation-tip">
+            还没有历史会话，发一条消息试试看。
+          </p>
+          <p v-else-if="filteredConversations.length === 0 && !isLoadingConversations" class="conversation-tip">
+            没有找到匹配的聊天。
+          </p>
+
+          <div v-else class="conversation-list">
+            <button
+              v-for="conversation in filteredConversations"
+              :key="conversation.conversationId"
+              type="button"
+              class="conversation-item"
+              :class="{ active: conversation.conversationId === conversationId }"
+              @click="openConversation(conversation.conversationId)"
+            >
+              <strong>{{ conversation.title }}</strong>
+              <span>{{ formatConversationTime(conversation.lastMessageAt) }}</span>
+            </button>
+          </div>
+        </section>
+      </div>
 
       <p v-if="loadError" class="muted">{{ loadError }}</p>
+
+      <div class="user-menu" @click.stop>
+        <button
+          class="user-menu-trigger"
+          type="button"
+          :aria-expanded="isUserMenuOpen"
+          @click="toggleUserMenu"
+        >
+          <span class="user-avatar">{{ currentUser.displayName?.slice(0, 1) || '音' }}</span>
+          <span class="user-copy">
+            <strong>{{ currentUser.displayName }}</strong>
+            <span>ID：{{ currentUser.id }}</span>
+          </span>
+        </button>
+
+        <div v-if="isUserMenuOpen" class="user-menu-layer">
+          <div class="user-menu-popover">
+            <button class="user-menu-action" type="button" @click="handleLogout">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M15 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3" />
+                <path d="M10 17l5-5-5-5" />
+                <path d="M15 12H4" />
+              </svg>
+              <span>退出登录</span>
+            </button>
+            <button class="user-menu-action danger" type="button" @click="openCancelMenu">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 6h18" />
+                <path d="M8 6V4h8v2" />
+                <path d="M19 6l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+              </svg>
+              <span>注销账号</span>
+            </button>
+          </div>
+
+          <div v-if="isCancelMenuOpen" class="user-menu-submenu">
+            <div class="user-menu-submenu-header">
+              <strong>确认注销</strong>
+              <button type="button" class="submenu-close" aria-label="关闭" @click="closeCancelMenu">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 6l12 12" />
+                  <path d="M18 6 6 18" />
+                </svg>
+              </button>
+            </div>
+            <input
+              id="cancel-password"
+              v-model="cancelForm.password"
+              class="sidebar-input"
+              type="password"
+              placeholder="输入密码确认注销"
+              autocomplete="current-password"
+            />
+            <p v-if="cancelError" class="error-text">{{ cancelError }}</p>
+            <button class="danger-button" type="button" @click="handleCancelAccount">
+              {{ isCancellingAccount ? '注销中...' : '确认注销账号' }}
+            </button>
+          </div>
+        </div>
+      </div>
     </aside>
 
-    <section class="chat">
+    <section class="chat" :class="{ 'chat-fresh': isFreshConversation }">
       <header class="chat-header">
         <div>
           <span>{{ activeConversationTitle }}</span>
@@ -559,19 +1028,21 @@ function stopPointerFrame() {
         </small>
       </header>
 
-      <div ref="messageList" class="message-list">
+      <div v-if="isFreshConversation" class="chat-welcome">
+        <h2>你好，{{ greetingName }}。准备好开始了吗</h2>
+      </div>
+
+      <div v-if="!isFreshConversation" ref="messageList" class="message-list">
         <article
           v-for="message in messages"
           :key="message.id"
           class="message-row"
           :class="message.role"
         >
-          <div class="avatar">{{ message.role === 'user' ? '你' : 'AI' }}</div>
-          <div class="message-bubble">{{ message.content }}</div>
+          <div class="message-bubble markdown-body" v-html="renderMessageContent(message)"></div>
         </article>
 
         <article v-if="isSending" class="message-row assistant">
-          <div class="avatar">AI</div>
           <div class="message-bubble thinking">正在思考</div>
         </article>
       </div>
@@ -579,12 +1050,55 @@ function stopPointerFrame() {
       <form class="composer" @submit.prevent="submitMessage">
         <textarea
           v-model="inputText"
-          placeholder="给音波AI agent 发送消息"
+          placeholder="给 yin-bo-agent 发送消息"
           rows="1"
           @keydown.enter.exact.prevent="submitMessage"
         />
+        <div ref="modelMenu" class="composer-model-picker" :class="{ open: isModelMenuOpen }">
+          <button
+            class="composer-model-trigger"
+            :class="{ active: isModelMenuOpen }"
+            type="button"
+            aria-haspopup="listbox"
+            :aria-expanded="isModelMenuOpen"
+            @click="toggleModelMenu"
+          >
+            <span class="composer-model-copy">
+              <strong>{{ selectedModel?.name }}</strong>
+              <small>{{ selectedModel?.provider || '默认供应商' }}</small>
+            </span>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m7 10 5 5 5-5" />
+            </svg>
+          </button>
+
+          <Transition name="model-menu">
+            <div v-if="isModelMenuOpen" class="composer-model-menu" role="listbox" aria-label="模型列表">
+              <section
+                v-for="group in groupedModels"
+                :key="group.provider"
+                class="composer-model-group"
+              >
+                <header>{{ group.provider }}</header>
+                <button
+                  v-for="model in group.items"
+                  :key="model.id"
+                  type="button"
+                  class="composer-model-option"
+                  :class="{ selected: model.id === selectedModelId }"
+                  @click="selectModel(model.id)"
+                >
+                  <strong>{{ model.name }}</strong>
+                  <span>{{ model.id }}</span>
+                </button>
+              </section>
+            </div>
+          </Transition>
+        </div>
         <button type="submit" :disabled="!canSend">发送</button>
       </form>
     </section>
+  </section>
+    </Transition>
   </main>
 </template>

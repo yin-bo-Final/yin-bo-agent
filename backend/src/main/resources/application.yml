@@ -60,6 +60,22 @@ app:
         name: DeepSeek V4 Flash
         provider: siliconflow
         enabled: true
+      - id: Pro/moonshotai/Kimi-K2.6
+        name: Kimi K2.6 Pro
+        provider: siliconflow
+        enabled: true
+      - id: Pro/zai-org/GLM-5.1
+        name: GLM 5.1 Pro
+        provider: siliconflow
+        enabled: true
+      - id: Pro/MiniMaxAI/MiniMax-M2.5
+        name: MiniMax M2.5 Pro
+        provider: siliconflow
+        enabled: true
+      - id: Qwen/Qwen3.6-27B
+        name: Qwen3.6 27B
+        provider: siliconflow
+        enabled: true
   auth:
     seed-admin-username: ${AUTH_SEED_ADMIN_USERNAME:}
     seed-admin-password: ${AUTH_SEED_ADMIN_PASSWORD:}
