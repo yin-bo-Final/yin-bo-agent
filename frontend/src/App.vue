@@ -4,10 +4,12 @@ import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import { cancelAccount, fetchCurrentUser, login, logout, register } from './api/authApi';
 import {
+  deleteConversation as deleteConversationRequest,
   fetchConversationDetail,
   fetchConversations,
   fetchModels,
-  sendChatMessage
+  streamChatMessage,
+  updateConversationPin
 } from './api/chatApi';
 
 const fallbackModels = [
@@ -72,6 +74,14 @@ const isCancelMenuOpen = ref(false);
 const isSidebarCollapsed = ref(false);
 const isRecentPopoverOpen = ref(false);
 const isModelMenuOpen = ref(false);
+const conversationOpenMenuId = ref('');
+const deleteDialog = ref({
+  open: false,
+  conversation: null
+});
+const isDeletingConversation = ref(false);
+const deleteDialogError = ref('');
+const thinkMode = ref(false);
 const searchText = ref('');
 const cancelForm = ref({
   password: ''
@@ -79,6 +89,10 @@ const cancelForm = ref({
 const messageList = ref(null);
 const searchInput = ref(null);
 const modelMenu = ref(null);
+const shouldAutoScroll = ref(true);
+const activeStreamController = ref(null);
+const activeStreamAnimator = ref(null);
+const activeAssistantMessage = ref(null);
 const authPointer = ref({
   x: 0,
   y: 0
@@ -113,6 +127,9 @@ const activeConversationTitle = computed(() => {
   const matchedConversation = conversations.value.find((item) => item.conversationId === conversationId.value);
   return matchedConversation?.title || '新会话';
 });
+const deleteDialogTitle = computed(() => {
+  return deleteDialog.value.conversation?.title || '这个会话';
+});
 const filteredConversations = computed(() => {
   const keyword = searchText.value.trim().toLowerCase();
   if (!keyword) {
@@ -124,6 +141,12 @@ const filteredConversations = computed(() => {
 });
 const canSend = computed(() => {
   return inputText.value.trim().length > 0 && !isSending.value && !isLoadingConversationDetail.value;
+});
+const canUseComposer = computed(() => {
+  return isSending.value || canSend.value;
+});
+const composerSubmitText = computed(() => {
+  return isSending.value ? '中断' : '发送';
 });
 const isAuthenticated = computed(() => currentUser.value !== null);
 const authSubmitText = computed(() => {
@@ -137,6 +160,9 @@ const isAuthSubmitting = computed(() => {
 });
 const isFreshConversation = computed(() => {
   return isAuthenticated.value && !conversationId.value && messages.value.length === 0;
+});
+const hasStreamingAssistant = computed(() => {
+  return messages.value.some((message) => message.role === 'assistant' && message.isStreaming);
 });
 const greetingName = computed(() => {
   return currentUser.value?.displayName || currentUser.value?.username || '朋友';
@@ -238,6 +264,11 @@ async function submitRegister() {
 }
 
 async function submitMessage() {
+  if (isSending.value) {
+    interruptCurrentResponse();
+    return;
+  }
+
   if (!isAuthenticated.value) {
     loginError.value = '请先登录，再发送消息。';
     return;
@@ -249,6 +280,7 @@ async function submitMessage() {
 
   const content = inputText.value.trim();
   inputText.value = '';
+  shouldAutoScroll.value = true;
   messages.value.push({
     id: crypto.randomUUID(),
     role: 'user',
@@ -259,40 +291,106 @@ async function submitMessage() {
   conversationError.value = '';
   await scrollToBottom();
 
+  const requestMessages = messages.value.map((message) => ({
+    role: message.role,
+    content: message.content
+  }));
+  const assistantMessageDraft = {
+    id: crypto.randomUUID(),
+    role: 'assistant',
+    content: '',
+    isStreaming: true,
+    thinkMode: thinkMode.value,
+    thinkStartedAt: performance.now(),
+    thinkDurationSeconds: null
+  };
+  messages.value.push(assistantMessageDraft);
+  const assistantMessage = messages.value[messages.value.length - 1];
+  const streamAnimator = createStreamAnimator(assistantMessage);
+  const streamController = new AbortController();
+  activeStreamController.value = streamController;
+  activeStreamAnimator.value = streamAnimator;
+  activeAssistantMessage.value = assistantMessage;
+
   try {
-    const response = await sendChatMessage({
+    const payload = {
       conversationId: conversationId.value,
       modelId: selectedModelId.value,
-      messages: messages.value.map((message) => ({
-        role: message.role,
-        content: message.content
-      }))
-    });
+      thinkMode: thinkMode.value,
+      messages: requestMessages
+    };
 
-    conversationId.value = response.conversationId;
-    updateBrowserUrl(response.conversationId, { replace: true });
-    messages.value.push({
-      id: crypto.randomUUID(),
-      role: response.role,
-      content: response.content
+    await streamChatMessage(payload, {
+      signal: streamController.signal,
+      onStart(event) {
+        if (event.conversationId) {
+          conversationId.value = event.conversationId;
+          updateBrowserUrl(event.conversationId, { replace: true });
+        }
+      },
+      onDelta(event) {
+        streamAnimator.push(event.content || '');
+      },
+      onDone(event) {
+        if (event.conversationId) {
+          conversationId.value = event.conversationId;
+          updateBrowserUrl(event.conversationId, { replace: true });
+        }
+      },
+      onError(event) {
+        streamAnimator.replace(event.error || '流式响应失败了，请稍后重试。');
+      }
     });
+    await streamAnimator.finish();
+    finishThinkDuration(assistantMessage);
+    assistantMessage.isStreaming = false;
+
     await loadConversations();
   } catch (error) {
+    if (error.name === 'AbortError') {
+      streamAnimator.replace(interruptedMessageContent(assistantMessage));
+      return;
+    }
     if (error.message.includes('未登录') || error.message.includes('会话已过期')) {
       currentUser.value = null;
       resetConversationState();
     }
     const assistantErrorMessage = error?.message?.trim()
       || '消息发送失败了。请确认你已经登录，并且后端、Redis、PostgreSQL 都已经启动。';
-    messages.value.push({
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: assistantErrorMessage
-    });
+    streamAnimator.replace(assistantErrorMessage);
+    if (!messages.value.includes(assistantMessage)) {
+      messages.value.push(assistantMessage);
+    }
   } finally {
+    await streamAnimator.finish();
+    finishThinkDuration(assistantMessage);
+    assistantMessage.isStreaming = false;
     isSending.value = false;
+    if (activeStreamController.value === streamController) {
+      activeStreamController.value = null;
+    }
+    if (activeStreamAnimator.value === streamAnimator) {
+      activeStreamAnimator.value = null;
+    }
+    if (activeAssistantMessage.value === assistantMessage) {
+      activeAssistantMessage.value = null;
+    }
     await scrollToBottom();
   }
+}
+
+function interruptCurrentResponse() {
+  activeStreamController.value?.abort();
+  if (activeStreamAnimator.value && activeAssistantMessage.value) {
+    activeStreamAnimator.value.replace(interruptedMessageContent(activeAssistantMessage.value));
+  }
+}
+
+function interruptedMessageContent(message) {
+  if (!message.content) {
+    return message.thinkMode ? '思考已中断。' : '回复已中断。';
+  }
+  return `${message.content.trimEnd()}\n\n[已中断]`;
 }
 
 function startNewChat() {
@@ -300,6 +398,7 @@ function startNewChat() {
   inputText.value = '';
   conversationError.value = '';
   isModelMenuOpen.value = false;
+  conversationOpenMenuId.value = '';
   messages.value = buildNewConversationMessages();
   updateBrowserUrl('', { replace: false });
 }
@@ -370,6 +469,7 @@ function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value;
   isRecentPopoverOpen.value = false;
   isModelMenuOpen.value = false;
+  conversationOpenMenuId.value = '';
   if (isSidebarCollapsed.value) {
     isUserMenuOpen.value = false;
     isCancelMenuOpen.value = false;
@@ -411,6 +511,10 @@ function toggleModelMenu() {
   isModelMenuOpen.value = !isModelMenuOpen.value;
 }
 
+function toggleThinkMode() {
+  thinkMode.value = !thinkMode.value;
+}
+
 function selectModel(modelId) {
   selectedModelId.value = modelId;
   isModelMenuOpen.value = false;
@@ -435,7 +539,96 @@ function formatConversationTime(value) {
   return value ? new Date(value).toLocaleString() : '刚刚';
 }
 
+function conversationMeta(conversation) {
+  return formatConversationTime(conversation.lastMessageAt);
+}
+
+async function toggleConversationPin(conversation) {
+  if (!conversation?.conversationId) {
+    return;
+  }
+  conversationError.value = '';
+  try {
+    const updatedConversation = await updateConversationPin(conversation.conversationId, !conversation.pinned);
+    conversations.value = conversations.value.map((item) => {
+      return item.conversationId === updatedConversation.conversationId ? updatedConversation : item;
+    });
+    conversationOpenMenuId.value = '';
+    await loadConversations();
+  } catch (error) {
+    conversationError.value = error.message;
+  }
+}
+
+function openDeleteConversationDialog(conversation) {
+  if (!conversation?.conversationId) {
+    return;
+  }
+  if (isSending.value && conversation.conversationId === conversationId.value) {
+    conversationError.value = 'AI 正在回复，先点击“中断”后再删除当前会话。';
+    return;
+  }
+  conversationOpenMenuId.value = '';
+  conversationError.value = '';
+  deleteDialogError.value = '';
+  deleteDialog.value = {
+    open: true,
+    conversation
+  };
+}
+
+function closeDeleteConversationDialog() {
+  if (isDeletingConversation.value) {
+    return;
+  }
+  deleteDialog.value = {
+    open: false,
+    conversation: null
+  };
+  deleteDialogError.value = '';
+}
+
+async function confirmDeleteConversation() {
+  const targetConversation = deleteDialog.value.conversation;
+  if (!targetConversation?.conversationId || isDeletingConversation.value) {
+    return;
+  }
+  if (isSending.value && targetConversation.conversationId === conversationId.value) {
+    conversationError.value = 'AI 正在回复，先点击“中断”后再删除当前会话。';
+    closeDeleteConversationDialog();
+    return;
+  }
+  conversationError.value = '';
+  deleteDialogError.value = '';
+  isDeletingConversation.value = true;
+  try {
+    await deleteConversationRequest(targetConversation.conversationId);
+    conversations.value = conversations.value.filter((item) => item.conversationId !== targetConversation.conversationId);
+    if (targetConversation.conversationId === conversationId.value) {
+      conversationId.value = '';
+      inputText.value = '';
+      conversationError.value = '';
+      messages.value = buildNewConversationMessages();
+      updateBrowserUrl('', { replace: true });
+    }
+    deleteDialog.value = {
+      open: false,
+      conversation: null
+    };
+    await loadConversations();
+  } catch (error) {
+    conversationError.value = error.message;
+    deleteDialogError.value = error.message;
+  } finally {
+    isDeletingConversation.value = false;
+  }
+}
+
 function handleGlobalKeydown(event) {
+  if (event.key === 'Escape' && deleteDialog.value.open) {
+    closeDeleteConversationDialog();
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault();
     void openSearch();
@@ -446,6 +639,13 @@ function handleWindowPointerDown(event) {
   if (isModelMenuOpen.value && modelMenu.value && !modelMenu.value.contains(event.target)) {
     isModelMenuOpen.value = false;
   }
+  if (conversationOpenMenuId.value && !event.target.closest('.conversation-menu-host')) {
+    conversationOpenMenuId.value = '';
+  }
+}
+
+function toggleConversationMenu(conversationIdValue) {
+  conversationOpenMenuId.value = conversationOpenMenuId.value === conversationIdValue ? '' : conversationIdValue;
 }
 
 function openCancelMenu() {
@@ -465,13 +665,25 @@ function closeCancelMenu() {
 
 function renderMessageContent(message) {
   const cachedMessage = renderedMessageCache.get(message);
-  if (cachedMessage?.content === message.content && cachedMessage.role === message.role) {
+  if (
+    cachedMessage?.content === message.content
+    && cachedMessage.role === message.role
+    && cachedMessage.isStreaming === Boolean(message.isStreaming)
+    && cachedMessage.thinkMode === Boolean(message.thinkMode)
+    && cachedMessage.thinkDurationSeconds === message.thinkDurationSeconds
+  ) {
     return cachedMessage.html;
   }
 
   let html = '';
   if (message.role !== 'assistant') {
     html = escapeHtml(message.content || '');
+  } else if (!message.content && message.isStreaming) {
+    html = '<span class="stream-placeholder">正在思考</span>';
+  } else if (shouldRenderThinkPanel(message)) {
+    html = renderThinkMessage(message);
+  } else if (message.isStreaming) {
+    html = `${escapeHtml(message.content || '')}<span class="stream-cursor" aria-hidden="true"></span>`;
   } else {
     const renderedHtml = marked.parse(message.content || '');
     html = DOMPurify.sanitize(renderedHtml);
@@ -480,9 +692,115 @@ function renderMessageContent(message) {
   renderedMessageCache.set(message, {
     content: message.content,
     role: message.role,
+    isStreaming: Boolean(message.isStreaming),
+    thinkMode: Boolean(message.thinkMode),
+    thinkDurationSeconds: message.thinkDurationSeconds,
     html
   });
   return html;
+}
+
+function shouldRenderThinkPanel(message) {
+  return Boolean(message.thinkMode) || hasThinkHeading(message.content) || hasFinalAnswerHeading(message.content);
+}
+
+function renderThinkMessage(message) {
+  const parts = splitThinkContent(message.content || '', Boolean(message.thinkMode));
+  const thinkStatus = buildThinkStatus(message, Boolean(parts.answer));
+  const thinkBody = renderContentBlock(parts.thinking, !message.isStreaming);
+  const answerBody = renderContentBlock(parts.answer, !message.isStreaming);
+  const cursor = message.isStreaming ? '<span class="stream-cursor" aria-hidden="true"></span>' : '';
+
+  return `
+    <section class="think-message">
+      <details class="think-panel" open>
+        <summary class="think-summary">
+          ${message.isStreaming && !parts.answer
+            ? '<span class="think-spinner" aria-hidden="true"></span>'
+            : '<img class="think-logo" src="/yinbo-logo.svg" alt="" aria-hidden="true" />'}
+          <span>${escapeHtml(thinkStatus)}</span>
+          <span class="think-chevron" aria-hidden="true">⌄</span>
+        </summary>
+        <div class="think-content markdown-body">${thinkBody || '<span class="stream-placeholder">正在整理思考过程</span>'}</div>
+      </details>
+      ${parts.answer
+        ? `<div class="think-answer markdown-body">${answerBody}${cursor}</div>`
+        : (message.isStreaming ? `<div class="think-answer-pending">${cursor}</div>` : '')}
+    </section>
+  `;
+}
+
+function splitThinkContent(content, forceThinkPanel) {
+  const thinkMatch = content.match(/(?:^|\n)\s*(?:\*\*)?思考(?:过程|摘要)?(?:\*\*)?\s*[:：]?\s*/);
+  const answerMatch = content.match(/(?:^|\n)\s*(?:\*\*)?(?:最终回答|回答)(?:\*\*)?\s*[:：]?\s*/);
+
+  if (thinkMatch && answerMatch && answerMatch.index > thinkMatch.index) {
+    return {
+      thinking: content.slice(thinkMatch.index + thinkMatch[0].length, answerMatch.index).trim(),
+      answer: content.slice(answerMatch.index + answerMatch[0].length).trim()
+    };
+  }
+
+  if (thinkMatch) {
+    return {
+      thinking: content.slice(thinkMatch.index + thinkMatch[0].length).trim(),
+      answer: ''
+    };
+  }
+
+  if (answerMatch) {
+    return {
+      thinking: content.slice(0, answerMatch.index).trim(),
+      answer: content.slice(answerMatch.index + answerMatch[0].length).trim()
+    };
+  }
+
+  return {
+    thinking: forceThinkPanel ? content.trim() : '',
+    answer: forceThinkPanel ? '' : content.trim()
+  };
+}
+
+function renderContentBlock(content, allowMarkdown) {
+  if (!content) {
+    return '';
+  }
+  if (!allowMarkdown) {
+    return escapeHtml(content);
+  }
+  return DOMPurify.sanitize(marked.parse(content));
+}
+
+function buildThinkStatus(message, hasAnswer) {
+  if (message.isStreaming && !hasAnswer) {
+    return '正在思考';
+  }
+  const seconds = message.thinkDurationSeconds;
+  return seconds ? `已思考（用时 ${seconds} 秒）` : '已思考';
+}
+
+function hasThinkHeading(content = '') {
+  return /(?:^|\n)\s*(?:\*\*)?思考(?:过程|摘要)?(?:\*\*)?\s*[:：]?/.test(content);
+}
+
+function hasFinalAnswerHeading(content = '') {
+  return /(?:^|\n)\s*(?:\*\*)?(?:最终回答|回答)(?:\*\*)?\s*[:：]?/.test(content);
+}
+
+function updateThinkDuration(message) {
+  if (!message.thinkMode || message.thinkDurationSeconds) {
+    return;
+  }
+  if (hasFinalAnswerHeading(message.content)) {
+    finishThinkDuration(message);
+  }
+}
+
+function finishThinkDuration(message) {
+  if (!message.thinkMode || message.thinkDurationSeconds || !message.thinkStartedAt) {
+    return;
+  }
+  message.thinkDurationSeconds = Math.max(1, Math.round((performance.now() - message.thinkStartedAt) / 1000));
 }
 
 function escapeHtml(content) {
@@ -492,6 +810,81 @@ function escapeHtml(content) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function createStreamAnimator(message) {
+  let pendingContent = '';
+  let animationFrame = 0;
+  let isFinishing = false;
+  let finishResolver = null;
+  const finishPromise = new Promise((resolve) => {
+    finishResolver = resolve;
+  });
+
+  function scheduleFlush() {
+    if (animationFrame) {
+      return;
+    }
+    animationFrame = window.requestAnimationFrame(flushFrame);
+  }
+
+  function flushFrame() {
+    animationFrame = 0;
+    if (!pendingContent) {
+      if (isFinishing) {
+        finishResolver?.();
+      }
+      return;
+    }
+
+    const chunkSize = nextChunkSize(pendingContent.length);
+    message.content += pendingContent.slice(0, chunkSize);
+    pendingContent = pendingContent.slice(chunkSize);
+    updateThinkDuration(message);
+    void scrollToBottomIfNeeded();
+    scheduleFlush();
+  }
+
+  return {
+    push(content) {
+      if (!content) {
+        return;
+      }
+      pendingContent += content;
+      scheduleFlush();
+    },
+    replace(content) {
+      if (animationFrame) {
+        window.cancelAnimationFrame(animationFrame);
+        animationFrame = 0;
+      }
+      pendingContent = '';
+      message.content = content;
+      finishResolver?.();
+    },
+    finish() {
+      isFinishing = true;
+      if (!pendingContent) {
+        finishResolver?.();
+      } else {
+        scheduleFlush();
+      }
+      return finishPromise;
+    }
+  };
+}
+
+function nextChunkSize(pendingLength) {
+  if (pendingLength > 360) {
+    return 42;
+  }
+  if (pendingLength > 160) {
+    return 28;
+  }
+  if (pendingLength > 60) {
+    return 16;
+  }
+  return 8;
 }
 
 async function loadConversations() {
@@ -517,6 +910,7 @@ async function openConversation(targetConversationId) {
     return false;
   }
 
+  conversationOpenMenuId.value = '';
   const previousConversationId = conversationId.value;
   const previousSelectedModelId = selectedModelId.value;
   const previousMessages = [...messages.value];
@@ -657,7 +1051,29 @@ async function scrollToBottom() {
   await nextTick();
   if (messageList.value) {
     messageList.value.scrollTop = messageList.value.scrollHeight;
+    shouldAutoScroll.value = true;
   }
+}
+
+async function scrollToBottomIfNeeded() {
+  if (!shouldAutoScroll.value) {
+    return;
+  }
+  await scrollToBottom();
+}
+
+function handleMessageListScroll() {
+  shouldAutoScroll.value = isMessageListNearBottom();
+}
+
+function isMessageListNearBottom() {
+  if (!messageList.value) {
+    return true;
+  }
+  const distanceToBottom = messageList.value.scrollHeight
+    - messageList.value.scrollTop
+    - messageList.value.clientHeight;
+  return distanceToBottom < 96;
 }
 
 function handleAuthPointerMove(event) {
@@ -857,7 +1273,7 @@ function stopPointerFrame() {
             @click="openConversationFromPopover(conversation.conversationId)"
           >
             <span>{{ conversation.title }}</span>
-            <small>最近使用：{{ formatConversationTime(conversation.lastMessageAt) }}</small>
+            <small>{{ conversationMeta(conversation) }}</small>
           </button>
           <p v-if="conversations.length === 0" class="conversation-tip">还没有历史会话。</p>
         </div>
@@ -933,17 +1349,75 @@ function stopPointerFrame() {
           </p>
 
           <div v-else class="conversation-list">
-            <button
+            <article
               v-for="conversation in filteredConversations"
               :key="conversation.conversationId"
-              type="button"
               class="conversation-item"
               :class="{ active: conversation.conversationId === conversationId }"
-              @click="openConversation(conversation.conversationId)"
             >
-              <strong>{{ conversation.title }}</strong>
-              <span>{{ formatConversationTime(conversation.lastMessageAt) }}</span>
-            </button>
+              <button
+                type="button"
+                class="conversation-open"
+                @click="openConversation(conversation.conversationId)"
+              >
+                <span class="conversation-title-line">
+                  <strong>{{ conversation.title }}</strong>
+                  <span
+                    v-if="conversation.pinned"
+                    class="conversation-pin-indicator"
+                    title="已置顶"
+                    aria-label="已置顶"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M14 4l6 6" />
+                      <path d="M9.5 14.5L4 20" />
+                      <path d="M14.5 3.5l-6 6 6 6 6-6-6-6Z" />
+                    </svg>
+                  </span>
+                </span>
+                <span>{{ conversationMeta(conversation) }}</span>
+              </button>
+              <div class="conversation-menu-host">
+                <button
+                  type="button"
+                  class="conversation-more-button"
+                  title="更多"
+                  aria-label="更多会话操作"
+                  :aria-expanded="conversationOpenMenuId === conversation.conversationId"
+                  @click.stop="toggleConversationMenu(conversation.conversationId)"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="5" cy="12" r="1.4" />
+                    <circle cx="12" cy="12" r="1.4" />
+                    <circle cx="19" cy="12" r="1.4" />
+                  </svg>
+                </button>
+                <div
+                  v-if="conversationOpenMenuId === conversation.conversationId"
+                  class="conversation-menu"
+                  @click.stop
+                >
+                  <button type="button" class="conversation-menu-item" @click="toggleConversationPin(conversation)">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M14 4l6 6" />
+                      <path d="M9.5 14.5L4 20" />
+                      <path d="M14.5 3.5l-6 6 6 6 6-6-6-6Z" />
+                    </svg>
+                    <span>{{ conversation.pinned ? '取消置顶' : '置顶聊天' }}</span>
+                  </button>
+                  <button type="button" class="conversation-menu-item danger" @click="openDeleteConversationDialog(conversation)">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M3 6h18" />
+                      <path d="M8 6V4h8v2" />
+                      <path d="M19 6l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                      <path d="M10 11v6" />
+                      <path d="M14 11v6" />
+                    </svg>
+                    <span>删除</span>
+                  </button>
+                </div>
+              </div>
+            </article>
           </div>
         </section>
       </div>
@@ -1032,7 +1506,12 @@ function stopPointerFrame() {
         <h2>你好，{{ greetingName }}。准备好开始了吗</h2>
       </div>
 
-      <div v-if="!isFreshConversation" ref="messageList" class="message-list">
+      <div
+        v-if="!isFreshConversation"
+        ref="messageList"
+        class="message-list"
+        @scroll.passive="handleMessageListScroll"
+      >
         <article
           v-for="message in messages"
           :key="message.id"
@@ -1042,7 +1521,7 @@ function stopPointerFrame() {
           <div class="message-bubble markdown-body" v-html="renderMessageContent(message)"></div>
         </article>
 
-        <article v-if="isSending" class="message-row assistant">
+        <article v-if="isSending && !hasStreamingAssistant" class="message-row assistant">
           <div class="message-bubble thinking">正在思考</div>
         </article>
       </div>
@@ -1054,6 +1533,17 @@ function stopPointerFrame() {
           rows="1"
           @keydown.enter.exact.prevent="submitMessage"
         />
+        <button
+          class="think-toggle"
+          :class="{ active: thinkMode }"
+          type="button"
+          :aria-pressed="thinkMode"
+          :title="thinkMode ? '关闭 Think 模式' : '开启 Think 模式'"
+          @click="toggleThinkMode"
+        >
+          <strong>Think</strong>
+          <small>{{ thinkMode ? '已开启' : '深度' }}</small>
+        </button>
         <div ref="modelMenu" class="composer-model-picker" :class="{ open: isModelMenuOpen }">
           <button
             class="composer-model-trigger"
@@ -1095,10 +1585,96 @@ function stopPointerFrame() {
             </div>
           </Transition>
         </div>
-        <button type="submit" :disabled="!canSend">发送</button>
+        <button type="submit" :class="{ interrupting: isSending }" :disabled="!canUseComposer">
+          {{ composerSubmitText }}
+        </button>
       </form>
     </section>
   </section>
     </Transition>
+
+    <Teleport to="body">
+      <Transition name="delete-dialog">
+        <div
+          v-if="deleteDialog.open"
+          class="delete-dialog-backdrop"
+          @click.self="closeDeleteConversationDialog"
+        >
+          <section
+            class="delete-dialog-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-dialog-title"
+            aria-describedby="delete-dialog-description"
+          >
+            <button
+              type="button"
+              class="delete-dialog-close"
+              aria-label="关闭删除确认"
+              :disabled="isDeletingConversation"
+              @click="closeDeleteConversationDialog"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6l12 12" />
+                <path d="M18 6L6 18" />
+              </svg>
+            </button>
+
+            <div class="delete-dialog-hero" aria-hidden="true">
+              <span class="delete-dialog-icon">
+                <svg viewBox="0 0 24 24">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4h8v2" />
+                  <path d="M19 6l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                  <path d="M10 11v6" />
+                  <path d="M14 11v6" />
+                </svg>
+              </span>
+            </div>
+
+            <div class="delete-dialog-copy">
+              <p class="delete-dialog-eyebrow">危险操作</p>
+              <h2 id="delete-dialog-title">永久删除这个会话？</h2>
+              <p id="delete-dialog-description">
+                会话和消息记录会被物理删除，删除后无法恢复。
+              </p>
+            </div>
+
+            <div class="delete-dialog-target">
+              <span>将被删除</span>
+              <strong>{{ deleteDialogTitle }}</strong>
+            </div>
+
+            <p class="delete-dialog-warning">
+              如果只是暂时不想看到它，可以先取消，后面我们再做归档会更稳。
+            </p>
+
+            <p v-if="deleteDialogError" class="delete-dialog-error">
+              {{ deleteDialogError }}
+            </p>
+
+            <div class="delete-dialog-actions">
+              <button
+                type="button"
+                class="delete-dialog-secondary"
+                :disabled="isDeletingConversation"
+                autofocus
+                @click="closeDeleteConversationDialog"
+              >
+                先留着
+              </button>
+              <button
+                type="button"
+                class="delete-dialog-danger"
+                :disabled="isDeletingConversation"
+                @click="confirmDeleteConversation"
+              >
+                {{ isDeletingConversation ? '删除中...' : '永久删除' }}
+              </button>
+            </div>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
   </main>
 </template>

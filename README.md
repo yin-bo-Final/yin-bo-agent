@@ -1,143 +1,167 @@
-# 音波AI agent 智能助手平台
+# 音波 AI Agent 智能助手平台
 
-这是一个用于边做边学的 AI Agent 项目，目前已经从“纯聊天骨架”推进到了“聊天骨架 + 基础用户系统”的阶段。
+这是一个面向 Java 后端学习和 AI Agent 实战的前后端分离项目。项目目标不是只做一个“能聊天的页面”，而是逐步沉淀成一个可以继续扩展模型调用、会话记忆、RAG、MCP Tool Server 和 Agent 编排能力的学习型工程。
 
-- 后端：Spring Boot 3.5.x + Java 17 + Maven + Spring AI 1.1.x + Spring AI Alibaba
-- 前端：Vue 3 + Vite，生产环境使用 Nginx 部署
-- 数据与中间件：PostgreSQL + Redis + RocketMQ
-- 当前认证方案：MyBatis-Plus + Session + Redis + BCrypt
+当前项目已经完成基础用户系统、会话持久化、模型选择和 Spring AI 模型调用骨架。后端会优先尝试通过 Spring AI `ChatModel` 调用真实模型；如果模型客户端不可用或上游调用失败，会返回可读的兜底提示，方便本地开发继续推进。
 
-## 当前进度
+## 技术栈
 
-当前已经完成这些能力：
+| 模块 | 技术 |
+| --- | --- |
+| 后端 | Java 17、Spring Boot 3.5.9、Maven、Spring Web、Validation、Actuator |
+| AI | Spring AI 1.1.6、OpenAI Compatible ChatModel、Spring AI Alibaba Agent Framework |
+| 数据层 | PostgreSQL、MyBatis-Plus 3.5.16、Spring JDBC |
+| 登录态 | Session、Spring Session Data Redis、Redis、BCrypt |
+| 预留能力 | PGVector、MCP Server WebMVC、RocketMQ |
+| 前端 | Vue 3.5、Vite 6、marked、DOMPurify |
+| 部署 | 前端 Docker + Nginx，后端 Spring Boot |
 
-- 前端聊天界面：
-  - 模型选择
-  - 消息列表
-  - 输入区
-  - 历史会话列表
-  - 点击回放历史消息
-- 后端聊天接口：模型列表接口、聊天接口占位实现
-- 对话持久化模块：
-  - 聊天会话表 `chat_conversation`
-  - 聊天消息表 `chat_message`
-  - 按登录用户隔离会话数据
-  - 支持查询会话列表和会话消息历史
-- 用户认证模块：
-  - 登录
-  - 注册
-  - 退出登录
-  - 注销账号
-- 密码安全：
-  - 数据库存储的是 BCrypt 哈希值
-  - 注销账号时需要再次输入密码确认
-- 用户状态设计：
-  - `status = 1` 表示有效用户
-  - `status = 0` 表示已注销用户
-  - 注销后为逻辑删除，不做物理删除
-  - 用户名仅对有效用户唯一，注销后原用户名可以重新注册
+## 当前能力
 
-真实 LLM 调用暂未完全展开，当前聊天服务仍以现有 `ChatService` 骨架为主，后续可以继续替换成真实模型调用和流式响应能力。
+### 用户认证
 
-## 当前目录重点
+- 用户注册、登录、退出登录
+- 获取当前登录用户
+- 注销账号，需要再次输入密码确认
+- 密码使用 BCrypt 哈希存储
+- 登录态使用 Session，并由 Redis 承载
+- 用户注销采用逻辑删除：`status = 0`
+- 用户名只要求“有效用户”唯一，注销后原用户名可以重新注册
 
-```text
-SpringAI-Program/
-├─ backend/
-│  ├─ src/main/java/com/yinbo/agent/
-│  │  ├─ auth/             # 登录、注册、注销、会话校验
-│  │  ├─ chat/             # 聊天接口、会话持久化、占位服务
-│  │  ├─ common/           # 统一异常与通用响应
-│  │  └─ config/           # 模型配置、密码编码、跨域配置
-│  └─ src/main/resources/
-│     ├─ application.yml
-│     └─ schema.sql        # 用户/会话/消息表结构与索引初始化
-├─ frontend/
-│  └─ src/
-│     ├─ App.vue           # 登录/注册/聊天一体页面
-│     ├─ api/authApi.js    # 认证接口封装
-│     └─ api/chatApi.js    # 聊天接口封装
-└─ docs/
-   ├─ project-structure.md
-   └─ prompts.md
-```
+### AI 对话
 
-更详细的结构说明见 [项目结构文档](docs/project-structure.md)。
+- 前端模型选择
+- 后端模型列表接口
+- 通过 Spring AI `ChatModel` 调用 OpenAI 兼容模型供应商
+- 当前默认配置面向硅基流动 API
+- 模型不可用或调用失败时返回兜底说明
+- 每次对话自动保存用户消息和 assistant 回复
 
-## IDEA 打开方式
+### 会话管理
 
-推荐直接打开仓库根目录：
+- 新消息自动创建会话
+- 会话按登录用户隔离
+- 查询当前用户历史会话列表
+- 点击历史会话回放完整消息
+- 根据首条用户消息生成会话标题
+- 刷新页面后可通过 `/c/{conversationId}` 恢复会话
+- 侧边栏支持历史会话搜索和折叠
+
+### 前端体验
+
+- 登录 / 注册一体页面
+- 聊天主界面、模型下拉选择、历史会话列表
+- `Ctrl + K` 聚焦会话搜索
+- assistant 消息支持 Markdown 渲染
+- Markdown HTML 使用 DOMPurify 清洗，避免直接渲染不可信内容
+- 消息请求前端设置 45 秒超时，避免长时间卡死
+
+## 项目结构
 
 ```text
 SpringAI-Program/
+├─ backend/                         # Spring Boot 后端模块
+│  ├─ pom.xml                       # 后端依赖声明
+│  └─ src/main/
+│     ├─ java/com/yinbo/agent/
+│     │  ├─ YinboAgentApplication.java
+│     │  ├─ auth/                   # 注册、登录、Session、账号注销
+│     │  │  ├─ dto/                 # 认证请求和响应对象
+│     │  │  ├─ entity/              # 用户实体
+│     │  │  ├─ mapper/              # 用户 Mapper
+│     │  │  └─ session/             # Session 中保存的登录用户
+│     │  ├─ chat/                   # 模型列表、聊天、会话持久化
+│     │  │  ├─ dto/                 # 聊天请求、响应、会话 DTO
+│     │  │  ├─ entity/              # 会话和消息实体
+│     │  │  └─ mapper/              # 会话和消息 Mapper
+│     │  ├─ common/                 # 业务异常、统一错误响应
+│     │  └─ config/                 # Web、密码、模型、认证配置
+│     └─ resources/
+│        ├─ application.yml         # 应用配置和模型列表
+│        └─ schema.sql              # 表结构与索引初始化
+├─ frontend/                        # Vue 3 前端模块
+│  ├─ src/
+│  │  ├─ App.vue                    # 登录、聊天、侧边栏、会话回放主页面
+│  │  ├─ main.js                    # Vue 入口
+│  │  ├─ styles.css                 # 页面样式
+│  │  └─ api/                       # 前端请求封装
+│  ├─ public/                       # Logo 等静态资源
+│  ├─ nginx/default.conf            # 生产环境 Nginx 配置
+│  ├─ Dockerfile                    # 前端镜像构建
+│  └─ vite.config.js                # 本地开发代理
+├─ docs/
+│  ├─ project-structure.md          # 更详细的项目结构说明
+│  └─ prompts.md                    # 项目提示词记录
+├─ local-secrets.example.yml        # 本地私密配置示例
+├─ local-secrets.yml                # 本地私密配置，已被 gitignore 忽略
+└─ pom.xml                          # Maven 聚合工程
 ```
 
-打开后确认：
+更完整的分层说明见 [docs/project-structure.md](docs/project-structure.md)。
 
-1. `Project SDK` 为 Java 17
-2. Maven 面板里能看到根项目和 `backend` 模块
+## 本地配置
 
-如果 IDEA 没自动导入，可以在根目录的 [pom.xml](pom.xml) 上点击 `Load Maven Project`。
-
-## 本地配置文件
-
-项目根目录支持一个不入库的本地配置文件：
-
-```text
-local-secrets.yml
-```
-
-这个文件目前用于保存：
-
-- PostgreSQL 用户名和密码
-- Redis 密码
-- 硅基流动 API Key
-- 本地开发用种子管理员账号
-
-仓库里提供了示例文件 [local-secrets.example.yml](local-secrets.example.yml)。
-
-一个可参考的开发配置如下：
+项目通过 `application.yml` 引入本地私密配置：
 
 ```yml
-POSTGRES_USERNAME: postgres
-POSTGRES_PASSWORD: postgres
+spring:
+  config:
+    import: optional:file:./local-secrets.yml,optional:file:../local-secrets.yml
+```
+
+根目录提供了示例文件 [local-secrets.example.yml](local-secrets.example.yml)。本地开发时创建 `local-secrets.yml`，至少配置：
+
+```yml
+POSTGRES_USERNAME: your-postgres-username
+POSTGRES_PASSWORD: your-postgres-password
 REDIS_PASSWORD: your-redis-password
 OPENAI_API_KEY: your-siliconflow-api-key
 AUTH_SEED_ADMIN_USERNAME: admin
-AUTH_SEED_ADMIN_PASSWORD: admin
+AUTH_SEED_ADMIN_PASSWORD: replace-with-a-dev-only-password
 ```
+
+可选配置：
+
+```yml
+POSTGRES_URL: jdbc:postgresql://localhost:5432/yinbo_agent
+REDIS_HOST: localhost
+REDIS_PORT: 6379
+OPENAI_BASE_URL: https://api.siliconflow.cn
+OPENAI_CHAT_MODEL: deepseek-ai/DeepSeek-V4-Flash
+ROCKETMQ_NAME_SERVER: localhost:9876
+```
+
+注意：`local-secrets.yml` 不应该提交到仓库。
 
 ## 快速启动
 
 ### 1. 准备中间件
 
-确保本地这些服务可用：
+本地至少需要：
 
 ```text
 PostgreSQL: 5432
 Redis: 6379
-RocketMQ NameServer: 9876
 ```
 
-其中登录、注册、会话依赖 PostgreSQL 和 Redis。
-
-### 2. 启动前端
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-默认访问：
+数据库默认连接到：
 
 ```text
-http://localhost:5173
+jdbc:postgresql://localhost:5432/yinbo_agent
 ```
 
-### 3. 启动后端
+RocketMQ 当前已引入配置和依赖，但核心聊天链路暂未强依赖它；如果没有启动 RocketMQ，后续接入消息队列能力前需要再检查启动行为。
 
-后端需要 Java 17。如果当前机器默认 `java` 不是 Java 17，可以在 PowerShell 临时切换：
+### 2. 启动后端
+
+后端需要 Java 17。
+
+```powershell
+cd backend
+mvn spring-boot:run
+```
+
+如果本机默认 Java 不是 17，可以临时指定：
 
 ```powershell
 $env:JAVA_HOME="C:\Users\35575\.jdks\ms-17.0.17"
@@ -146,71 +170,77 @@ cd backend
 mvn spring-boot:run
 ```
 
-后端默认端口：
+后端默认地址：
 
 ```text
 http://localhost:8080
 ```
 
-## 当前可用功能说明
+### 3. 启动前端
 
-### 登录
-
-- 使用用户名 + 密码登录
-- 登录成功后创建 Session
-- Session 存入 Redis
-
-### 注册
-
-- 使用用户名 + 密码直接注册
-- 用户名对有效用户唯一
-- 注册成功后自动登录
-
-### 注销账号
-
-- 需要再次输入当前密码
-- 注销后不是物理删除，而是将 `status` 从 `1` 改成 `0`
-- 注销后当前用户名可以再次注册使用
-
-### 测试账号
-
-如果你在 `local-secrets.yml` 中配置了：
-
-```yml
-AUTH_SEED_ADMIN_USERNAME: admin
-AUTH_SEED_ADMIN_PASSWORD: admin
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
-那么应用启动时会自动补一个本地开发用管理员账号：
+前端默认地址：
 
 ```text
-用户名：admin
-密码：admin
+http://localhost:5173
 ```
 
-### 对话持久化
+Vite 会把 `/api` 代理到 `http://localhost:8080`。
 
-- `POST /api/chat`
-  - 自动为新对话创建会话号
-  - 保存本次用户消息
-  - 保存本次 assistant 回复
-- `GET /api/conversations`
-  - 查询当前登录用户的会话列表
-- `GET /api/conversations/{conversationId}`
-  - 查询指定会话的完整消息历史
-- 前端左侧侧边栏
-  - 展示当前登录用户的历史会话
-  - 支持点击会话回放历史消息
-  - 刷新页面后自动恢复最近一条会话
+## 接口概览
+
+### 认证接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/auth/register` | 注册，成功后自动登录 |
+| `POST` | `/api/auth/login` | 登录 |
+| `GET` | `/api/auth/me` | 获取当前登录用户 |
+| `POST` | `/api/auth/logout` | 退出登录 |
+| `POST` | `/api/auth/cancel` | 注销账号 |
+
+### 聊天接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/models` | 查询可选模型列表 |
+| `POST` | `/api/chat` | 发送聊天消息 |
+| `GET` | `/api/conversations` | 查询当前用户会话列表 |
+| `GET` | `/api/conversations/{conversationId}` | 查询指定会话详情 |
+
+## 数据表
+
+当前由 [backend/src/main/resources/schema.sql](backend/src/main/resources/schema.sql) 初始化三张核心表：
+
+| 表 | 说明 |
+| --- | --- |
+| `auth_user` | 用户表，保存用户名、BCrypt 密码哈希、用户状态 |
+| `chat_conversation` | 会话表，保存会话号、所属用户、标题、最近模型和最近消息时间 |
+| `chat_message` | 消息表，保存会话内的 user / assistant 消息 |
+
+`auth_user` 对用户名的唯一约束是部分唯一索引：
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS uk_auth_user_username_active
+ON auth_user (username)
+WHERE status = 1;
+```
+
+这意味着只有有效用户不能重名，注销后的用户名可以再次注册。
 
 ## 下一步建议
 
-接下来比较自然的演进路线是：
+比较适合继续推进的路线：
 
-1. 接入真实模型供应商并替换占位聊天实现
-2. 支持流式输出
-3. 增加会话重命名、删除、置顶等管理能力
-4. 支持会话搜索、分页和最近访问排序
-5. 引入 PGVector 做 RAG
-6. 加入更细的权限控制和账号资料管理
-7. 把工具能力逐步接入 MCP Tool Server
+1. 把 `PlaceholderChatService` 重命名为更准确的 `SpringAiChatService`
+2. 接入流式响应，让前端逐字输出
+3. 增加会话删除、重命名、分页和置顶
+4. 引入 PGVector，完成第一版 RAG 知识库
+5. 把工具调用能力接到 MCP Tool Server
+6. 给 RocketMQ 找一个真实业务场景，比如异步记录模型调用日志
+7. 增加测试用例，尤其是认证、会话归属校验和注销后重注册逻辑

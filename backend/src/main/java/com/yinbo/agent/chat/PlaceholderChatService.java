@@ -1,25 +1,30 @@
 package com.yinbo.agent.chat;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yinbo.agent.auth.entity.AuthUser;
 import com.yinbo.agent.chat.dto.ChatMessage;
 import com.yinbo.agent.chat.dto.ChatRequest;
 import com.yinbo.agent.chat.dto.ChatResponse;
+import com.yinbo.agent.chat.dto.ChatStreamEvent;
 import com.yinbo.agent.chat.dto.ConversationDetailResponse;
 import com.yinbo.agent.chat.dto.ConversationMessageResponse;
 import com.yinbo.agent.chat.dto.ConversationSummaryResponse;
+import com.yinbo.agent.chat.dto.PinConversationRequest;
 import com.yinbo.agent.chat.entity.ChatConversation;
 import com.yinbo.agent.chat.entity.ChatMessageEntity;
 import com.yinbo.agent.chat.mapper.ChatConversationMapper;
 import com.yinbo.agent.chat.mapper.ChatMessageMapper;
 import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.config.AiModelProperties;
+import java.io.IOException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -33,17 +38,34 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @Service
 public class PlaceholderChatService implements ChatService {
 
     private static final Logger log = LoggerFactory.getLogger(PlaceholderChatService.class);
+    private static final long STREAM_TIMEOUT_MILLIS = 180_000L;
 
     private static final String DEFAULT_SYSTEM_PROMPT = """
             你是“音波AI agent 智能助手平台”的智能助手。
             你的目标是帮助用户完成学习、编程、资料整理和任务规划。
             回答要清晰、直接、可执行。
             当用户正在学习技术时，先解决问题，再用简洁语言解释背后的知识点。
+            """;
+
+    private static final String THINK_MODE_PROMPT = """
+
+            当前启用了 Think 模式。
+            你必须先输出一个可公开展示的“思考过程”摘要，再输出最终回答。
+            注意：这里的“思考过程”是面向用户的推理摘要，不是完整隐藏推理链；不要使用 <think> 标签。
+            必须严格使用下面的 Markdown 格式：
+
+            **思考过程**
+            - 用 2 到 5 条说明你如何拆解问题、判断关键点、选择方案。
+            - 如果问题很简单，也至少给出 1 条简短判断。
+
+            **最终回答**
+            - 给出可执行、清晰的最终答案。
             """;
 
     private final AiModelProperties aiModelProperties;
@@ -78,7 +100,7 @@ public class PlaceholderChatService implements ChatService {
         if (chatModel == null) {
             content = fallbackResponseContent(request, model);
         } else try {
-            content = callModel(chatModel, conversation.getId(), request.modelId());
+            content = callModel(chatModel, conversation.getId(), request.modelId(), request.thinkModeEnabled());
         } catch (Exception exception) {
             log.warn("Chat model call failed. conversationId={}, modelId={}", conversationId, model.id(), exception);
             content = modelFailureResponseContent(model, latestUserMessage.content());
@@ -96,19 +118,19 @@ public class PlaceholderChatService implements ChatService {
     }
 
     @Override
+    public SseEmitter streamChat(AuthUser authUser, ChatRequest request) {
+        SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
+        CompletableFuture.runAsync(() -> doStreamChat(authUser, request, emitter));
+        return emitter;
+    }
+
+    @Override
     public List<ConversationSummaryResponse> listConversations(AuthUser authUser) {
         return chatConversationMapper.selectList(new LambdaQueryWrapper<ChatConversation>()
                         .eq(ChatConversation::getUserId, authUser.getId())
-                        .orderByDesc(ChatConversation::getLastMessageAt)
-                        .orderByDesc(ChatConversation::getCreatedAt))
+                        .last("ORDER BY pinned_at IS NULL ASC, pinned_at DESC, last_message_at DESC, created_at DESC"))
                 .stream()
-                .map(conversation -> new ConversationSummaryResponse(
-                        conversation.getConversationNo(),
-                        conversation.getTitle(),
-                        conversation.getModelId(),
-                        toInstant(conversation.getLastMessageAt()),
-                        toInstant(conversation.getCreatedAt())
-                ))
+                .map(this::toConversationSummary)
                 .toList();
     }
 
@@ -138,9 +160,224 @@ public class PlaceholderChatService implements ChatService {
         );
     }
 
-    private String callModel(ChatModel chatModel, Long conversationId, String modelId) {
+    @Override
+    @Transactional
+    public ConversationSummaryResponse updateConversationPin(
+            AuthUser authUser,
+            String conversationId,
+            PinConversationRequest request
+    ) {
+        ChatConversation conversation = requireOwnedConversation(authUser.getId(), conversationId);
+        boolean pinned = request != null && request.pinnedEnabled();
+        if (pinned) {
+            conversation.setPinnedAt(LocalDateTime.now());
+            chatConversationMapper.updateById(conversation);
+        } else {
+            unpinConversationById(authUser.getId(), conversation);
+        }
+        return toConversationSummary(conversation);
+    }
+
+    @Override
+    @Transactional
+    public ConversationSummaryResponse unpinConversation(AuthUser authUser, String conversationId) {
+        ChatConversation conversation = requireOwnedConversation(authUser.getId(), conversationId);
+        unpinConversationById(authUser.getId(), conversation);
+        return toConversationSummary(conversation);
+    }
+
+    private void unpinConversationById(Long userId, ChatConversation conversation) {
+        chatConversationMapper.update(null, new LambdaUpdateWrapper<ChatConversation>()
+                .eq(ChatConversation::getId, conversation.getId())
+                .eq(ChatConversation::getUserId, userId)
+                .set(ChatConversation::getPinnedAt, null));
+        conversation.setPinnedAt(null);
+    }
+
+    @Override
+    @Transactional
+    public void deleteConversation(AuthUser authUser, String conversationId) {
+        ChatConversation conversation = requireOwnedConversation(authUser.getId(), conversationId);
+        chatMessageMapper.delete(new LambdaQueryWrapper<ChatMessageEntity>()
+                .eq(ChatMessageEntity::getConversationId, conversation.getId())
+                .eq(ChatMessageEntity::getUserId, authUser.getId()));
+        chatConversationMapper.deleteById(conversation.getId());
+    }
+
+    private ConversationSummaryResponse toConversationSummary(ChatConversation conversation) {
+        return new ConversationSummaryResponse(
+                conversation.getConversationNo(),
+                conversation.getTitle(),
+                conversation.getModelId(),
+                conversation.getPinnedAt() != null,
+                conversation.getPinnedAt() == null ? null : toInstant(conversation.getPinnedAt()),
+                toInstant(conversation.getLastMessageAt()),
+                toInstant(conversation.getCreatedAt())
+        );
+    }
+
+    private void doStreamChat(AuthUser authUser, ChatRequest request, SseEmitter emitter) {
+        AiModelProperties.ModelOption model = aiModelProperties.findById(request.modelId());
+        ChatMessage latestUserMessage;
+        ChatConversation conversation;
+        String conversationId = null;
+        try {
+            latestUserMessage = latestUserMessageOf(request);
+            conversation = resolveConversation(authUser, request, latestUserMessage, model.id());
+            conversationId = conversation.getConversationNo();
+            persistMessage(conversation.getId(), authUser.getId(), "user", latestUserMessage.content(), model.id());
+            sendStreamEvent(emitter, "start", ChatStreamEvent.start(conversationId, model.id()));
+
+            ChatModel chatModel = chatModelProvider.getIfAvailable();
+            if (chatModel == null) {
+                streamFallbackContent(emitter, conversation, authUser, model, request);
+                return;
+            }
+
+            String content;
+            try {
+                StringBuilder contentBuilder = new StringBuilder();
+                Prompt prompt = buildPrompt(conversation.getId(), model.id(), request.thinkModeEnabled());
+                chatModel.stream(prompt)
+                        .toIterable()
+                        .forEach(response -> {
+                            String delta = responseContent(response);
+                            if (delta == null || delta.isBlank()) {
+                                return;
+                            }
+                            contentBuilder.append(delta);
+                            sendStreamEvent(emitter, "delta", ChatStreamEvent.delta(
+                                    conversation.getConversationNo(),
+                                    model.id(),
+                                    delta
+                            ));
+                        });
+                content = contentBuilder.toString();
+            } catch (ClientDisconnectedException exception) {
+                throw exception;
+            } catch (Exception exception) {
+                log.warn("Streaming chat model call failed. conversationId={}, modelId={}", conversationId, model.id(), exception);
+                content = modelFailureResponseContent(model, latestUserMessage.content());
+                sendChunkedContent(emitter, conversationId, model.id(), content);
+            }
+
+            if (content.isBlank()) {
+                content = "模型调用成功，但返回内容为空。";
+                sendStreamEvent(emitter, "delta", ChatStreamEvent.delta(conversationId, model.id(), content));
+            }
+            ChatMessageEntity assistantMessage = persistMessage(
+                    conversation.getId(),
+                    authUser.getId(),
+                    "assistant",
+                    content,
+                    model.id()
+            );
+            touchConversation(conversation, model.id(), latestUserMessage.content(), assistantMessage.getCreatedAt());
+            sendStreamEvent(emitter, "done", ChatStreamEvent.done(
+                    conversationId,
+                    model.id(),
+                    toInstant(assistantMessage.getCreatedAt())
+            ));
+            emitter.complete();
+        } catch (ClientDisconnectedException exception) {
+            log.debug("Streaming chat client disconnected. conversationId={}, modelId={}", conversationId, model.id());
+            safeComplete(emitter);
+        } catch (Exception exception) {
+            log.warn("Streaming chat failed. conversationId={}, modelId={}", conversationId, model.id(), exception);
+            try {
+                sendStreamEvent(emitter, "error", ChatStreamEvent.error("流式响应失败了，请稍后重试。"));
+            } catch (ClientDisconnectedException ignored) {
+                log.debug("Streaming chat client disconnected before error event. conversationId={}, modelId={}", conversationId, model.id());
+            }
+            safeComplete(emitter);
+        }
+    }
+
+    private void streamFallbackContent(
+            SseEmitter emitter,
+            ChatConversation conversation,
+            AuthUser authUser,
+            AiModelProperties.ModelOption model,
+            ChatRequest request
+    ) {
+        String content = fallbackResponseContent(request, model);
+        sendChunkedContent(emitter, conversation.getConversationNo(), model.id(), content);
+        ChatMessage latestUserMessage = latestUserMessageOf(request);
+        ChatMessageEntity assistantMessage = persistMessage(
+                conversation.getId(),
+                authUser.getId(),
+                "assistant",
+                content,
+                model.id()
+        );
+        touchConversation(conversation, model.id(), latestUserMessage.content(), assistantMessage.getCreatedAt());
+        sendStreamEvent(emitter, "done", ChatStreamEvent.done(
+                conversation.getConversationNo(),
+                model.id(),
+                toInstant(assistantMessage.getCreatedAt())
+        ));
+        emitter.complete();
+    }
+
+    private void sendChunkedContent(SseEmitter emitter, String conversationId, String modelId, String content) {
+        int chunkSize = 24;
+        for (int start = 0; start < content.length(); start += chunkSize) {
+            String delta = content.substring(start, Math.min(start + chunkSize, content.length()));
+            sendStreamEvent(emitter, "delta", ChatStreamEvent.delta(conversationId, modelId, delta));
+        }
+    }
+
+    private void sendStreamEvent(SseEmitter emitter, String eventName, ChatStreamEvent event) {
+        try {
+            emitter.send(SseEmitter.event().name(eventName).data(event));
+        } catch (Exception exception) {
+            if (isClientDisconnected(exception)) {
+                throw new ClientDisconnectedException(exception);
+            }
+            throw new IllegalStateException("SSE event send failed", exception);
+        }
+    }
+
+    private boolean isClientDisconnected(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof IOException) {
+                return true;
+            }
+            String className = current.getClass().getName();
+            if (className.contains("ClientAbortException")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private void safeComplete(SseEmitter emitter) {
+        try {
+            emitter.complete();
+        } catch (Exception ignored) {
+            log.debug("SSE emitter already completed.");
+        }
+    }
+
+    private static class ClientDisconnectedException extends RuntimeException {
+
+        ClientDisconnectedException(Throwable cause) {
+            super(cause);
+        }
+    }
+
+    private String callModel(ChatModel chatModel, Long conversationId, String modelId, boolean thinkMode) {
+        Prompt prompt = buildPrompt(conversationId, modelId, thinkMode);
+        org.springframework.ai.chat.model.ChatResponse response = chatModel.call(prompt);
+        String text = responseContent(response);
+        return text == null || text.isBlank() ? "模型调用成功，但返回内容为空。" : text;
+    }
+
+    private Prompt buildPrompt(Long conversationId, String modelId, boolean thinkMode) {
         List<Message> promptMessages = new ArrayList<>();
-        promptMessages.add(new SystemMessage(DEFAULT_SYSTEM_PROMPT));
+        promptMessages.add(new SystemMessage(systemPrompt(thinkMode)));
 
         chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessageEntity>()
                         .eq(ChatMessageEntity::getConversationId, conversationId)
@@ -150,20 +387,24 @@ public class PlaceholderChatService implements ChatService {
                 .map(this::toSpringAiMessage)
                 .forEach(promptMessages::add);
 
-        Prompt prompt = new Prompt(
+        return new Prompt(
                 promptMessages,
                 OpenAiChatOptions.builder()
                         .model(modelId)
                         .build()
         );
+    }
 
-        org.springframework.ai.chat.model.ChatResponse response = chatModel.call(prompt);
+    private String responseContent(org.springframework.ai.chat.model.ChatResponse response) {
         if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
-            return "模型调用成功，但没有返回可展示的内容。";
+            return "";
         }
 
-        String text = response.getResult().getOutput().getText();
-        return text == null || text.isBlank() ? "模型调用成功，但返回内容为空。" : text;
+        return response.getResult().getOutput().getText();
+    }
+
+    private String systemPrompt(boolean thinkMode) {
+        return thinkMode ? DEFAULT_SYSTEM_PROMPT + THINK_MODE_PROMPT : DEFAULT_SYSTEM_PROMPT;
     }
 
     private Message toSpringAiMessage(ChatMessage message) {

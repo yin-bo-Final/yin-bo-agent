@@ -6,6 +6,8 @@ public record ConversationSummaryResponse(
         String conversationId,
         String title,
         String modelId,
+        boolean pinned,
+        Instant pinnedAt,
         Instant lastMessageAt,
         Instant createdAt
 ) {

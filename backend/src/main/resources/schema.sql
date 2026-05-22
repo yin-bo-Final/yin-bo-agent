@@ -22,13 +22,21 @@ CREATE TABLE IF NOT EXISTS chat_conversation (
     user_id BIGINT NOT NULL,
     title VARCHAR(120) NOT NULL,
     model_id VARCHAR(128) NOT NULL,
+    pinned_at TIMESTAMP NULL,
     last_message_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE chat_conversation
+ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMP NULL;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uk_chat_conversation_no
 ON chat_conversation (conversation_no);
+
+CREATE INDEX IF NOT EXISTS idx_chat_conversation_user_pinned
+ON chat_conversation (user_id, pinned_at DESC)
+WHERE pinned_at IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_chat_conversation_user_created
 ON chat_conversation (user_id, created_at DESC);

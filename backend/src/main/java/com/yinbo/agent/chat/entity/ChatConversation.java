@@ -24,6 +24,9 @@ public class ChatConversation {
     @TableField("model_id")
     private String modelId;
 
+    @TableField("pinned_at")
+    private LocalDateTime pinnedAt;
+
     @TableField("last_message_at")
     private LocalDateTime lastMessageAt;
 
@@ -71,6 +74,14 @@ public class ChatConversation {
 
     public void setModelId(String modelId) {
         this.modelId = modelId;
+    }
+
+    public LocalDateTime getPinnedAt() {
+        return pinnedAt;
+    }
+
+    public void setPinnedAt(LocalDateTime pinnedAt) {
+        this.pinnedAt = pinnedAt;
     }
 
     public LocalDateTime getLastMessageAt() {
