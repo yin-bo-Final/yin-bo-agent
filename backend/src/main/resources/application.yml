@@ -29,6 +29,10 @@ spring:
   sql:
     init:
       mode: always
+  servlet:
+    multipart:
+      max-file-size: ${INGESTION_MAX_FILE_SIZE:20MB}
+      max-request-size: ${INGESTION_MAX_REQUEST_SIZE:24MB}
   ai:
     openai:
       base-url: ${OPENAI_BASE_URL:https://api.siliconflow.cn}
@@ -36,6 +40,10 @@ spring:
       chat:
         options:
           model: ${OPENAI_CHAT_MODEL:deepseek-ai/DeepSeek-V4-Flash}
+      embedding:
+        options:
+          model: ${OPENAI_EMBEDDING_MODEL:Qwen/Qwen3-Embedding-8B}
+          dimensions: ${RAG_EMBEDDING_DIMENSIONS:1024}
     mcp:
       server:
         name: yinbo-agent-mcp
@@ -55,6 +63,17 @@ management:
 
 app:
   ai:
+    rag:
+      embedding-model: ${RAG_EMBEDDING_MODEL:Qwen/Qwen3-Embedding-8B}
+      reranker-model: ${RAG_RERANKER_MODEL:Qwen/Qwen3-Reranker-8B}
+      embedding-dimensions: ${RAG_EMBEDDING_DIMENSIONS:1024}
+      vector-index-type: ${RAG_VECTOR_INDEX_TYPE:HNSW}
+      vector-table-name: ${RAG_VECTOR_TABLE_NAME:knowledge_chunk_vector}
+      default-chunk-size: ${RAG_DEFAULT_CHUNK_SIZE:1000}
+      default-chunk-overlap: ${RAG_DEFAULT_CHUNK_OVERLAP:150}
+      default-max-chunks: ${RAG_DEFAULT_MAX_CHUNKS:200}
+      min-chunk-size: ${RAG_MIN_CHUNK_SIZE:80}
+      max-source-bytes: ${RAG_MAX_SOURCE_BYTES:20971520}
     models:
       - id: deepseek-ai/DeepSeek-V4-Flash
         name: DeepSeek V4 Flash

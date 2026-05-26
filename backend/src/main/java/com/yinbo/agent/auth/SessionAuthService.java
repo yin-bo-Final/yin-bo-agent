@@ -26,6 +26,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SessionAuthService implements AuthService {
 
+    private static final String ROLE_ADMIN = "ADMIN";
+    private static final String ROLE_USER = "USER";
+
     private final AuthUserMapper authUserMapper;
     private final PasswordEncoder passwordEncoder;
 
@@ -44,6 +47,7 @@ public class SessionAuthService implements AuthService {
         authUser.setUsername(username);
         authUser.setPasswordHash(passwordEncoder.encode(request.password()));
         authUser.setDisplayName(username);
+        authUser.setRole(ROLE_USER);
         authUser.setStatus(1);
 
         try {
@@ -131,14 +135,20 @@ public class SessionAuthService implements AuthService {
         authUser.setUsername(normalizeUsername(username));
         authUser.setPasswordHash(passwordEncoder.encode(rawPassword));
         authUser.setDisplayName(displayName);
+        authUser.setRole(ROLE_ADMIN);
         authUser.setStatus(1);
         try {
             authUserMapper.insert(authUser);
         } catch (DuplicateKeyException exception) {
-            return authUserMapper.selectOne(new LambdaQueryWrapper<AuthUser>()
+            AuthUser existingSeedUser = authUserMapper.selectOne(new LambdaQueryWrapper<AuthUser>()
                     .eq(AuthUser::getUsername, normalizeUsername(username))
                     .eq(AuthUser::getStatus, 1)
                     .last("LIMIT 1"));
+            if (existingSeedUser != null && !ROLE_ADMIN.equals(existingSeedUser.getRole())) {
+                existingSeedUser.setRole(ROLE_ADMIN);
+                authUserMapper.updateById(existingSeedUser);
+            }
+            return existingSeedUser;
         }
         return authUser;
     }
@@ -194,6 +204,7 @@ public class SessionAuthService implements AuthService {
                 authUser.getId(),
                 authUser.getUsername(),
                 authUser.getDisplayName(),
+                authUser.getRole(),
                 authUser.getStatus(),
                 authUser.getLastLoginAt(),
                 authUser.getCreatedAt()

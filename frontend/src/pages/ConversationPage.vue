@@ -19,7 +19,7 @@ const props = defineProps({
   }
 });
 
-const emit = defineEmits(['logged-out', 'account-cancelled', 'session-expired']);
+const emit = defineEmits(['logged-out', 'account-cancelled', 'session-expired', 'open-admin']);
 
 const fallbackModels = [
   {
@@ -57,6 +57,7 @@ const fallbackModels = [
 const models = ref(fallbackModels);
 const selectedModelId = ref(fallbackModels[0].id);
 const currentUser = computed(() => props.currentUser);
+const isAdmin = computed(() => currentUser.value?.role === 'ADMIN');
 const messages = ref(buildNewConversationMessages());
 const inputText = ref('');
 const conversationId = ref('');
@@ -687,6 +688,13 @@ function closeCancelMenu() {
   isCancelMenuOpen.value = false;
   cancelError.value = '';
   cancelForm.value.password = '';
+}
+
+function openAdminDashboard() {
+  isUserMenuOpen.value = false;
+  isCancelMenuOpen.value = false;
+  isModelMenuOpen.value = false;
+  emit('open-admin');
 }
 
 function buildProgressSnippet(message) {
@@ -1557,6 +1565,16 @@ function stopPointerFrame() {
 
         <div v-if="isUserMenuOpen" class="user-menu-layer">
           <div class="user-menu-popover">
+            <button v-if="isAdmin" class="user-menu-action" type="button" @click="openAdminDashboard">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5h16" />
+                <path d="M4 12h16" />
+                <path d="M4 19h16" />
+                <path d="M8 5v14" />
+                <path d="M16 5v14" />
+              </svg>
+              <span>管理后台</span>
+            </button>
             <button class="user-menu-action" type="button" @click="handleLogout">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M15 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3" />

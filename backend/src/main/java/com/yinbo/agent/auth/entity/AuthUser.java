@@ -21,6 +21,8 @@ public class AuthUser {
     @TableField("display_name")
     private String displayName;
 
+    private String role;
+
     private Integer status;
 
     @TableField("last_login_at")
@@ -62,6 +64,14 @@ public class AuthUser {
 
     public void setDisplayName(String displayName) {
         this.displayName = displayName;
+    }
+
+    public String getRole() {
+        return role;
+    }
+
+    public void setRole(String role) {
+        this.role = role;
     }
 
     public Integer getStatus() {

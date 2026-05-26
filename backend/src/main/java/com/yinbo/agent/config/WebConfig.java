@@ -38,7 +38,9 @@ public class WebConfig implements WebMvcConfigurer {
                         "/api/chat",
                         "/api/chat/stream",
                         "/api/conversations",
-                        "/api/conversations/**"
+                        "/api/conversations/**",
+                        "/api/ingestion/**",
+                        "/api/admin/**"
                 );
     }
 }

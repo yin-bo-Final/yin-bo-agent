@@ -6,6 +6,7 @@ public record AuthUserView(
         Long id,
         String username,
         String displayName,
+        String role,
         Integer status,
         LocalDateTime lastLoginAt,
         LocalDateTime createdAt
