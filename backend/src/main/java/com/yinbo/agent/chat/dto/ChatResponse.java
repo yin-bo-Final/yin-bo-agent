@@ -7,6 +7,8 @@ public record ChatResponse(
         String modelId,
         String role,
         String content,
-        Instant createdAt
+        Instant createdAt,
+        Long responseDurationMs,
+        Integer totalTokens
 ) {
 }

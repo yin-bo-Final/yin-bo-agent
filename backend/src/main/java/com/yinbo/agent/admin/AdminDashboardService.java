@@ -42,13 +42,17 @@ public class AdminDashboardService {
                 "SELECT COALESCE(SUM(length(content)), 0) FROM chat_message",
                 Long.class
         );
+        Long averageResponseTimeMs = jdbcTemplate.queryForObject(
+                "SELECT ROUND(AVG(response_duration_ms))::BIGINT FROM chat_message WHERE role = 'assistant' AND response_duration_ms IS NOT NULL",
+                Long.class
+        );
 
         return new AdminDashboardResponse(
                 activeUserCount,
                 messageCount,
                 conversationCount,
                 trafficCharacterCount,
-                null,
+                averageResponseTimeMs,
                 null,
                 null
         );

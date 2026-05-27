@@ -6,6 +6,8 @@ public record ConversationMessageResponse(
         String role,
         String content,
         String modelId,
-        Instant createdAt
+        Instant createdAt,
+        Long responseDurationMs,
+        Integer totalTokens
 ) {
 }

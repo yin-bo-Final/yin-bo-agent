@@ -11,6 +11,9 @@ import com.yinbo.agent.knowledge.dto.KnowledgeChunkResponse;
 import com.yinbo.agent.knowledge.dto.KnowledgeDocumentResponse;
 import com.yinbo.agent.knowledge.dto.KnowledgeOverviewResponse;
 import com.yinbo.agent.knowledge.dto.KnowledgeUrlIngestionRequest;
+import com.yinbo.agent.knowledge.dto.RechunkDocumentRequest;
+import com.yinbo.agent.knowledge.dto.UpdateChunkRequest;
+import com.yinbo.agent.knowledge.dto.UpdateKnowledgeBaseRequest;
 import com.yinbo.agent.knowledge.entity.KnowledgeBase;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -66,6 +69,34 @@ public class KnowledgeAdminController {
         return knowledgeAdminService.create(adminUser, createRequest);
     }
 
+    @GetMapping("/bases/{knowledgeBaseId}")
+    public KnowledgeBaseResponse knowledgeBaseDetail(
+            @PathVariable String knowledgeBaseId,
+            HttpServletRequest request
+    ) {
+        adminGuard.requireAdmin(request);
+        return knowledgeAdminService.detail(knowledgeBaseId);
+    }
+
+    @DeleteMapping("/bases/{knowledgeBaseId}")
+    public void deleteKnowledgeBase(
+            @PathVariable String knowledgeBaseId,
+            HttpServletRequest request
+    ) {
+        adminGuard.requireAdmin(request);
+        knowledgeAdminService.deleteKnowledgeBase(knowledgeBaseId);
+    }
+
+    @PatchMapping("/bases/{knowledgeBaseId}")
+    public KnowledgeBaseResponse updateKnowledgeBase(
+            @PathVariable String knowledgeBaseId,
+            @Valid @RequestBody UpdateKnowledgeBaseRequest updateRequest,
+            HttpServletRequest request
+    ) {
+        adminGuard.requireAdmin(request);
+        return knowledgeAdminService.updateKnowledgeBase(knowledgeBaseId, updateRequest);
+    }
+
     @GetMapping("/bases/{knowledgeBaseId}/documents")
     public List<KnowledgeDocumentResponse> listDocuments(
             @PathVariable String knowledgeBaseId,
@@ -118,6 +149,15 @@ public class KnowledgeAdminController {
         );
     }
 
+    @GetMapping("/documents/{documentId}")
+    public KnowledgeDocumentResponse documentDetail(
+            @PathVariable String documentId,
+            HttpServletRequest request
+    ) {
+        adminGuard.requireAdmin(request);
+        return knowledgeAdminService.documentDetail(documentId);
+    }
+
     @GetMapping("/documents/{documentId}/chunks")
     public List<KnowledgeChunkResponse> listChunks(
             @PathVariable String documentId,
@@ -125,6 +165,25 @@ public class KnowledgeAdminController {
     ) {
         adminGuard.requireAdmin(request);
         return knowledgeAdminService.listChunks(documentId);
+    }
+
+    @PostMapping("/documents/{documentId}/rechunk")
+    public KnowledgeDocumentResponse rechunkDocument(
+            @PathVariable String documentId,
+            @RequestBody(required = false) RechunkDocumentRequest rechunkRequest,
+            HttpServletRequest request
+    ) {
+        adminGuard.requireAdmin(request);
+        return knowledgeAdminService.rechunkDocument(documentId, rechunkRequest);
+    }
+
+    @PostMapping("/documents/{documentId}/vectors/rebuild")
+    public KnowledgeDocumentResponse rebuildDocumentVectors(
+            @PathVariable String documentId,
+            HttpServletRequest request
+    ) {
+        adminGuard.requireAdmin(request);
+        return knowledgeAdminService.rebuildDocumentVectors(documentId);
     }
 
     @PatchMapping("/documents/{documentId}/chunks/enabled")
@@ -137,6 +196,12 @@ public class KnowledgeAdminController {
         return knowledgeAdminService.updateDocumentChunksEnabled(documentId, enabledRequest);
     }
 
+    @DeleteMapping("/documents/{documentId}")
+    public void deleteDocument(@PathVariable String documentId, HttpServletRequest request) {
+        adminGuard.requireAdmin(request);
+        knowledgeAdminService.deleteDocument(documentId);
+    }
+
     @PatchMapping("/chunks/{chunkId}/enabled")
     public KnowledgeChunkResponse updateChunkEnabled(
             @PathVariable String chunkId,
@@ -145,6 +210,16 @@ public class KnowledgeAdminController {
     ) {
         adminGuard.requireAdmin(request);
         return knowledgeAdminService.updateChunkEnabled(chunkId, enabledRequest);
+    }
+
+    @PatchMapping("/chunks/{chunkId}")
+    public KnowledgeChunkResponse updateChunk(
+            @PathVariable String chunkId,
+            @Valid @RequestBody UpdateChunkRequest updateRequest,
+            HttpServletRequest request
+    ) {
+        adminGuard.requireAdmin(request);
+        return knowledgeAdminService.updateChunk(chunkId, updateRequest);
     }
 
     @DeleteMapping("/chunks/{chunkId}")

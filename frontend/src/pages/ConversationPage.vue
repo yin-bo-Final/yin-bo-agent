@@ -341,6 +341,8 @@ async function submitMessage() {
     role: 'assistant',
     content: '',
     isStreaming: true,
+    totalTokens: null,
+    responseDurationMs: null,
     thinkMode: thinkMode.value,
     thinkStartedAt: performance.now(),
     thinkDurationSeconds: null
@@ -377,6 +379,8 @@ async function submitMessage() {
           conversationId.value = event.conversationId;
           updateBrowserUrl(event.conversationId, { replace: true });
         }
+        assistantMessage.totalTokens = event.totalTokens ?? assistantMessage.totalTokens;
+        assistantMessage.responseDurationMs = event.responseDurationMs ?? assistantMessage.responseDurationMs;
       },
       onError(event) {
         streamAnimator.replace(event.error || '流式响应失败了，请稍后重试。');
@@ -1019,7 +1023,9 @@ async function openConversation(targetConversationId) {
     messages.value = response.messages.map((message, index) => ({
       id: `${response.conversationId}-${message.createdAt}-${index}`,
       role: message.role,
-      content: message.content
+      content: message.content,
+      totalTokens: message.totalTokens ?? null,
+      responseDurationMs: message.responseDurationMs ?? null
     }));
     if (messages.value.length === 0) {
       messages.value = buildNewConversationMessages();
@@ -1085,7 +1091,9 @@ async function openConversationFromRoute(targetConversationId, replaceHistory) {
     messages.value = response.messages.map((message, index) => ({
       id: `${response.conversationId}-${message.createdAt}-${index}`,
       role: message.role,
-      content: message.content
+      content: message.content,
+      totalTokens: message.totalTokens ?? null,
+      responseDurationMs: message.responseDurationMs ?? null
     }));
     if (messages.value.length === 0) {
       messages.value = buildNewConversationMessages();
@@ -1657,6 +1665,9 @@ function stopPointerFrame() {
           :data-message-id="message.id"
         >
           <div class="message-bubble markdown-body" v-html="renderMessageContent(message)"></div>
+          <small v-if="message.role === 'assistant' && !message.isStreaming && message.totalTokens !== null && message.totalTokens !== undefined" class="message-usage">
+            消耗token数量: {{ message.totalTokens }}
+          </small>
         </article>
 
         <article v-if="isSending && !hasStreamingAssistant" class="message-row assistant">

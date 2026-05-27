@@ -26,6 +26,18 @@ public class ChatMessageEntity {
     @TableField("model_id")
     private String modelId;
 
+    @TableField("response_duration_ms")
+    private Long responseDurationMs;
+
+    @TableField("prompt_tokens")
+    private Integer promptTokens;
+
+    @TableField("completion_tokens")
+    private Integer completionTokens;
+
+    @TableField("total_tokens")
+    private Integer totalTokens;
+
     @TableField(value = "created_at", fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 
@@ -78,6 +90,38 @@ public class ChatMessageEntity {
 
     public void setModelId(String modelId) {
         this.modelId = modelId;
+    }
+
+    public Long getResponseDurationMs() {
+        return responseDurationMs;
+    }
+
+    public void setResponseDurationMs(Long responseDurationMs) {
+        this.responseDurationMs = responseDurationMs;
+    }
+
+    public Integer getPromptTokens() {
+        return promptTokens;
+    }
+
+    public void setPromptTokens(Integer promptTokens) {
+        this.promptTokens = promptTokens;
+    }
+
+    public Integer getCompletionTokens() {
+        return completionTokens;
+    }
+
+    public void setCompletionTokens(Integer completionTokens) {
+        this.completionTokens = completionTokens;
+    }
+
+    public Integer getTotalTokens() {
+        return totalTokens;
+    }
+
+    public void setTotalTokens(Integer totalTokens) {
+        this.totalTokens = totalTokens;
     }
 
     public LocalDateTime getCreatedAt() {

@@ -108,7 +108,9 @@ public class ChatMessageCacheService {
             String role,
             String content,
             String modelId,
-            Instant createdAt
+            Instant createdAt,
+            Long responseDurationMs,
+            Integer totalTokens
     ) {
 
         public static CachedChatMessage from(ChatMessageEntity message) {
@@ -116,7 +118,9 @@ public class ChatMessageCacheService {
                     message.getRole(),
                     message.getContent(),
                     message.getModelId(),
-                    toInstant(message.getCreatedAt())
+                    toInstant(message.getCreatedAt()),
+                    message.getResponseDurationMs(),
+                    message.getTotalTokens()
             );
         }
 

@@ -10,6 +10,7 @@ public record ChunkingOptions(
         int chunkOverlap,
         int maxChunks
 ) {
+    public static final int MAX_EMBEDDING_CHUNK_CHARS = 24_000;
 
     public static ChunkingOptions from(
             RagProperties ragProperties,
@@ -39,5 +40,17 @@ public record ChunkingOptions(
             throw new BusinessException(HttpStatus.BAD_REQUEST, "maxChunks 暂时不能超过 2000");
         }
         return new ChunkingOptions(resolvedStrategy, resolvedChunkSize, resolvedChunkOverlap, resolvedMaxChunks);
+    }
+
+    public ChunkingOptions adaptForTextLength(int textLength) {
+        if (strategy != ChunkingStrategy.AUTO || textLength <= 0) {
+            return this;
+        }
+
+        int targetChunkSize = (int) Math.ceil(textLength / Math.max(1.0, maxChunks * 0.75));
+        int resolvedChunkSize = Math.max(chunkSize, targetChunkSize);
+        resolvedChunkSize = Math.min(MAX_EMBEDDING_CHUNK_CHARS, Math.max(1000, resolvedChunkSize));
+        int resolvedOverlap = Math.min(chunkOverlap, Math.max(0, resolvedChunkSize / 5));
+        return new ChunkingOptions(strategy, resolvedChunkSize, resolvedOverlap, maxChunks);
     }
 }

@@ -55,7 +55,7 @@ public class RecursiveDocumentChunkSplitter {
             chunks.add(new DocumentChunk(chunks.size(), current.title(), content.trim()));
         }
 
-        if (chunks.size() > options.maxChunks()) {
+        if (options.strategy() != com.yinbo.agent.ingestion.ChunkingStrategy.AUTO && chunks.size() > options.maxChunks()) {
             throw new BusinessException(
                     HttpStatus.BAD_REQUEST,
                     "文档切块数量超过上限，请调大 chunkSize 或 maxChunks"

@@ -60,9 +60,25 @@ CREATE TABLE IF NOT EXISTS chat_message (
     role VARCHAR(16) NOT NULL,
     content TEXT NOT NULL,
     model_id VARCHAR(128) NULL,
+    response_duration_ms BIGINT NULL,
+    prompt_tokens INTEGER NULL,
+    completion_tokens INTEGER NULL,
+    total_tokens INTEGER NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE chat_message
+ADD COLUMN IF NOT EXISTS response_duration_ms BIGINT NULL;
+
+ALTER TABLE chat_message
+ADD COLUMN IF NOT EXISTS prompt_tokens INTEGER NULL;
+
+ALTER TABLE chat_message
+ADD COLUMN IF NOT EXISTS completion_tokens INTEGER NULL;
+
+ALTER TABLE chat_message
+ADD COLUMN IF NOT EXISTS total_tokens INTEGER NULL;
 
 CREATE INDEX IF NOT EXISTS idx_chat_message_conversation_created
 ON chat_message (conversation_id, created_at ASC);
@@ -102,6 +118,7 @@ CREATE TABLE IF NOT EXISTS knowledge_document (
     content_type VARCHAR(128) NULL,
     parser VARCHAR(64) NOT NULL DEFAULT 'TIKA',
     original_size_bytes BIGINT NOT NULL DEFAULT 0,
+    text_content TEXT NULL,
     text_char_count INTEGER NOT NULL DEFAULT 0,
     chunk_count INTEGER NOT NULL DEFAULT 0,
     status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING',
@@ -122,6 +139,9 @@ CREATE TABLE IF NOT EXISTS knowledge_document (
 
 ALTER TABLE knowledge_document
 ADD COLUMN IF NOT EXISTS knowledge_base_id BIGINT NULL;
+
+ALTER TABLE knowledge_document
+ADD COLUMN IF NOT EXISTS text_content TEXT NULL;
 
 ALTER TABLE knowledge_document
 ADD COLUMN IF NOT EXISTS text_extracted_at TIMESTAMP NULL;

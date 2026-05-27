@@ -148,12 +148,14 @@ public class DocumentIngestionService {
             if (cleanText.isBlank()) {
                 throw new BusinessException(HttpStatus.BAD_REQUEST, "清洗后没有可用文本");
             }
+            options = options.adaptForTextLength(cleanText.length());
             long parseDurationMs = elapsedMillis(parseStartedAt);
             document.setTextExtractedAt(LocalDateTime.now());
 
             long chunkStartedAt = System.nanoTime();
             List<DocumentChunk> chunks = chunkSplitter.split(cleanText, parsedDocument.title(), options);
             chunks = chunkOptimizer.optimize(chunks, options);
+            validateChunksForEmbedding(chunks, options);
             if (chunks.isEmpty()) {
                 throw new BusinessException(HttpStatus.BAD_REQUEST, "文档没有生成可入库的切块");
             }
@@ -172,14 +174,19 @@ public class DocumentIngestionService {
             long chunkDurationMs = elapsedMillis(chunkStartedAt);
 
             long embeddingStartedAt = System.nanoTime();
-            vectorStore.add(vectorDocuments);
+            addVectorDocuments(vectorStore, vectorDocuments);
             long embeddingDurationMs = elapsedMillis(embeddingStartedAt);
             chunkEntities.forEach(knowledgeChunkMapper::insert);
 
             document.setTextCharCount(cleanText.length());
+            document.setTextContent(cleanText);
             document.setChunkCount(chunks.size());
             document.setStatus(STATUS_COMPLETED);
             document.setErrorMessage(null);
+            document.setChunkStrategy(options.strategy().name());
+            document.setChunkSize(options.chunkSize());
+            document.setChunkOverlap(options.chunkOverlap());
+            document.setMaxChunks(options.maxChunks());
             document.setParseDurationMs(parseDurationMs);
             document.setChunkDurationMs(chunkDurationMs);
             document.setEmbeddingDurationMs(embeddingDurationMs);
@@ -192,6 +199,35 @@ public class DocumentIngestionService {
             rollbackVectorDocuments(vectorStore, vectorDocumentIds);
             markFailed(document, exception);
             throw exception;
+        }
+    }
+
+    private void addVectorDocuments(VectorStore vectorStore, List<Document> vectorDocuments) {
+        try {
+            vectorStore.add(vectorDocuments);
+        } catch (RuntimeException exception) {
+            throw new BusinessException(
+                    HttpStatus.BAD_GATEWAY,
+                    "向量化失败，请检查 Embedding 服务或切块大小：" + conciseMessage(exception)
+            );
+        }
+    }
+
+    private void validateChunksForEmbedding(List<DocumentChunk> chunks, ChunkingOptions options) {
+        for (DocumentChunk chunk : chunks) {
+            if (chunk.content().length() <= ChunkingOptions.MAX_EMBEDDING_CHUNK_CHARS) {
+                continue;
+            }
+            if (options.strategy() == ChunkingStrategy.NONE) {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "不分块仅适合短文本，当前文档单块过大，请改用自动策略或递归切块"
+                );
+            }
+            throw new BusinessException(
+                    HttpStatus.BAD_REQUEST,
+                    "单个切块过大，可能超过 Embedding 模型上下文限制，请调小 chunkSize 或改用自动策略"
+            );
         }
     }
 
@@ -352,6 +388,14 @@ public class DocumentIngestionService {
             return value;
         }
         return value.substring(0, maxLength);
+    }
+
+    private String conciseMessage(RuntimeException exception) {
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            return "服务未返回具体原因";
+        }
+        return truncate(message.replaceAll("\\s+", " ").trim(), 180);
     }
 
     private Instant toInstant(LocalDateTime value) {

@@ -39,6 +39,9 @@ public class KnowledgeDocument {
     @TableField("original_size_bytes")
     private Long originalSizeBytes;
 
+    @TableField("text_content")
+    private String textContent;
+
     @TableField("text_char_count")
     private Integer textCharCount;
 
@@ -164,6 +167,14 @@ public class KnowledgeDocument {
 
     public void setOriginalSizeBytes(Long originalSizeBytes) {
         this.originalSizeBytes = originalSizeBytes;
+    }
+
+    public String getTextContent() {
+        return textContent;
+    }
+
+    public void setTextContent(String textContent) {
+        this.textContent = textContent;
     }
 
     public Integer getTextCharCount() {
