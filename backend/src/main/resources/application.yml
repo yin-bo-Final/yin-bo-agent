@@ -28,7 +28,14 @@ spring:
       namespace: yinbo:agent:session
   sql:
     init:
-      mode: always
+      mode: never
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+    validate-on-migrate: true
+    clean-disabled: true
   servlet:
     multipart:
       max-file-size: ${INGESTION_MAX_FILE_SIZE:50MB}

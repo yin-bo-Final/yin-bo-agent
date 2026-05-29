@@ -10,7 +10,7 @@
 | --- | --- |
 | 后端 | Java 17、Spring Boot 3.5.9、Maven |
 | Web | Spring Web、Validation、Actuator |
-| 数据库 | PostgreSQL、pgvector、MyBatis-Plus、Spring JDBC |
+| 数据库 | PostgreSQL、pgvector、Flyway、MyBatis-Plus、Spring JDBC |
 | 登录态 | Session、Spring Session Data Redis、Redis、BCrypt |
 | AI | Spring AI 1.1.6、OpenAI Compatible ChatModel、EmbeddingModel |
 | RAG | Apache Tika、Spring AI PGVector Store、Qwen3 Embedding / Reranker 配置 |
@@ -132,7 +132,8 @@ SpringAI-Program/
 │     │  └─ YinboAgentApplication.java
 │     └─ resources/
 │        ├─ application.yml
-│        └─ schema.sql
+│        └─ db/migration/
+│           └─ V1__init_schema.sql
 ├─ frontend/                        # Vue 3 前端
 │  ├─ src/
 │  │  ├─ api/                       # 请求封装
@@ -144,15 +145,17 @@ SpringAI-Program/
 │  ├─ nginx/default.conf
 │  └─ vite.config.js
 ├─ docs/
-│  ├─ project-structure.md          # 详细模块边界
+│  ├─ project-structure.md          # 项目结构总览和文档导航
+│  ├─ backend-structure.md          # 后端模块边界
+│  ├─ frontend-structure.md         # 前端模块边界
 │  ├─ frontend-style-guide.md       # 前端样式约定
-│  └─ prompts.md
+│  └─ prompt.md
 ├─ local-secrets.example.yml        # 本地私密配置模板
 ├─ local-secrets.yml                # 本地私密配置，不提交
 └─ pom.xml                          # Maven 聚合工程
 ```
 
-更细的模块说明见 [docs/project-structure.md](docs/project-structure.md)。前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
+整体结构导航见 [docs/project-structure.md](docs/project-structure.md)。后端模块说明见 [docs/backend-structure.md](docs/backend-structure.md)，前端模块说明见 [docs/frontend-structure.md](docs/frontend-structure.md)。前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
 ## 本地配置
 
@@ -213,7 +216,7 @@ INGESTION_MAX_REQUEST_SIZE: 100MB
 
 RustFS Dashboard 使用 `local-secrets.yml` 中的 `RUSTFS_ACCESS_KEY` 和 `RUSTFS_SECRET_KEY` 登录。
 
-PostgreSQL 需要启用 pgvector 扩展。当前 Embedding 默认降维到 `1024`，可以继续使用 HNSW 索引；如果改成大于 2000 维，pgvector 的 HNSW 索引会报维度限制。
+PostgreSQL 需要安装 pgvector 扩展。应用启动时由 Flyway 执行 `CREATE EXTENSION IF NOT EXISTS vector` 和表结构迁移。当前 Embedding 默认降维到 `1024`，可以继续使用 HNSW 索引；如果改成大于 2000 维，pgvector 的 HNSW 索引会报维度限制。向量维度已经写入 Flyway 初始迁移，后续如果要调整维度，需要新增迁移并重建向量表数据。
 
 ## 启动方式
 
@@ -301,7 +304,9 @@ Vite 会把 `/api` 代理到 `http://localhost:8080`。
 
 ## 数据表
 
-当前使用 [backend/src/main/resources/schema.sql](backend/src/main/resources/schema.sql) 做幂等初始化，还没有接入 Flyway。
+当前使用 Flyway 管理数据库结构，迁移脚本位于 [backend/src/main/resources/db/migration](backend/src/main/resources/db/migration)。`V1__init_schema.sql` 负责初始化业务表、pgvector 扩展、向量表和 HNSW 索引。
+
+为了兼容已经存在的本地数据库，`application.yml` 开启了 `spring.flyway.baseline-on-migrate=true`，并把 `baseline-version` 设置为 `0`。这样老库首次切换到 Flyway 时会先建立 `flyway_schema_history`，再执行 `V1` 中的幂等 DDL；新库则会直接从 `V1` 开始迁移。
 
 | 表 | 说明 |
 | --- | --- |
@@ -317,6 +322,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8080`。
 
 - 后台接口统一走 `/api/admin/**`，并通过 `AdminGuard` 校验管理员。
 - 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
+- 数据库结构变更必须新增 Flyway 迁移脚本，不再使用 `schema.sql`。
 - 上传文件大小默认限制为单文件 `50MB`，单请求 `100MB`。
 - 原始文件只进 RustFS，不把大文件二进制塞进 PostgreSQL。
 - 分块文本改动后必须重建向量，否则 pgvector 中仍是旧文本语义。
@@ -329,5 +335,4 @@ Vite 会把 `/api` 代理到 `http://localhost:8080`。
 2. 给知识库和分块检索补权限过滤。
 3. 给 RocketMQ ingestion 增加重试次数、死信队列和失败任务管理页。
 4. 将后台页面组件化，拆出知识库表格、文档表格、分块表格和通用弹窗。
-5. 使用 Flyway 或 Liquibase 接管后续数据库迁移。
-6. 给 ingestion 核心链路补单元测试和集成测试。
+5. 给 ingestion 核心链路补单元测试和集成测试。

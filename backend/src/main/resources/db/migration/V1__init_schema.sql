@@ -1,3 +1,6 @@
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS hstore;
+
 CREATE TABLE IF NOT EXISTS auth_user (
     id BIGINT PRIMARY KEY,
     username VARCHAR(64) NOT NULL,
@@ -219,3 +222,14 @@ ON knowledge_chunk (document_id, chunk_index ASC);
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_user_created
 ON knowledge_chunk (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.knowledge_chunk_vector (
+    id TEXT PRIMARY KEY,
+    content TEXT,
+    metadata JSON,
+    embedding vector(1024)
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_chunk_vector_index
+ON public.knowledge_chunk_vector
+USING HNSW (embedding vector_cosine_ops);

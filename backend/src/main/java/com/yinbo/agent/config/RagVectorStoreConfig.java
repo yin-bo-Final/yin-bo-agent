@@ -31,7 +31,7 @@ public class RagVectorStoreConfig {
                 .dimensions(ragProperties.embeddingDimensions())
                 .distanceType(PgDistanceType.COSINE_DISTANCE)
                 .indexType(indexType)
-                .initializeSchema(true)
+                .initializeSchema(false)
                 .build();
     }
 
