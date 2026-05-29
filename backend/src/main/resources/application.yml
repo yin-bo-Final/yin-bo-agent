@@ -31,8 +31,8 @@ spring:
       mode: always
   servlet:
     multipart:
-      max-file-size: ${INGESTION_MAX_FILE_SIZE:20MB}
-      max-request-size: ${INGESTION_MAX_REQUEST_SIZE:24MB}
+      max-file-size: ${INGESTION_MAX_FILE_SIZE:50MB}
+      max-request-size: ${INGESTION_MAX_REQUEST_SIZE:100MB}
   ai:
     openai:
       base-url: ${OPENAI_BASE_URL:https://api.siliconflow.cn}
@@ -73,7 +73,9 @@ app:
       default-chunk-overlap: ${RAG_DEFAULT_CHUNK_OVERLAP:150}
       default-max-chunks: ${RAG_DEFAULT_MAX_CHUNKS:200}
       min-chunk-size: ${RAG_MIN_CHUNK_SIZE:80}
-      max-source-bytes: ${RAG_MAX_SOURCE_BYTES:20971520}
+      max-source-bytes: ${RAG_MAX_SOURCE_BYTES:52428800}
+      ingestion-topic: ${RAG_INGESTION_TOPIC:rag-ingestion-task}
+      ingestion-consumer-group: ${RAG_INGESTION_CONSUMER_GROUP:yinbo-agent-ingestion-consumer}
     models:
       - id: deepseek-ai/DeepSeek-V4-Flash
         name: DeepSeek V4 Flash
@@ -98,3 +100,9 @@ app:
   auth:
     seed-admin-username: ${AUTH_SEED_ADMIN_USERNAME:}
     seed-admin-password: ${AUTH_SEED_ADMIN_PASSWORD:}
+  storage:
+    provider: ${OBJECT_STORAGE_PROVIDER:rustfs}
+    endpoint: ${RUSTFS_ENDPOINT:http://localhost:9000}
+    access-key: ${RUSTFS_ACCESS_KEY:rustfsadmin}
+    secret-key: ${RUSTFS_SECRET_KEY:rustfsadmin}
+    bucket: ${RUSTFS_BUCKET:yinbo-agent-documents}

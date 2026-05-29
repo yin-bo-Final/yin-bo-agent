@@ -101,13 +101,13 @@ const urlForm = ref({
   url: '',
   fileName: ''
 });
-const ingestionOptions = ref(defaultChunkOptions());
 const rechunkForm = ref(defaultChunkOptions());
 const rechunkDocument = ref(null);
 const editKnowledgeBase = ref(null);
 const editForm = ref({
   name: ''
 });
+let knowledgePollTimer = null;
 
 const activeModule = computed(() => route.value.module);
 const currentView = computed(() => route.value.view);
@@ -125,6 +125,7 @@ const currentHeader = computed(() => {
 });
 const selectedKnowledgeBaseId = computed(() => route.value.knowledgeBaseId || '');
 const selectedDocumentId = computed(() => route.value.documentId || '');
+const isSelectedDocumentProcessing = computed(() => selectedDocument.value?.status === 'PROCESSING');
 const canCreateKnowledgeBase = computed(() => {
   return createForm.value.name.trim() && createForm.value.embeddingModel.trim() && createForm.value.collectionName.trim();
 });
@@ -227,11 +228,15 @@ const averageResponseStatus = computed(() => {
 
 onMounted(async () => {
   window.addEventListener('popstate', handleRouteChange);
+  knowledgePollTimer = window.setInterval(pollProcessingDocuments, 3000);
   await Promise.all([loadDashboard(), loadKnowledge()]);
 });
 
 onUnmounted(() => {
   window.removeEventListener('popstate', handleRouteChange);
+  if (knowledgePollTimer) {
+    window.clearInterval(knowledgePollTimer);
+  }
 });
 
 function parseAdminRoute() {
@@ -353,6 +358,22 @@ async function refreshCurrentView() {
   }
 }
 
+async function pollProcessingDocuments() {
+  if (
+    activeModule.value !== 'knowledge'
+    || !documents.value.some((document) => document.status === 'PROCESSING')
+    || isLoadingKnowledge.value
+    || isRefreshing.value
+  ) {
+    return;
+  }
+  try {
+    await hydrateKnowledgeRoute();
+  } catch (_error) {
+    // 轮询失败时保留当前页面状态，用户手动刷新时再展示错误。
+  }
+}
+
 async function handleCreateKnowledgeBase() {
   if (!canCreateKnowledgeBase.value || isCreatingKnowledgeBase.value) {
     return;
@@ -465,7 +486,6 @@ function openIngestionModal() {
   ingestionFormError.value = '';
   selectedFile.value = null;
   urlForm.value = { url: '', fileName: '' };
-  ingestionOptions.value = defaultChunkOptions();
   ingestionMode.value = 'upload';
   isIngestionModalOpen.value = true;
 }
@@ -482,15 +502,12 @@ async function submitIngestion() {
   adminError.value = '';
   ingestionFormError.value = '';
   try {
-    const payload = normalizeChunkPayload(ingestionOptions.value);
     if (ingestionMode.value === 'upload') {
       await uploadKnowledgeDocument(selectedKnowledgeBaseId.value, {
-        ...payload,
         file: selectedFile.value
       });
     } else {
       await ingestKnowledgeUrl(selectedKnowledgeBaseId.value, {
-        ...payload,
         url: urlForm.value.url.trim(),
         fileName: urlForm.value.fileName.trim()
       });
@@ -514,6 +531,9 @@ async function openDocumentChunks(document) {
 }
 
 function openRechunkModal(targetDocument) {
+  if (targetDocument?.status === 'PROCESSING') {
+    return;
+  }
   adminError.value = '';
   rechunkFormError.value = '';
   rechunkDocument.value = targetDocument;
@@ -545,7 +565,7 @@ async function submitRechunk() {
     await rechunkKnowledgeDocument(rechunkDocument.value.documentId, normalizeChunkPayload(rechunkForm.value));
     rechunkFormError.value = '';
     isRechunkModalOpen.value = false;
-    await loadKnowledge();
+    await navigateTo(`/admin/knowledge/${selectedKnowledgeBaseId.value}`);
   } catch (error) {
     if (isSessionError(error)) {
       emit('session-expired');
@@ -607,7 +627,7 @@ async function confirmDeleteDocument() {
 }
 
 async function rebuildVectors() {
-  if (!selectedDocumentId.value || isRebuildingVectors.value) {
+  if (!selectedDocumentId.value || isRebuildingVectors.value || isSelectedDocumentProcessing.value) {
     return;
   }
   isRebuildingVectors.value = true;
@@ -868,6 +888,9 @@ function statusClass(status) {
   if (status === 'FAILED') {
     return 'danger';
   }
+  if (status === 'UPLOADED') {
+    return 'muted';
+  }
   return 'pending';
 }
 
@@ -878,7 +901,20 @@ function statusText(status) {
   if (status === 'FAILED') {
     return 'failed';
   }
+  if (status === 'UPLOADED') {
+    return 'uploaded';
+  }
   return 'processing';
+}
+
+function documentChunkActionLabel(document) {
+  if (document.status === 'PROCESSING') {
+    return '处理中...';
+  }
+  if (document.status === 'COMPLETED') {
+    return '重新分块';
+  }
+  return '分块';
 }
 </script>
 
@@ -1174,6 +1210,7 @@ function statusText(status) {
                 <input v-model="documentKeyword" type="search" placeholder="搜索文档名称" />
                 <select v-model="documentStatusFilter">
                   <option value="ALL">全部状态</option>
+                  <option value="UPLOADED">uploaded</option>
                   <option value="COMPLETED">success</option>
                   <option value="PROCESSING">processing</option>
                   <option value="FAILED">failed</option>
@@ -1217,15 +1254,20 @@ function statusText(status) {
                   <span class="kc-tooltip-content">{{ typeText(doc) }}</span>
                 </span>
                 <span class="kc-row-actions document-actions">
-                  <button type="button" aria-label="重新分块" @click.stop="openRechunkModal(doc)">
+                  <button
+                    type="button"
+                    :aria-label="documentChunkActionLabel(doc)"
+                    :disabled="doc.status === 'PROCESSING'"
+                    @click.stop="openRechunkModal(doc)"
+                  >
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-9 9" /><path d="M3 12a9 9 0 0 1 9-9" /><path d="M21 3v6h-6" /><path d="M3 21v-6h6" /></svg>
-                    <span>重新分块</span>
+                    <span>{{ documentChunkActionLabel(doc) }}</span>
                   </button>
                   <button type="button" aria-label="分块详情" @click="detailDocument = doc">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8h.01" /><path d="M11 12h1v4h1" /></svg>
                     <span>详情</span>
                   </button>
-                  <button type="button" aria-label="查看分块" @click="openDocumentChunks(doc)">
+                  <button type="button" aria-label="查看分块" :disabled="doc.chunkCount <= 0" @click="openDocumentChunks(doc)">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z" /><path d="M8 8h8" /><path d="M8 12h8" /><path d="M8 16h5" /></svg>
                     <span>查看分块</span>
                   </button>
@@ -1248,8 +1290,8 @@ function statusText(status) {
             </div>
             <div class="kc-title-actions">
               <button type="button" class="kc-ghost-button" @click="navigateTo(`/admin/knowledge/${selectedKnowledgeBaseId}`)">返回文档</button>
-              <button type="button" class="kc-ghost-button" :disabled="isRebuildingVectors" @click="rebuildVectors">
-                {{ isRebuildingVectors ? '重建中...' : '重建向量' }}
+              <button type="button" class="kc-ghost-button" :disabled="isRebuildingVectors || isSelectedDocumentProcessing" @click="rebuildVectors">
+                {{ isRebuildingVectors || isSelectedDocumentProcessing ? '处理中...' : '重建向量' }}
               </button>
             </div>
           </div>
@@ -1685,32 +1727,10 @@ function statusText(status) {
               <input v-model="urlForm.fileName" type="text" placeholder="可选" />
             </label>
           </template>
-          <label>
-            <span>分块策略</span>
-            <select v-model="ingestionOptions.strategy">
-              <option value="RECURSIVE">递归切块</option>
-              <option value="AUTO">自动策略</option>
-              <option value="NONE">不分块</option>
-            </select>
-          </label>
-          <template v-if="ingestionOptions.strategy === 'RECURSIVE'">
-          <label>
-            <span>分块大小</span>
-            <input v-model.number="ingestionOptions.chunkSize" type="number" min="100" />
-          </label>
-          <label>
-            <span>重叠大小</span>
-            <input v-model.number="ingestionOptions.chunkOverlap" type="number" min="0" />
-          </label>
-          <label>
-            <span>最大块数</span>
-            <input v-model.number="ingestionOptions.maxChunks" type="number" min="1" />
-          </label>
-          </template>
           <footer>
             <button type="button" class="kc-ghost-button" @click="isIngestionModalOpen = false">取消</button>
             <button type="submit" class="kc-primary-button" :disabled="!canIngest">
-              {{ isIngesting ? '加工中...' : '开始入库' }}
+              {{ isIngesting ? '上传中...' : '上传到 RustFS' }}
             </button>
           </footer>
         </form>
@@ -1721,7 +1741,7 @@ function statusText(status) {
       <section class="kc-modal">
         <header>
           <div>
-            <h2>重新分块</h2>
+            <h2>{{ rechunkDocument?.status === 'COMPLETED' ? '重新分块' : '分块' }}</h2>
             <p>{{ rechunkDocument?.fileName }}</p>
           </div>
           <button type="button" class="kc-icon-button" aria-label="关闭" :disabled="isRechunking" @click="closeRechunkModal">×</button>

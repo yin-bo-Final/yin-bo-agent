@@ -26,6 +26,7 @@
         <rocketmq-spring.version>2.3.5</rocketmq-spring.version>
         <mybatis-plus.version>3.5.16</mybatis-plus.version>
         <tika.version>3.3.0</tika.version>
+        <minio.version>8.5.17</minio.version>
     </properties>
 
     <dependencyManagement>

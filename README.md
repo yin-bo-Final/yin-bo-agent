@@ -1,107 +1,162 @@
 # 音波 AI Agent 智能助手平台
 
-这是一个面向 Java 后端学习和 AI Agent 实战的前后端分离项目。项目目标不是只做一个“能聊天的页面”，而是逐步沉淀成一个可以继续扩展模型调用、会话记忆、RAG、MCP Tool Server 和 Agent 编排能力的学习型工程。
+这是一个围绕 Java 后端、Spring AI、Agent、RAG、MCP 和工程化实践持续演进的前后端分离项目。当前核心目标不是做一个单纯的聊天页面，而是把“会话、用户权限、知识库、文档入库流水线、向量检索、工具调用”这些 Agent/RAG 系统必备能力逐步落到真实工程里。
 
-当前项目已经完成基础用户系统、会话持久化、模型选择和 Spring AI 模型调用骨架。后端会优先尝试通过 Spring AI `ChatModel` 调用真实模型；如果模型客户端不可用或上游调用失败，会返回可读的兜底提示，方便本地开发继续推进。
+当前主线已经进入知识库和 ingestion 阶段：管理员上传文档后，后端先把原始文件保存到 RustFS，对外立即返回 `UPLOADED`；管理员再点击“分块”或“重新分块”，后端通过 RocketMQ 异步消费任务，完成 Tika 解析、文本清洗、分块、向量化，并把向量写入 PostgreSQL pgvector。
 
 ## 技术栈
 
-| 模块 | 技术 |
+| 分层 | 技术 |
 | --- | --- |
-| 后端 | Java 17、Spring Boot 3.5.9、Maven、Spring Web、Validation、Actuator |
-| AI | Spring AI 1.1.6、OpenAI Compatible ChatModel、Spring AI Alibaba Agent Framework |
-| 数据层 | PostgreSQL、MyBatis-Plus 3.5.16、Spring JDBC |
+| 后端 | Java 17、Spring Boot 3.5.9、Maven |
+| Web | Spring Web、Validation、Actuator |
+| 数据库 | PostgreSQL、pgvector、MyBatis-Plus、Spring JDBC |
 | 登录态 | Session、Spring Session Data Redis、Redis、BCrypt |
-| 预留能力 | PGVector、MCP Server WebMVC、RocketMQ |
-| 前端 | Vue 3.5、Vite 6、marked、DOMPurify |
-| 部署 | 前端 Docker + Nginx，后端 Spring Boot |
+| AI | Spring AI 1.1.6、OpenAI Compatible ChatModel、EmbeddingModel |
+| RAG | Apache Tika、Spring AI PGVector Store、Qwen3 Embedding / Reranker 配置 |
+| 异步 | RocketMQ Spring Boot Starter |
+| 文件存储 | RustFS，使用 MinIO Java SDK 访问 S3 兼容接口 |
+| 前端 | Vue 3、Vite、marked、DOMPurify |
+| 部署 | WSL Docker 中间件、前端 Docker + Nginx、后端 Spring Boot |
+
+## 架构概览
+
+```text
+Vue 3 前端
+  -> Spring Boot 后端
+    -> PostgreSQL 保存业务表
+    -> pgvector 保存知识库向量
+    -> Redis 保存 Session 登录态
+    -> RustFS 保存上传原始文件
+    -> RocketMQ 承载异步 ingestion 任务
+    -> Spring AI 调用聊天模型和 Embedding 模型
+    -> Apache Tika 解析 PDF / Word / Markdown / TXT
+```
+
+RAG 文档入库链路：
+
+```text
+上传文件 / 提交 URL
+-> RustFS 保存原始文件
+-> knowledge_document.status = UPLOADED
+-> 管理员点击分块
+-> RocketMQ 投递 CHUNK 任务
+-> Consumer 读取 RustFS 原始文件
+-> Tika 解析纯文本
+-> 文本清洗
+-> AUTO / RECURSIVE / NONE 分块
+-> 分块优化和长度校验
+-> Embedding 向量化
+-> pgvector 保存向量
+-> knowledge_chunk 保存分块元数据
+-> knowledge_document.status = COMPLETED / FAILED
+```
+
+重建向量链路：
+
+```text
+管理员点击重建向量
+-> RocketMQ 投递 REBUILD_VECTORS 任务
+-> Consumer 读取已有 knowledge_chunk
+-> 重新生成向量并更新 vectorDocumentId
+-> 事务成功后清理旧向量
+-> 文档状态回到 COMPLETED / FAILED
+```
 
 ## 当前能力
 
-### 用户认证
+### 用户和权限
 
-- 用户注册、登录、退出登录
-- 获取当前登录用户
-- 注销账号，需要再次输入密码确认
-- 密码使用 BCrypt 哈希存储
-- 登录态使用 Session，并由 Redis 承载
-- 用户注销采用逻辑删除：`status = 0`
-- 用户名只要求“有效用户”唯一，注销后原用户名可以重新注册
+- 注册、登录、退出登录、注销账号
+- `ADMIN` / `USER` 两类角色
+- 普通用户使用 AI 会话
+- 管理员可以进入后台管理知识库和查看 Dashboard
+- 密码使用 BCrypt 哈希
+- 登录态由 Session + Redis 承载
+- 注销账号使用逻辑删除，注销后用户名可以重新注册
 
 ### AI 对话
 
 - 前端模型选择
-- 后端模型列表接口
-- 通过 Spring AI `ChatModel` 调用 OpenAI 兼容模型供应商
-- 当前默认配置面向硅基流动 API
-- 模型不可用或调用失败时返回兜底说明
-- 每次对话自动保存用户消息和 assistant 回复
+- 普通响应和 SSE 流式响应
+- 会话列表、搜索、置顶、取消置顶、删除
+- 刷新后通过 `/c/{conversationId}` 恢复会话
+- assistant 消息记录响应耗时和 token 消耗
+- Markdown 渲染前经过 DOMPurify 清洗
 
-### 会话管理
+### 后台管理
 
-- 新消息自动创建会话
-- 会话按登录用户隔离
-- 查询当前用户历史会话列表
-- 点击历史会话回放完整消息
-- 根据首条用户消息生成会话标题
-- 刷新页面后可通过 `/c/{conversationId}` 恢复会话
-- 侧边栏支持历史会话搜索和折叠
+- 会话页头像菜单中管理员可进入“后台管理”
+- Dashboard 展示活跃用户、消息数、会话数、流量数、平均响应时间
+- 知识库支持新建、编辑、删除
+- 文档支持上传、URL 录入、分块、重新分块、重建向量、详情、删除
+- 分块支持查看、编辑、删除、启用、禁用、批量启用、批量禁用
+- 后台导航栏支持折叠，整体样式遵循项目自己的灰色工程风格
 
-### 前端体验
+后台路由：
 
-- 登录 / 注册一体页面
-- 聊天主界面、模型下拉选择、历史会话列表
-- `Ctrl + K` 聚焦会话搜索
-- assistant 消息支持 Markdown 渲染
-- Markdown HTML 使用 DOMPurify 清洗，避免直接渲染不可信内容
-- 消息请求前端设置 45 秒超时，避免长时间卡死
+```text
+/admin
+/admin/knowledge
+/admin/knowledge/{knowledgeBaseId}
+/admin/knowledge/{knowledgeBaseId}/docs/{documentId}
+```
+
+### Ingestion 流水线
+
+- 上传阶段只负责 RustFS 落盘和文档元数据保存
+- 分块和向量化通过 RocketMQ 异步执行
+- 支持状态：`UPLOADED`、`PROCESSING`、`COMPLETED`、`FAILED`
+- 支持分块策略：`AUTO`、`RECURSIVE`、`NONE`
+- 自动策略会根据文本长度调整切块参数
+- 分块过大时返回业务错误，避免把模型上下文错误裸露给前端
+- 文档详情记录文本提取、分块、向量化、其他耗时和总耗时
+- 原始文件在 RustFS，分块元数据在 `knowledge_chunk`，向量在 `knowledge_chunk_vector`
 
 ## 项目结构
 
 ```text
 SpringAI-Program/
 ├─ backend/                         # Spring Boot 后端模块
-│  ├─ pom.xml                       # 后端依赖声明
+│  ├─ pom.xml
 │  └─ src/main/
 │     ├─ java/com/yinbo/agent/
-│     │  ├─ YinboAgentApplication.java
-│     │  ├─ auth/                   # 注册、登录、Session、账号注销
-│     │  │  ├─ dto/                 # 认证请求和响应对象
-│     │  │  ├─ entity/              # 用户实体
-│     │  │  ├─ mapper/              # 用户 Mapper
-│     │  │  └─ session/             # Session 中保存的登录用户
-│     │  ├─ chat/                   # 模型列表、聊天、会话持久化
-│     │  │  ├─ dto/                 # 聊天请求、响应、会话 DTO
-│     │  │  ├─ entity/              # 会话和消息实体
-│     │  │  └─ mapper/              # 会话和消息 Mapper
-│     │  ├─ common/                 # 业务异常、统一错误响应
-│     │  └─ config/                 # Web、密码、模型、认证配置
+│     │  ├─ admin/                  # 后台 Dashboard 和管理员校验
+│     │  ├─ auth/                   # 登录、注册、Session、角色
+│     │  ├─ chat/                   # 聊天、会话、消息统计
+│     │  ├─ common/                 # 业务异常和统一错误响应
+│     │  ├─ config/                 # Web、RAG、PGVector、对象存储配置
+│     │  ├─ ingestion/              # 文档 ETL 和 RocketMQ 消费
+│     │  ├─ knowledge/              # 知识库后台管理
+│     │  ├─ storage/                # RustFS / S3 对象存储封装
+│     │  └─ YinboAgentApplication.java
 │     └─ resources/
-│        ├─ application.yml         # 应用配置和模型列表
-│        └─ schema.sql              # 表结构与索引初始化
-├─ frontend/                        # Vue 3 前端模块
+│        ├─ application.yml
+│        └─ schema.sql
+├─ frontend/                        # Vue 3 前端
 │  ├─ src/
-│  │  ├─ App.vue                    # 登录、聊天、侧边栏、会话回放主页面
-│  │  ├─ main.js                    # Vue 入口
-│  │  ├─ styles.css                 # 页面样式
-│  │  └─ api/                       # 前端请求封装
-│  ├─ public/                       # Logo 等静态资源
-│  ├─ nginx/default.conf            # 生产环境 Nginx 配置
-│  ├─ Dockerfile                    # 前端镜像构建
-│  └─ vite.config.js                # 本地开发代理
+│  │  ├─ api/                       # 请求封装
+│  │  ├─ pages/                     # 登录页、会话页、后台页
+│  │  ├─ App.vue
+│  │  ├─ main.js
+│  │  └─ styles.css
+│  ├─ public/
+│  ├─ nginx/default.conf
+│  └─ vite.config.js
 ├─ docs/
-│  ├─ project-structure.md          # 更详细的项目结构说明
-│  └─ prompts.md                    # 项目提示词记录
-├─ local-secrets.example.yml        # 本地私密配置示例
-├─ local-secrets.yml                # 本地私密配置，已被 gitignore 忽略
+│  ├─ project-structure.md          # 详细模块边界
+│  ├─ frontend-style-guide.md       # 前端样式约定
+│  └─ prompts.md
+├─ local-secrets.example.yml        # 本地私密配置模板
+├─ local-secrets.yml                # 本地私密配置，不提交
 └─ pom.xml                          # Maven 聚合工程
 ```
 
-更完整的分层说明见 [docs/project-structure.md](docs/project-structure.md)。
+更细的模块说明见 [docs/project-structure.md](docs/project-structure.md)。前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
 ## 本地配置
 
-项目通过 `application.yml` 引入本地私密配置：
+`backend/src/main/resources/application.yml` 会加载根目录或后端上级目录的 `local-secrets.yml`：
 
 ```yml
 spring:
@@ -109,7 +164,7 @@ spring:
     import: optional:file:./local-secrets.yml,optional:file:../local-secrets.yml
 ```
 
-根目录提供了示例文件 [local-secrets.example.yml](local-secrets.example.yml)。本地开发时创建 `local-secrets.yml`，至少配置：
+本地开发时复制 [local-secrets.example.yml](local-secrets.example.yml) 为 `local-secrets.yml`，再填入自己的真实配置。至少需要：
 
 ```yml
 POSTGRES_USERNAME: your-postgres-username
@@ -118,9 +173,11 @@ REDIS_PASSWORD: your-redis-password
 OPENAI_API_KEY: your-siliconflow-api-key
 AUTH_SEED_ADMIN_USERNAME: admin
 AUTH_SEED_ADMIN_PASSWORD: replace-with-a-dev-only-password
+RUSTFS_ACCESS_KEY: rustfsadmin
+RUSTFS_SECRET_KEY: rustfsadmin
 ```
 
-可选配置：
+常用可选配置：
 
 ```yml
 POSTGRES_URL: jdbc:postgresql://localhost:5432/yinbo_agent
@@ -128,40 +185,46 @@ REDIS_HOST: localhost
 REDIS_PORT: 6379
 OPENAI_BASE_URL: https://api.siliconflow.cn
 OPENAI_CHAT_MODEL: deepseek-ai/DeepSeek-V4-Flash
+OPENAI_EMBEDDING_MODEL: Qwen/Qwen3-Embedding-8B
+RAG_EMBEDDING_DIMENSIONS: 1024
+RAG_VECTOR_INDEX_TYPE: HNSW
+RAG_INGESTION_TOPIC: rag-ingestion-task
 ROCKETMQ_NAME_SERVER: localhost:9876
+RUSTFS_ENDPOINT: http://localhost:9000
+RUSTFS_BUCKET: yinbo-agent-documents
+INGESTION_MAX_FILE_SIZE: 50MB
+INGESTION_MAX_REQUEST_SIZE: 100MB
 ```
 
-注意：`local-secrets.yml` 不应该提交到仓库。
+`local-secrets.yml` 不提交。账号、密码、API Key 都不要写进 `application.yml`。
 
-## 快速启动
+## 本地中间件
 
-### 1. 准备中间件
+本地默认假设 PostgreSQL、Redis、RocketMQ、RustFS 部署在 WSL Docker 中，并把端口映射到 Windows：
 
-本地至少需要：
+| 服务 | 默认地址 |
+| --- | --- |
+| PostgreSQL | `localhost:5432` |
+| Redis | `localhost:6379` |
+| RocketMQ NameServer | `localhost:9876` |
+| RocketMQ Dashboard | [http://localhost:18082/](http://localhost:18082/) |
+| RustFS S3 Endpoint | `http://localhost:9000` |
+| RustFS Dashboard | [http://localhost:9001/rustfs/console/index.html](http://localhost:9001/rustfs/console/index.html) |
 
-```text
-PostgreSQL: 5432
-Redis: 6379
-```
+RustFS Dashboard 使用 `local-secrets.yml` 中的 `RUSTFS_ACCESS_KEY` 和 `RUSTFS_SECRET_KEY` 登录。
 
-数据库默认连接到：
+PostgreSQL 需要启用 pgvector 扩展。当前 Embedding 默认降维到 `1024`，可以继续使用 HNSW 索引；如果改成大于 2000 维，pgvector 的 HNSW 索引会报维度限制。
 
-```text
-jdbc:postgresql://localhost:5432/yinbo_agent
-```
+## 启动方式
 
-RocketMQ 当前已引入配置和依赖，但核心聊天链路暂未强依赖它；如果没有启动 RocketMQ，后续接入消息队列能力前需要再检查启动行为。
-
-### 2. 启动后端
-
-后端需要 Java 17。
+### 后端
 
 ```powershell
 cd backend
 mvn spring-boot:run
 ```
 
-如果本机默认 Java 不是 17，可以临时指定：
+如果本机默认 Java 不是 17：
 
 ```powershell
 $env:JAVA_HOME="C:\Users\35575\.jdks\ms-17.0.17"
@@ -176,7 +239,7 @@ mvn spring-boot:run
 http://localhost:8080
 ```
 
-### 3. 启动前端
+### 前端
 
 ```bash
 cd frontend
@@ -192,55 +255,79 @@ http://localhost:5173
 
 Vite 会把 `/api` 代理到 `http://localhost:8080`。
 
-## 接口概览
+## 主要接口
 
-### 认证接口
+### 认证
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/auth/register` | 注册，成功后自动登录 |
+| `POST` | `/api/auth/register` | 注册并自动登录 |
 | `POST` | `/api/auth/login` | 登录 |
-| `GET` | `/api/auth/me` | 获取当前登录用户 |
+| `GET` | `/api/auth/me` | 获取当前用户 |
 | `POST` | `/api/auth/logout` | 退出登录 |
 | `POST` | `/api/auth/cancel` | 注销账号 |
 
-### 聊天接口
+### 聊天和会话
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/models` | 查询可选模型列表 |
-| `POST` | `/api/chat` | 发送聊天消息 |
-| `GET` | `/api/conversations` | 查询当前用户会话列表 |
-| `GET` | `/api/conversations/{conversationId}` | 查询指定会话详情 |
+| `GET` | `/api/models` | 查询模型列表 |
+| `POST` | `/api/chat` | 普通聊天 |
+| `POST` | `/api/chat/stream` | SSE 流式聊天 |
+| `GET` | `/api/conversations` | 查询会话列表 |
+| `GET` | `/api/conversations/{conversationId}` | 查询会话详情 |
+| `POST/PATCH` | `/api/conversations/{conversationId}/pin` | 置顶或更新置顶 |
+| `POST` | `/api/conversations/{conversationId}/unpin` | 取消置顶 |
+| `DELETE` | `/api/conversations/{conversationId}` | 删除会话 |
+
+### 后台知识库
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/admin/dashboard` | Dashboard 指标 |
+| `GET` | `/api/admin/knowledge/overview` | 知识库概览 |
+| `GET` | `/api/admin/knowledge/bases` | 知识库列表 |
+| `POST` | `/api/admin/knowledge/bases` | 新建知识库 |
+| `PATCH` | `/api/admin/knowledge/bases/{knowledgeBaseId}` | 修改知识库 |
+| `DELETE` | `/api/admin/knowledge/bases/{knowledgeBaseId}` | 删除知识库 |
+| `POST` | `/api/admin/knowledge/bases/{knowledgeBaseId}/documents/upload` | 上传文档到 RustFS |
+| `POST` | `/api/admin/knowledge/bases/{knowledgeBaseId}/documents/url` | URL 文档录入 |
+| `POST` | `/api/admin/knowledge/documents/{documentId}/rechunk` | 投递分块 / 重新分块任务 |
+| `POST` | `/api/admin/knowledge/documents/{documentId}/vectors/rebuild` | 投递重建向量任务 |
+| `GET` | `/api/admin/knowledge/documents/{documentId}/chunks` | 查询分块 |
+| `PATCH` | `/api/admin/knowledge/chunks/{chunkId}` | 修改分块内容 |
+| `PATCH` | `/api/admin/knowledge/chunks/{chunkId}/enabled` | 启用或禁用分块 |
+| `DELETE` | `/api/admin/knowledge/chunks/{chunkId}` | 删除分块 |
 
 ## 数据表
 
-当前由 [backend/src/main/resources/schema.sql](backend/src/main/resources/schema.sql) 初始化三张核心表：
+当前使用 [backend/src/main/resources/schema.sql](backend/src/main/resources/schema.sql) 做幂等初始化，还没有接入 Flyway。
 
 | 表 | 说明 |
 | --- | --- |
-| `auth_user` | 用户表，保存用户名、BCrypt 密码哈希、用户状态 |
-| `chat_conversation` | 会话表，保存会话号、所属用户、标题、最近模型和最近消息时间 |
-| `chat_message` | 消息表，保存会话内的 user / assistant 消息 |
+| `auth_user` | 用户、密码哈希、角色、状态 |
+| `chat_conversation` | 会话信息、置顶时间、最近消息时间 |
+| `chat_message` | 消息内容、模型、响应耗时、token 统计 |
+| `knowledge_base` | 知识库、Embedding 模型、collection |
+| `knowledge_document` | 文档元数据、RustFS 对象信息、状态、耗时 |
+| `knowledge_chunk` | 分块内容、启用状态、token 数、字符数、向量文档 ID |
+| `knowledge_chunk_vector` | Spring AI PGVector Store 管理的向量表 |
 
-`auth_user` 对用户名的唯一约束是部分唯一索引：
+## 开发约定
 
-```sql
-CREATE UNIQUE INDEX IF NOT EXISTS uk_auth_user_username_active
-ON auth_user (username)
-WHERE status = 1;
-```
+- 后台接口统一走 `/api/admin/**`，并通过 `AdminGuard` 校验管理员。
+- 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
+- 上传文件大小默认限制为单文件 `50MB`，单请求 `100MB`。
+- 原始文件只进 RustFS，不把大文件二进制塞进 PostgreSQL。
+- 分块文本改动后必须重建向量，否则 pgvector 中仍是旧文本语义。
+- RocketMQ 当前负责异步分块和异步重建向量，后续可以补重试、死信队列和任务监控页。
+- 前端后台 UI 继续沿用当前灰色工程风格，改样式前先看 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
-这意味着只有有效用户不能重名，注销后的用户名可以再次注册。
+## 下一步
 
-## 下一步建议
-
-比较适合继续推进的路线：
-
-1. 把 `PlaceholderChatService` 重命名为更准确的 `SpringAiChatService`
-2. 接入流式响应，让前端逐字输出
-3. 增加会话删除、重命名、分页和置顶
-4. 引入 PGVector，完成第一版 RAG 知识库
-5. 把工具调用能力接到 MCP Tool Server
-6. 给 RocketMQ 找一个真实业务场景，比如异步记录模型调用日志
-7. 增加测试用例，尤其是认证、会话归属校验和注销后重注册逻辑
+1. 增加 RAG 检索接口：pgvector 召回 + Qwen3 Reranker 重排。
+2. 给知识库和分块检索补权限过滤。
+3. 给 RocketMQ ingestion 增加重试次数、死信队列和失败任务管理页。
+4. 将后台页面组件化，拆出知识库表格、文档表格、分块表格和通用弹窗。
+5. 使用 Flyway 或 Liquibase 接管后续数据库迁移。
+6. 给 ingestion 核心链路补单元测试和集成测试。

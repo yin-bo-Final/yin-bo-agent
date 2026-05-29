@@ -4567,6 +4567,23 @@ input {
   text-align: center;
 }
 
+.kc-table-head.document-grid > span:nth-child(4),
+.kc-table-row.document-grid > .kc-status {
+  justify-self: center;
+  text-align: center;
+}
+
+.kc-table-row.document-grid > .kc-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 84px;
+}
+
+.kc-table-row.document-grid > .kc-status > span {
+  display: inline;
+}
+
 .kc-table-row span,
 .kc-table-row p,
 .kc-link-cell {

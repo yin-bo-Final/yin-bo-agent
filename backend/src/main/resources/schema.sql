@@ -118,10 +118,14 @@ CREATE TABLE IF NOT EXISTS knowledge_document (
     content_type VARCHAR(128) NULL,
     parser VARCHAR(64) NOT NULL DEFAULT 'TIKA',
     original_size_bytes BIGINT NOT NULL DEFAULT 0,
+    storage_provider VARCHAR(32) NULL,
+    storage_bucket VARCHAR(128) NULL,
+    storage_object_key TEXT NULL,
+    storage_etag VARCHAR(128) NULL,
     text_content TEXT NULL,
     text_char_count INTEGER NOT NULL DEFAULT 0,
     chunk_count INTEGER NOT NULL DEFAULT 0,
-    status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING',
+    status VARCHAR(32) NOT NULL DEFAULT 'UPLOADED',
     error_message TEXT NULL,
     chunk_strategy VARCHAR(32) NOT NULL DEFAULT 'RECURSIVE',
     chunk_size INTEGER NOT NULL DEFAULT 1000,
@@ -142,6 +146,18 @@ ADD COLUMN IF NOT EXISTS knowledge_base_id BIGINT NULL;
 
 ALTER TABLE knowledge_document
 ADD COLUMN IF NOT EXISTS text_content TEXT NULL;
+
+ALTER TABLE knowledge_document
+ADD COLUMN IF NOT EXISTS storage_provider VARCHAR(32) NULL;
+
+ALTER TABLE knowledge_document
+ADD COLUMN IF NOT EXISTS storage_bucket VARCHAR(128) NULL;
+
+ALTER TABLE knowledge_document
+ADD COLUMN IF NOT EXISTS storage_object_key TEXT NULL;
+
+ALTER TABLE knowledge_document
+ADD COLUMN IF NOT EXISTS storage_etag VARCHAR(128) NULL;
 
 ALTER TABLE knowledge_document
 ADD COLUMN IF NOT EXISTS text_extracted_at TIMESTAMP NULL;

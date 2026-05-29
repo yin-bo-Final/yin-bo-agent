@@ -39,6 +39,18 @@ public class KnowledgeDocument {
     @TableField("original_size_bytes")
     private Long originalSizeBytes;
 
+    @TableField("storage_provider")
+    private String storageProvider;
+
+    @TableField("storage_bucket")
+    private String storageBucket;
+
+    @TableField("storage_object_key")
+    private String storageObjectKey;
+
+    @TableField("storage_etag")
+    private String storageEtag;
+
     @TableField("text_content")
     private String textContent;
 
@@ -167,6 +179,38 @@ public class KnowledgeDocument {
 
     public void setOriginalSizeBytes(Long originalSizeBytes) {
         this.originalSizeBytes = originalSizeBytes;
+    }
+
+    public String getStorageProvider() {
+        return storageProvider;
+    }
+
+    public void setStorageProvider(String storageProvider) {
+        this.storageProvider = storageProvider;
+    }
+
+    public String getStorageBucket() {
+        return storageBucket;
+    }
+
+    public void setStorageBucket(String storageBucket) {
+        this.storageBucket = storageBucket;
+    }
+
+    public String getStorageObjectKey() {
+        return storageObjectKey;
+    }
+
+    public void setStorageObjectKey(String storageObjectKey) {
+        this.storageObjectKey = storageObjectKey;
+    }
+
+    public String getStorageEtag() {
+        return storageEtag;
+    }
+
+    public void setStorageEtag(String storageEtag) {
+        this.storageEtag = storageEtag;
     }
 
     public String getTextContent() {

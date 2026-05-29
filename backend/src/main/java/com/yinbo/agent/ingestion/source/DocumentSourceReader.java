@@ -4,6 +4,9 @@ import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.config.RagProperties;
 import com.yinbo.agent.ingestion.DocumentSourceType;
 import com.yinbo.agent.ingestion.RawDocument;
+import com.yinbo.agent.storage.ObjectStorageService;
+import com.yinbo.agent.storage.StoredObject;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -29,9 +32,11 @@ public class DocumentSourceReader {
     private static final int MAX_REDIRECTS = 5;
 
     private final RagProperties ragProperties;
+    private final ObjectStorageService objectStorageService;
 
-    public DocumentSourceReader(RagProperties ragProperties) {
+    public DocumentSourceReader(RagProperties ragProperties, ObjectStorageService objectStorageService) {
         this.ragProperties = ragProperties;
+        this.objectStorageService = objectStorageService;
     }
 
     public RawDocument fromUpload(MultipartFile file) {
@@ -39,20 +44,32 @@ public class DocumentSourceReader {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "请上传一个非空文件");
         }
         String fileName = sanitizeFileName(file.getOriginalFilename(), "uploaded-document");
-        byte[] bytes;
-        try {
-            bytes = readWithLimit(file.getInputStream(), ragProperties.maxSourceBytes());
+        long sizeBytes = file.getSize();
+        if (sizeBytes > ragProperties.maxSourceBytes()) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "文档超过当前允许大小");
+        }
+        try (InputStream inputStream = file.getInputStream()) {
+            StoredObject storedObject = objectStorageService.uploadOriginalDocument(
+                    fileName,
+                    file.getContentType(),
+                    sizeBytes,
+                    inputStream
+            );
+            return new RawDocument(
+                    DocumentSourceType.UPLOAD,
+                    null,
+                    fileName,
+                    file.getContentType(),
+                    storedObject.sizeBytes(),
+                    null,
+                    storedObject.provider(),
+                    storedObject.bucket(),
+                    storedObject.objectKey(),
+                    storedObject.etag()
+            );
         } catch (IOException exception) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "上传文件读取失败");
         }
-        return new RawDocument(
-                DocumentSourceType.UPLOAD,
-                null,
-                fileName,
-                file.getContentType(),
-                bytes.length,
-                bytes
-        );
     }
 
     public RawDocument fromUrl(String rawUrl, String requestedFileName) {
@@ -77,13 +94,23 @@ public class DocumentSourceReader {
                                 : requestedFileName,
                         "remote-document"
                 );
+                StoredObject storedObject = objectStorageService.uploadOriginalDocument(
+                        fileName,
+                        connection.getContentType(),
+                        bytes.length,
+                        new ByteArrayInputStream(bytes)
+                );
                 return new RawDocument(
                         DocumentSourceType.URL,
                         finalUri.toString(),
                         fileName,
                         connection.getContentType(),
-                        bytes.length,
-                        bytes
+                        storedObject.sizeBytes(),
+                        null,
+                        storedObject.provider(),
+                        storedObject.bucket(),
+                        storedObject.objectKey(),
+                        storedObject.etag()
                 );
             } finally {
                 connection.disconnect();

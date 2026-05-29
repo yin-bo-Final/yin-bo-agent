@@ -1,5 +1,6 @@
 package com.yinbo.agent.ingestion;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yinbo.agent.auth.entity.AuthUser;
 import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.config.RagProperties;
@@ -14,6 +15,8 @@ import com.yinbo.agent.ingestion.parser.TikaDocumentParser;
 import com.yinbo.agent.ingestion.source.DocumentSourceReader;
 import com.yinbo.agent.ingestion.splitter.RecursiveDocumentChunkSplitter;
 import com.yinbo.agent.knowledge.entity.KnowledgeBase;
+import com.yinbo.agent.knowledge.mapper.KnowledgeBaseMapper;
+import com.yinbo.agent.storage.ObjectStorageService;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -22,6 +25,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -35,12 +42,14 @@ import org.springframework.web.multipart.MultipartFile;
 public class DocumentIngestionService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentIngestionService.class);
+    private static final String STATUS_UPLOADED = "UPLOADED";
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_COMPLETED = "COMPLETED";
     private static final String STATUS_FAILED = "FAILED";
 
     private final RagProperties ragProperties;
     private final ObjectProvider<VectorStore> vectorStoreProvider;
+    private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
     private final KnowledgeChunkMapper knowledgeChunkMapper;
     private final DocumentSourceReader documentSourceReader;
@@ -48,20 +57,26 @@ public class DocumentIngestionService {
     private final DocumentTextCleaner documentTextCleaner;
     private final RecursiveDocumentChunkSplitter chunkSplitter;
     private final DocumentChunkOptimizer chunkOptimizer;
+    private final ObjectStorageService objectStorageService;
+    private final TransactionTemplate transactionTemplate;
 
     public DocumentIngestionService(
             RagProperties ragProperties,
             ObjectProvider<VectorStore> vectorStoreProvider,
+            KnowledgeBaseMapper knowledgeBaseMapper,
             KnowledgeDocumentMapper knowledgeDocumentMapper,
             KnowledgeChunkMapper knowledgeChunkMapper,
             DocumentSourceReader documentSourceReader,
             TikaDocumentParser tikaDocumentParser,
             DocumentTextCleaner documentTextCleaner,
             RecursiveDocumentChunkSplitter chunkSplitter,
-            DocumentChunkOptimizer chunkOptimizer
+            DocumentChunkOptimizer chunkOptimizer,
+            ObjectStorageService objectStorageService,
+            TransactionTemplate transactionTemplate
     ) {
         this.ragProperties = ragProperties;
         this.vectorStoreProvider = vectorStoreProvider;
+        this.knowledgeBaseMapper = knowledgeBaseMapper;
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
         this.knowledgeChunkMapper = knowledgeChunkMapper;
         this.documentSourceReader = documentSourceReader;
@@ -69,6 +84,8 @@ public class DocumentIngestionService {
         this.documentTextCleaner = documentTextCleaner;
         this.chunkSplitter = chunkSplitter;
         this.chunkOptimizer = chunkOptimizer;
+        this.objectStorageService = objectStorageService;
+        this.transactionTemplate = transactionTemplate;
     }
 
     public IngestionResponse ingestUpload(
@@ -81,7 +98,7 @@ public class DocumentIngestionService {
     ) {
         RawDocument rawDocument = documentSourceReader.fromUpload(file);
         ChunkingOptions options = ChunkingOptions.from(ragProperties, strategy, chunkSize, chunkOverlap, maxChunks);
-        return ingest(authUser, null, rawDocument, options);
+        return createUploadedDocument(authUser, null, rawDocument, options);
     }
 
     public IngestionResponse ingestUpload(
@@ -95,7 +112,7 @@ public class DocumentIngestionService {
     ) {
         RawDocument rawDocument = documentSourceReader.fromUpload(file);
         ChunkingOptions options = ChunkingOptions.from(ragProperties, strategy, chunkSize, chunkOverlap, maxChunks);
-        return ingest(authUser, knowledgeBase, rawDocument, options);
+        return createUploadedDocument(authUser, knowledgeBase, rawDocument, options);
     }
 
     public IngestionResponse ingestUrl(
@@ -109,7 +126,7 @@ public class DocumentIngestionService {
     ) {
         RawDocument rawDocument = documentSourceReader.fromUrl(url, fileName);
         ChunkingOptions options = ChunkingOptions.from(ragProperties, strategy, chunkSize, chunkOverlap, maxChunks);
-        return ingest(authUser, null, rawDocument, options);
+        return createUploadedDocument(authUser, null, rawDocument, options);
     }
 
     public IngestionResponse ingestUrl(
@@ -124,26 +141,51 @@ public class DocumentIngestionService {
     ) {
         RawDocument rawDocument = documentSourceReader.fromUrl(url, fileName);
         ChunkingOptions options = ChunkingOptions.from(ragProperties, strategy, chunkSize, chunkOverlap, maxChunks);
-        return ingest(authUser, knowledgeBase, rawDocument, options);
+        return createUploadedDocument(authUser, knowledgeBase, rawDocument, options);
     }
 
-    private IngestionResponse ingest(
+    private IngestionResponse createUploadedDocument(
             AuthUser authUser,
             KnowledgeBase knowledgeBase,
             RawDocument rawDocument,
             ChunkingOptions options
     ) {
+        try {
+            KnowledgeDocument document = createDocument(authUser, knowledgeBase, rawDocument, options, STATUS_UPLOADED);
+            return toResponse(document);
+        } catch (RuntimeException exception) {
+            deleteRawDocumentQuietly(rawDocument);
+            throw exception;
+        }
+    }
+
+    @Transactional
+    public void processDocument(String documentId, ChunkingOptions options) {
+        KnowledgeDocument document = requireDocument(documentId);
+        KnowledgeBase knowledgeBase = document.getKnowledgeBaseId() == null
+                ? null
+                : requireKnowledgeBaseById(document.getKnowledgeBaseId());
         VectorStore vectorStore = vectorStoreProvider.getIfAvailable();
         if (vectorStore == null) {
-            throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "当前没有可用的向量存储，请检查 EmbeddingModel 和 PGVector 配置");
+            markFailed(document, new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "当前没有可用的向量存储，请检查 EmbeddingModel 和 PGVector 配置"));
+            return;
         }
 
         long totalStartedAt = System.nanoTime();
-        KnowledgeDocument document = createProcessingDocument(authUser, knowledgeBase, rawDocument, options);
         List<String> vectorDocumentIds = new ArrayList<>();
+        List<KnowledgeChunk> oldChunks = listChunkEntities(document.getId());
         try {
+            document.setStatus(STATUS_PROCESSING);
+            document.setErrorMessage(null);
+            document.setChunkStrategy(options.strategy().name());
+            document.setChunkSize(options.chunkSize());
+            document.setChunkOverlap(options.chunkOverlap());
+            document.setMaxChunks(options.maxChunks());
+            knowledgeDocumentMapper.updateById(document);
+
+            RawDocument rawDocument = toRawDocument(document);
             long parseStartedAt = System.nanoTime();
-            ParsedDocument parsedDocument = tikaDocumentParser.parse(rawDocument);
+            ParsedDocument parsedDocument = parseDocument(document, rawDocument);
             String cleanText = documentTextCleaner.clean(parsedDocument.text());
             if (cleanText.isBlank()) {
                 throw new BusinessException(HttpStatus.BAD_REQUEST, "清洗后没有可用文本");
@@ -194,11 +236,73 @@ public class DocumentIngestionService {
             document.setTotalDurationMs(totalDurationMs);
             document.setOtherDurationMs(Math.max(0, totalDurationMs - parseDurationMs - chunkDurationMs - embeddingDurationMs));
             knowledgeDocumentMapper.updateById(document);
-            return toResponse(document);
+            deleteChunkEntities(oldChunks);
+            deleteVectorDocumentsAfterCommit(vectorStore, oldChunks);
         } catch (RuntimeException exception) {
             rollbackVectorDocuments(vectorStore, vectorDocumentIds);
+            deleteChunkEntitiesByVectorIds(vectorDocumentIds);
             markFailed(document, exception);
-            throw exception;
+        }
+    }
+
+    public void rebuildDocumentVectors(String documentId) {
+        KnowledgeDocument document = requireDocument(documentId);
+        KnowledgeBase knowledgeBase = document.getKnowledgeBaseId() == null
+                ? null
+                : requireKnowledgeBaseById(document.getKnowledgeBaseId());
+        VectorStore vectorStore = vectorStoreProvider.getIfAvailable();
+        if (vectorStore == null) {
+            markFailed(document, new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "当前没有可用的向量存储，请检查 EmbeddingModel 和 PGVector 配置"));
+            return;
+        }
+
+        List<KnowledgeChunk> chunks = listChunkEntities(document.getId());
+        if (chunks.isEmpty()) {
+            markFailed(document, new BusinessException(HttpStatus.BAD_REQUEST, "文档没有可重建的分块"));
+            return;
+        }
+
+        List<String> oldVectorDocumentIds = vectorDocumentIds(chunks);
+        List<String> newVectorDocumentIds = new ArrayList<>();
+        try {
+            transactionTemplate.executeWithoutResult(status -> {
+                document.setStatus(STATUS_PROCESSING);
+                document.setErrorMessage(null);
+                knowledgeDocumentMapper.updateById(document);
+
+                RawDocument rawDocument = toRawDocument(document);
+                ParsedDocument parsedDocument = new ParsedDocument(
+                        document.getTextContent() == null ? "" : document.getTextContent(),
+                        documentTitle(document),
+                        Map.of()
+                );
+                List<Document> vectorDocuments = new ArrayList<>();
+                for (KnowledgeChunk chunk : chunks) {
+                    String vectorDocumentId = UUID.randomUUID().toString();
+                    newVectorDocumentIds.add(vectorDocumentId);
+                    chunk.setVectorDocumentId(vectorDocumentId);
+                    DocumentChunk documentChunk = new DocumentChunk(
+                            chunk.getChunkIndex() == null ? 0 : chunk.getChunkIndex(),
+                            chunk.getTitle(),
+                            chunk.getContent()
+                    );
+                    vectorDocuments.add(toVectorDocument(document, knowledgeBase, rawDocument, parsedDocument, documentChunk, vectorDocumentId));
+                }
+
+                long embeddingStartedAt = System.nanoTime();
+                addVectorDocuments(vectorStore, vectorDocuments);
+                chunks.forEach(knowledgeChunkMapper::updateById);
+
+                document.setStatus(STATUS_COMPLETED);
+                document.setErrorMessage(null);
+                document.setEmbeddingDurationMs(elapsedMillis(embeddingStartedAt));
+                refreshDurationSummary(document);
+                knowledgeDocumentMapper.updateById(document);
+            });
+            deleteVectorDocumentsByIdsAfterCommit(vectorStore, oldVectorDocumentIds);
+        } catch (RuntimeException exception) {
+            rollbackVectorDocuments(vectorStore, newVectorDocumentIds);
+            markFailed(document, exception);
         }
     }
 
@@ -231,11 +335,131 @@ public class DocumentIngestionService {
         }
     }
 
-    private KnowledgeDocument createProcessingDocument(
+    private ParsedDocument parseDocument(KnowledgeDocument document, RawDocument rawDocument) {
+        if (rawDocument.hasStoredObject()) {
+            return tikaDocumentParser.parse(rawDocument);
+        }
+        if (document.getTextContent() != null && !document.getTextContent().isBlank()) {
+            return new ParsedDocument(document.getTextContent(), documentTitle(document), Map.of());
+        }
+        String chunkText = String.join("\n\n", listChunkEntities(document.getId()).stream()
+                .map(KnowledgeChunk::getContent)
+                .filter(value -> value != null && !value.isBlank())
+                .toList());
+        if (!chunkText.isBlank()) {
+            return new ParsedDocument(chunkText, documentTitle(document), Map.of());
+        }
+        throw new BusinessException(HttpStatus.BAD_REQUEST, "原始文件不存在，请重新上传");
+    }
+
+    private RawDocument toRawDocument(KnowledgeDocument document) {
+        DocumentSourceType sourceType;
+        try {
+            sourceType = DocumentSourceType.valueOf(document.getSourceType());
+        } catch (RuntimeException exception) {
+            sourceType = DocumentSourceType.UPLOAD;
+        }
+        return new RawDocument(
+                sourceType,
+                document.getSourceUrl(),
+                document.getFileName(),
+                document.getContentType(),
+                nullToZero(document.getOriginalSizeBytes()),
+                null,
+                document.getStorageProvider(),
+                document.getStorageBucket(),
+                document.getStorageObjectKey(),
+                document.getStorageEtag()
+        );
+    }
+
+    private KnowledgeDocument requireDocument(String documentId) {
+        KnowledgeDocument document = knowledgeDocumentMapper.selectOne(new LambdaQueryWrapper<KnowledgeDocument>()
+                .eq(KnowledgeDocument::getDocumentNo, documentId)
+                .last("LIMIT 1"));
+        if (document == null) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "文档不存在");
+        }
+        return document;
+    }
+
+    private KnowledgeBase requireKnowledgeBaseById(Long knowledgeBaseId) {
+        KnowledgeBase knowledgeBase = knowledgeBaseMapper.selectById(knowledgeBaseId);
+        if (knowledgeBase == null) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "知识库不存在");
+        }
+        return knowledgeBase;
+    }
+
+    private List<KnowledgeChunk> listChunkEntities(Long documentId) {
+        return knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunk>()
+                .eq(KnowledgeChunk::getDocumentId, documentId)
+                .orderByAsc(KnowledgeChunk::getChunkIndex));
+    }
+
+    private void deleteChunkEntities(List<KnowledgeChunk> chunks) {
+        List<Long> chunkIds = chunks == null ? List.of() : chunks.stream()
+                .map(KnowledgeChunk::getId)
+                .filter(id -> id != null)
+                .toList();
+        if (!chunkIds.isEmpty()) {
+            knowledgeChunkMapper.deleteBatchIds(chunkIds);
+        }
+    }
+
+    private void deleteChunkEntitiesByVectorIds(List<String> vectorDocumentIds) {
+        if (vectorDocumentIds == null || vectorDocumentIds.isEmpty()) {
+            return;
+        }
+        knowledgeChunkMapper.delete(new LambdaQueryWrapper<KnowledgeChunk>()
+                .in(KnowledgeChunk::getVectorDocumentId, vectorDocumentIds));
+    }
+
+    private List<String> vectorDocumentIds(List<KnowledgeChunk> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+        return chunks.stream()
+                .map(KnowledgeChunk::getVectorDocumentId)
+                .filter(value -> value != null && !value.isBlank())
+                .toList();
+    }
+
+    private void deleteVectorDocumentsAfterCommit(VectorStore vectorStore, List<KnowledgeChunk> chunks) {
+        deleteVectorDocumentsByIdsAfterCommit(vectorStore, vectorDocumentIds(chunks));
+    }
+
+    private void deleteVectorDocumentsByIdsAfterCommit(VectorStore vectorStore, List<String> vectorDocumentIds) {
+        if (vectorDocumentIds == null || vectorDocumentIds.isEmpty()) {
+            return;
+        }
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            rollbackVectorDocuments(vectorStore, vectorDocumentIds);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                rollbackVectorDocuments(vectorStore, vectorDocumentIds);
+            }
+        });
+    }
+
+    private String documentTitle(KnowledgeDocument document) {
+        String fileName = document.getFileName();
+        if (fileName == null || fileName.isBlank()) {
+            return "未命名文档";
+        }
+        int dotIndex = fileName.lastIndexOf('.');
+        return dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
+    }
+
+    private KnowledgeDocument createDocument(
             AuthUser authUser,
             KnowledgeBase knowledgeBase,
             RawDocument rawDocument,
-            ChunkingOptions options
+            ChunkingOptions options,
+            String status
     ) {
         KnowledgeDocument document = new KnowledgeDocument();
         document.setDocumentNo(UUID.randomUUID().toString());
@@ -247,9 +471,13 @@ public class DocumentIngestionService {
         document.setContentType(rawDocument.contentType());
         document.setParser(tikaDocumentParser.parserName());
         document.setOriginalSizeBytes(rawDocument.sizeBytes());
+        document.setStorageProvider(rawDocument.storageProvider());
+        document.setStorageBucket(rawDocument.storageBucket());
+        document.setStorageObjectKey(rawDocument.storageObjectKey());
+        document.setStorageEtag(rawDocument.storageEtag());
         document.setTextCharCount(0);
         document.setChunkCount(0);
-        document.setStatus(STATUS_PROCESSING);
+        document.setStatus(status);
         document.setChunkStrategy(options.strategy().name());
         document.setChunkSize(options.chunkSize());
         document.setChunkOverlap(options.chunkOverlap());
@@ -298,6 +526,10 @@ public class DocumentIngestionService {
         putMetadata(metadata, "source_url", rawDocument.sourceUrl());
         putMetadata(metadata, "file_name", rawDocument.fileName());
         putMetadata(metadata, "content_type", rawDocument.contentType());
+        putMetadata(metadata, "storage_provider", rawDocument.storageProvider());
+        putMetadata(metadata, "storage_bucket", rawDocument.storageBucket());
+        putMetadata(metadata, "storage_object_key", rawDocument.storageObjectKey());
+        putMetadata(metadata, "storage_etag", rawDocument.storageEtag());
         putMetadata(metadata, "parser", tikaDocumentParser.parserName());
         putMetadata(metadata, "embedding_model", ragProperties.embeddingModel());
         putMetadata(metadata, "title", chunk.title());
@@ -342,6 +574,15 @@ public class DocumentIngestionService {
         }
     }
 
+    private void refreshDurationSummary(KnowledgeDocument document) {
+        long parseDurationMs = nullToZero(document.getParseDurationMs());
+        long chunkDurationMs = nullToZero(document.getChunkDurationMs());
+        long embeddingDurationMs = nullToZero(document.getEmbeddingDurationMs());
+        long otherDurationMs = Math.max(0L, nullToZero(document.getOtherDurationMs()));
+        document.setOtherDurationMs(otherDurationMs);
+        document.setTotalDurationMs(parseDurationMs + chunkDurationMs + embeddingDurationMs + otherDurationMs);
+    }
+
     private void markFailed(KnowledgeDocument document, RuntimeException exception) {
         document.setStatus(STATUS_FAILED);
         document.setErrorMessage(truncate(exception.getMessage(), 1000));
@@ -350,6 +591,13 @@ public class DocumentIngestionService {
         } catch (RuntimeException updateException) {
             log.warn("Failed to update ingestion failure status. documentId={}", document.getDocumentNo(), updateException);
         }
+    }
+
+    private void deleteRawDocumentQuietly(RawDocument rawDocument) {
+        if (rawDocument == null || !rawDocument.hasStoredObject()) {
+            return;
+        }
+        objectStorageService.deleteQuietly(rawDocument.storageBucket(), rawDocument.storageObjectKey());
     }
 
     private IngestionResponse toResponse(KnowledgeDocument document) {
@@ -377,6 +625,10 @@ public class DocumentIngestionService {
             return 0;
         }
         return Math.max(1, (int) Math.ceil(content.length() / 2.0));
+    }
+
+    private long nullToZero(Long value) {
+        return value == null ? 0L : value;
     }
 
     private long elapsedMillis(long startedAtNanos) {
