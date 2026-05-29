@@ -48,12 +48,12 @@ backend/
 
 后台管理公共能力。
 
-| 文件或目录 | 说明 |
-| --- | --- |
-| `AdminGuard` | 管理员权限门卫，后台接口需要先调用 |
-| `AdminDashboardController` | `/api/admin/dashboard` |
-| `AdminDashboardService` | 活跃用户、消息数、会话数、流量数、平均响应时间统计 |
-| `dto/AdminDashboardResponse` | Dashboard 响应结构 |
+| 文件或目录                        | 说明                        |
+| ---------------------------- | ------------------------- |
+| `AdminGuard`                 | 管理员权限门卫，后台接口需要先调用         |
+| `AdminDashboardController`   | `/api/admin/dashboard`    |
+| `AdminDashboardService`      | 活跃用户、消息数、会话数、流量数、平均响应时间统计 |
+| `dto/AdminDashboardResponse` | Dashboard 响应结构            |
 
 约定：后台新增模块时，优先复用 `AdminGuard.requireAdmin()`，不要在 Controller 里散落角色判断。
 
@@ -140,16 +140,16 @@ chat_message
 
 Spring 配置和 `@ConfigurationProperties`。
 
-| 文件 | 说明 |
-| --- | --- |
-| `AiModelProperties` | `app.ai.models` 模型列表 |
-| `AuthProperties` | 本地种子管理员配置 |
-| `RagProperties` | RAG 模型、维度、切块参数、RocketMQ topic |
-| `ObjectStorageProperties` | RustFS / S3 对象存储配置 |
-| `RagVectorStoreConfig` | Spring AI PGVector Store 配置 |
-| `MybatisPlusAutoFillConfig` | 自动填充创建时间和更新时间 |
-| `PasswordConfig` | BCrypt 密码编码器 |
-| `WebConfig` | CORS、登录拦截器和静态 Web 配置 |
+| 文件                          | 说明                            |
+| --------------------------- | ----------------------------- |
+| `AiModelProperties`         | `app.ai.models` 模型列表          |
+| `AuthProperties`            | 本地种子管理员配置                     |
+| `RagProperties`             | RAG 模型、维度、切块参数、RocketMQ topic |
+| `ObjectStorageProperties`   | RustFS / S3 对象存储配置            |
+| `RagVectorStoreConfig`      | Spring AI PGVector Store 配置   |
+| `MybatisPlusAutoFillConfig` | 自动填充创建时间和更新时间                 |
+| `PasswordConfig`            | BCrypt 密码编码器                  |
+| `WebConfig`                 | CORS、登录拦截器和静态 Web 配置          |
 
 重要配置前缀：
 
