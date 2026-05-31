@@ -22,9 +22,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         "com.yinbo.agent.ingestion.mapper",
         "com.yinbo.agent.knowledge.mapper"
 })
-public class YinboAgentApplication {
+public class YinboAgentServiceApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(YinboAgentApplication.class, args);
+        SpringApplication.run(YinboAgentServiceApplication.class, args);
     }
 }

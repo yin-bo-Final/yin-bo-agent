@@ -1,0 +1,43 @@
+server:
+  port: 8081
+
+spring:
+  config:
+    import: optional:file:./local-secrets.yml,optional:file:../local-secrets.yml
+  application:
+    name: yinbo-agent-gateway
+  cloud:
+    gateway:
+      server:
+        webflux:
+          default-filters:
+            - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin RETAIN_FIRST
+          routes:
+            - id: yinbo-agent-service-api
+              uri: ${YINBO_AGENT_SERVICE_URI:http://localhost:8080}
+              predicates:
+                - Path=/api/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway
+
+logging:
+  file:
+    name: .logs/gateway.log
+  logback:
+    rollingpolicy:
+      file-name-pattern: .logs/gateway.%d{yyyy-MM-dd}.%i.log.gz
+      max-file-size: 20MB
+      max-history: 14
+      total-size-cap: 1GB
+      clean-history-on-start: false
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] app=${spring.application.name} requestId=%X{requestId:-} logger=%logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] app=${spring.application.name} requestId=%X{requestId:-} logger=%logger{36} - %msg%n"
+
+app:
+  logging:
+    slow-request-threshold-ms: ${APP_SLOW_REQUEST_THRESHOLD_MS:3000}

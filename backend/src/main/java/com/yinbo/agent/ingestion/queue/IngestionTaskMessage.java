@@ -1,15 +1,19 @@
 package com.yinbo.agent.ingestion.queue;
 
+import org.slf4j.MDC;
+
 public record IngestionTaskMessage(
         String action,
         String documentId,
         String strategy,
         Integer chunkSize,
         Integer chunkOverlap,
-        Integer maxChunks
+        Integer maxChunks,
+        String requestId
 ) {
     public static final String ACTION_CHUNK = "CHUNK";
     public static final String ACTION_REBUILD_VECTORS = "REBUILD_VECTORS";
+    private static final String MDC_REQUEST_ID_KEY = "requestId";
 
     public static IngestionTaskMessage chunk(
             String documentId,
@@ -24,7 +28,8 @@ public record IngestionTaskMessage(
                 strategy,
                 chunkSize,
                 chunkOverlap,
-                maxChunks
+                maxChunks,
+                currentRequestId()
         );
     }
 
@@ -35,8 +40,18 @@ public record IngestionTaskMessage(
                 null,
                 null,
                 null,
-                null
+                null,
+                currentRequestId()
         );
+    }
+
+    public String resolvedRequestId() {
+        return requestId == null || requestId.isBlank() ? "-" : requestId;
+    }
+
+    private static String currentRequestId() {
+        String requestId = MDC.get(MDC_REQUEST_ID_KEY);
+        return requestId == null || requestId.isBlank() ? null : requestId;
     }
 
     public String resolvedAction() {

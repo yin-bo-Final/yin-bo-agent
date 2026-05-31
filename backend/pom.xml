@@ -11,9 +11,9 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>yinbo-agent-backend</artifactId>
-    <name>yinbo-agent-backend</name>
-    <description>音波AI agent 智能助手平台后端</description>
+    <artifactId>yinbo-agent-service</artifactId>
+    <name>yinbo-agent-service</name>
+    <description>音波AI agent 智能助手平台业务服务</description>
 
     <dependencies>
         <dependency>

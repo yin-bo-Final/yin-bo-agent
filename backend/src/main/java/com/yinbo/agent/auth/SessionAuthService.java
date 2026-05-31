@@ -22,10 +22,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class SessionAuthService implements AuthService {
 
+    private static final Logger log = LoggerFactory.getLogger(SessionAuthService.class);
     private static final String ROLE_ADMIN = "ADMIN";
     private static final String ROLE_USER = "USER";
 
@@ -53,22 +56,49 @@ public class SessionAuthService implements AuthService {
         try {
             authUserMapper.insert(authUser);
         } catch (DuplicateKeyException exception) {
+            log.warn("event=user_register_failed username={} reason=duplicate_username", sanitizeLogValue(username));
             throw new BusinessException(HttpStatus.CONFLICT, "用户名已被占用，请换一个");
         }
 
-        return createLoginSession(authUser, httpRequest);
+        LoginResponse response = createLoginSession(authUser, httpRequest);
+        log.info(
+                "event=user_registered userId={} username={} role={}",
+                authUser.getId(),
+                sanitizeLogValue(authUser.getUsername()),
+                authUser.getRole()
+        );
+        return response;
     }
 
     @Override
     @Transactional
     public LoginResponse login(LoginRequest request, HttpServletRequest httpRequest) {
-        AuthUser authUser = findSingleActiveUserByUsername(normalizeUsername(request.username()));
+        String username = normalizeUsername(request.username());
+        AuthUser authUser;
+        try {
+            authUser = findSingleActiveUserByUsername(username);
+        } catch (BusinessException exception) {
+            log.warn("event=user_login_failed username={} reason=user_not_available", sanitizeLogValue(username));
+            throw exception;
+        }
 
         if (!passwordEncoder.matches(request.password(), authUser.getPasswordHash())) {
+            log.warn(
+                    "event=user_login_failed userId={} username={} reason=bad_credentials",
+                    authUser.getId(),
+                    sanitizeLogValue(authUser.getUsername())
+            );
             throw new BusinessException(HttpStatus.UNAUTHORIZED, "用户名或密码错误");
         }
 
-        return createLoginSession(authUser, httpRequest);
+        LoginResponse response = createLoginSession(authUser, httpRequest);
+        log.info(
+                "event=user_login_success userId={} username={} role={}",
+                authUser.getId(),
+                sanitizeLogValue(authUser.getUsername()),
+                authUser.getRole()
+        );
+        return response;
     }
 
     private LoginResponse createLoginSession(AuthUser authUser, HttpServletRequest httpRequest) {
@@ -106,8 +136,18 @@ public class SessionAuthService implements AuthService {
     @Override
     public LogoutResponse logout(HttpServletRequest httpRequest) {
         HttpSession session = httpRequest.getSession(false);
+        LoginUser loginUser = session == null
+                ? null
+                : (LoginUser) session.getAttribute(AuthConstants.LOGIN_USER_SESSION_KEY);
         if (session != null) {
             session.invalidate();
+        }
+        if (loginUser != null) {
+            log.info(
+                    "event=user_logout userId={} username={}",
+                    loginUser.id(),
+                    sanitizeLogValue(loginUser.username())
+            );
         }
         return new LogoutResponse("退出登录成功", Instant.now());
     }
@@ -117,6 +157,11 @@ public class SessionAuthService implements AuthService {
     public LogoutResponse deleteAccount(DeleteAccountRequest request, HttpServletRequest httpRequest) {
         AuthUser authUser = requireActiveUser(httpRequest);
         if (!passwordEncoder.matches(request.password(), authUser.getPasswordHash())) {
+            log.warn(
+                    "event=user_delete_failed userId={} username={} reason=bad_credentials",
+                    authUser.getId(),
+                    sanitizeLogValue(authUser.getUsername())
+            );
             throw new BusinessException(HttpStatus.UNAUTHORIZED, "密码校验失败，无法注销当前账号");
         }
 
@@ -127,6 +172,11 @@ public class SessionAuthService implements AuthService {
         if (session != null) {
             session.invalidate();
         }
+        log.info(
+                "event=user_deleted userId={} username={}",
+                authUser.getId(),
+                sanitizeLogValue(authUser.getUsername())
+        );
         return new LogoutResponse("账号已注销", Instant.now());
     }
 
@@ -197,6 +247,14 @@ public class SessionAuthService implements AuthService {
 
     private String normalizeUsername(String username) {
         return username == null ? "" : username.trim();
+    }
+
+    private String sanitizeLogValue(String value) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        String sanitized = value.replaceAll("[\\r\\n\\t]", "_");
+        return sanitized.length() <= 128 ? sanitized : sanitized.substring(0, 128);
     }
 
     private AuthUserView toView(AuthUser authUser) {

@@ -8,7 +8,8 @@
 
 | 分层 | 技术 |
 | --- | --- |
-| 后端 | Java 17、Spring Boot 3.5.9、Maven |
+| 网关 | Spring Cloud Gateway Server WebFlux、Actuator |
+| 后端业务服务 | Java 17、Spring Boot 3.5.9、Maven |
 | Web | Spring Web、Validation、Actuator |
 | 数据库 | PostgreSQL、pgvector、Flyway、MyBatis-Plus、Spring JDBC |
 | 登录态 | Session、Spring Session Data Redis、Redis、BCrypt |
@@ -17,20 +18,21 @@
 | 异步 | RocketMQ Spring Boot Starter |
 | 文件存储 | RustFS，使用 MinIO Java SDK 访问 S3 兼容接口 |
 | 前端 | Vue 3、Vite、marked、DOMPurify |
-| 部署 | WSL Docker 中间件、前端 Docker + Nginx、后端 Spring Boot |
+| 部署 | WSL Docker 中间件、前端 Docker + Nginx、Gateway、后端 Spring Boot |
 
 ## 架构概览
 
 ```text
 Vue 3 前端
-  -> Spring Boot 后端
-    -> PostgreSQL 保存业务表
-    -> pgvector 保存知识库向量
-    -> Redis 保存 Session 登录态
-    -> RustFS 保存上传原始文件
-    -> RocketMQ 承载异步 ingestion 任务
-    -> Spring AI 调用聊天模型和 Embedding 模型
-    -> Apache Tika 解析 PDF / Word / Markdown / TXT
+  -> Spring Cloud Gateway 网关
+    -> Spring Boot 业务服务
+      -> PostgreSQL 保存业务表
+      -> pgvector 保存知识库向量
+      -> Redis 保存 Session 登录态
+      -> RustFS 保存上传原始文件
+      -> RocketMQ 承载异步 ingestion 任务
+      -> Spring AI 调用聊天模型和 Embedding 模型
+      -> Apache Tika 解析 PDF / Word / Markdown / TXT
 ```
 
 RAG 文档入库链路：
@@ -129,11 +131,18 @@ SpringAI-Program/
 │     │  ├─ ingestion/              # 文档 ETL 和 RocketMQ 消费
 │     │  ├─ knowledge/              # 知识库后台管理
 │     │  ├─ storage/                # RustFS / S3 对象存储封装
-│     │  └─ YinboAgentApplication.java
+│     │  └─ YinboAgentServiceApplication.java
 │     └─ resources/
 │        ├─ application.yml
 │        └─ db/migration/
 │           └─ V1__init_schema.sql
+├─ gateway/                         # Spring Cloud Gateway 网关模块
+│  ├─ pom.xml
+│  └─ src/main/
+│     ├─ java/com/yinbo/gateway/
+│     │  └─ YinboAgentGatewayApplication.java
+│     └─ resources/
+│        └─ application.yml
 ├─ frontend/                        # Vue 3 前端
 │  ├─ src/
 │  │  ├─ api/                       # 请求封装
@@ -146,6 +155,7 @@ SpringAI-Program/
 │  └─ vite.config.js
 ├─ docs/
 │  ├─ project-structure.md          # 项目结构总览和文档导航
+│  ├─ gateway-structure.md          # 网关模块边界和路由
 │  ├─ backend-structure.md          # 后端模块边界
 │  ├─ frontend-structure.md         # 前端模块边界
 │  ├─ frontend-style-guide.md       # 前端样式约定
@@ -155,11 +165,11 @@ SpringAI-Program/
 └─ pom.xml                          # Maven 聚合工程
 ```
 
-整体结构导航见 [docs/project-structure.md](docs/project-structure.md)。后端模块说明见 [docs/backend-structure.md](docs/backend-structure.md)，前端模块说明见 [docs/frontend-structure.md](docs/frontend-structure.md)。前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
+整体结构导航见 [docs/project-structure.md](docs/project-structure.md)。网关模块说明见 [docs/gateway-structure.md](docs/gateway-structure.md)，后端模块说明见 [docs/backend-structure.md](docs/backend-structure.md)，前端模块说明见 [docs/frontend-structure.md](docs/frontend-structure.md)。前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
 ## 本地配置
 
-`backend/src/main/resources/application.yml` 会加载根目录或后端上级目录的 `local-secrets.yml`：
+`backend/src/main/resources/application.yml` 和 `gateway/src/main/resources/application.yml` 都会加载根目录或模块上级目录的 `local-secrets.yml`：
 
 ```yml
 spring:
@@ -195,6 +205,8 @@ RAG_INGESTION_TOPIC: rag-ingestion-task
 ROCKETMQ_NAME_SERVER: localhost:9876
 RUSTFS_ENDPOINT: http://localhost:9000
 RUSTFS_BUCKET: yinbo-agent-documents
+YINBO_AGENT_SERVICE_URI: http://localhost:8080
+APP_SLOW_REQUEST_THRESHOLD_MS: 3000
 INGESTION_MAX_FILE_SIZE: 50MB
 INGESTION_MAX_REQUEST_SIZE: 100MB
 ```
@@ -220,7 +232,7 @@ PostgreSQL 需要安装 pgvector 扩展。应用启动时由 Flyway 执行 `CREA
 
 ## 启动方式
 
-### 后端
+### 后端业务服务
 
 ```powershell
 cd backend
@@ -236,11 +248,26 @@ cd backend
 mvn spring-boot:run
 ```
 
-后端默认地址：
+后端业务服务默认地址：
 
 ```text
 http://localhost:8080
 ```
+
+### 网关
+
+```powershell
+cd gateway
+mvn spring-boot:run
+```
+
+网关默认地址：
+
+```text
+http://localhost:8081
+```
+
+网关默认把 `/api/**` 转发到 `YINBO_AGENT_SERVICE_URI`，本地默认是 `http://localhost:8080`。
 
 ### 前端
 
@@ -256,7 +283,7 @@ npm run dev
 http://localhost:5173
 ```
 
-Vite 会把 `/api` 代理到 `http://localhost:8080`。
+Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后端业务服务。
 
 ## 主要接口
 
@@ -321,6 +348,11 @@ Vite 会把 `/api` 代理到 `http://localhost:8080`。
 ## 开发约定
 
 - 后台接口统一走 `/api/admin/**`，并通过 `AdminGuard` 校验管理员。
+- 前端请求统一进入 gateway，gateway 只做 `/api/**` 转发；登录态和业务权限仍由后端业务服务校验。
+- gateway 会生成或透传 `X-Request-Id`，并写入当前启动工作目录下的 `.logs/gateway.log`；后端业务服务会把同一个 requestId 写入 `.logs/service.log`。
+- gateway 和 service 日志使用统一 key-value 风格；超过 `APP_SLOW_REQUEST_THRESHOLD_MS` 的请求会以 `WARN` 记录，默认阈值 `3000ms`。
+- 日志按“日期 + 大小”滚动：单文件最大 `20MB`，保留 `14` 天，总日志体积上限 `1GB`，历史文件会压缩为 `.gz`。
+- 关键业务日志使用 `event=...`：登录注册、知识库变更、文档上传、AI 调用、RocketMQ 投递消费、ingestion 完成或失败都会有明确事件。
 - 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本，不再使用 `schema.sql`。
 - 上传文件大小默认限制为单文件 `50MB`，单请求 `100MB`。

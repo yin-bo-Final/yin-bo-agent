@@ -134,6 +134,8 @@ DELETE /api/admin/knowledge/chunks/{chunkId}
 
 请求错误处理要优先读取后端返回的 `message` 字段。后端业务失败通常由 `BusinessException` 统一返回。
 
+开发环境中，`vite.config.js` 会把 `/api` 代理到 gateway 默认地址 `http://localhost:8081`。部署时，`nginx/default.conf` 也把 `/api/` 转发给 `gateway:8081`，再由 gateway 转发到后端业务服务。
+
 ## `styles.css`
 
 当前前端样式集中在一个文件里。继续改 UI 前先读 [frontend-style-guide.md](frontend-style-guide.md)。

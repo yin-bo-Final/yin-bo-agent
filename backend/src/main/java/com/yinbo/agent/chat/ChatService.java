@@ -24,12 +24,14 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -138,7 +140,14 @@ public class ChatService {
         } else try {
             modelCallResult = callModel(chatModel, conversationMessages, request.modelId(), request.thinkModeEnabled(), responseStartedAt);
         } catch (Exception exception) {
-            log.warn("Chat model call failed. conversationId={}, modelId={}", conversationId, model.id(), exception);
+            log.warn(
+                    "event=ai_call_failed mode=sync conversationId={} modelId={} type={} message={}",
+                    conversationId,
+                    model.id(),
+                    exception.getClass().getSimpleName(),
+                    sanitizeLogValue(exception.getMessage()),
+                    exception
+            );
             String content = modelFailureResponseContent(model, latestUserMessage.content());
             long responseDurationMs = elapsedMillis(responseStartedAt);
             modelCallResult = new ModelCallResult(
@@ -164,6 +173,16 @@ public class ChatService {
         conversationMessages = appendCachedMessage(conversationMessages, assistantMessage);
         touchConversation(conversation, model.id(), latestUserMessage.content(), assistantMessage.getCreatedAt());
         putConversationMessagesAfterCommit(authUser.getId(), conversation.getId(), conversationMessages);
+        log.info(
+                "event=ai_chat_completed mode=sync userId={} conversationId={} modelId={} costMs={} promptTokens={} completionTokens={} totalTokens={}",
+                authUser.getId(),
+                conversationId,
+                model.id(),
+                modelCallResult.responseDurationMs(),
+                modelCallResult.promptTokens(),
+                modelCallResult.completionTokens(),
+                modelCallResult.totalTokens()
+        );
         return new ChatResponse(
                 conversationId,
                 model.id(),
@@ -177,7 +196,17 @@ public class ChatService {
 
     public SseEmitter streamChat(AuthUser authUser, ChatRequest request) {
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
-        CompletableFuture.runAsync(() -> doStreamChat(authUser, request, emitter));
+        Map<String, String> mdcContext = MDC.getCopyOfContextMap();
+        CompletableFuture.runAsync(() -> {
+            if (mdcContext != null) {
+                MDC.setContextMap(mdcContext);
+            }
+            try {
+                doStreamChat(authUser, request, emitter);
+            } finally {
+                MDC.clear();
+            }
+        });
         return emitter;
     }
 
@@ -307,7 +336,14 @@ public class ChatService {
                 } catch (ClientDisconnectedException exception) {
                     throw exception;
                 } catch (Exception exception) {
-                    log.warn("Streaming chat model call failed. conversationId={}, modelId={}", conversationId, model.id(), exception);
+                    log.warn(
+                            "event=ai_call_failed mode=stream conversationId={} modelId={} type={} message={}",
+                            conversationId,
+                            model.id(),
+                            exception.getClass().getSimpleName(),
+                            sanitizeLogValue(exception.getMessage()),
+                            exception
+                    );
                     String content = modelFailureResponseContent(model, latestUserMessage.content());
                     sendChunkedContent(emitter, conversationId, model.id(), content);
                     long responseDurationMs = elapsedMillis(responseStartedAt);
@@ -346,16 +382,33 @@ public class ChatService {
                     modelCallResult.responseDurationMs(),
                     modelCallResult.totalTokens()
             ));
+            log.info(
+                    "event=ai_chat_completed mode=stream userId={} conversationId={} modelId={} costMs={} promptTokens={} completionTokens={} totalTokens={}",
+                    authUser.getId(),
+                    conversationId,
+                    model.id(),
+                    modelCallResult.responseDurationMs(),
+                    modelCallResult.promptTokens(),
+                    modelCallResult.completionTokens(),
+                    modelCallResult.totalTokens()
+            );
             emitter.complete();
         } catch (ClientDisconnectedException exception) {
-            log.debug("Streaming chat client disconnected. conversationId={}, modelId={}", conversationId, model.id());
+            log.info("event=ai_stream_disconnected conversationId={} modelId={}", conversationId, model.id());
             safeComplete(emitter);
         } catch (Exception exception) {
-            log.warn("Streaming chat failed. conversationId={}, modelId={}", conversationId, model.id(), exception);
+            log.warn(
+                    "event=ai_stream_failed conversationId={} modelId={} type={} message={}",
+                    conversationId,
+                    model.id(),
+                    exception.getClass().getSimpleName(),
+                    sanitizeLogValue(exception.getMessage()),
+                    exception
+            );
             try {
                 sendStreamEvent(emitter, "error", ChatStreamEvent.error("流式响应失败了，请稍后重试。"));
             } catch (ClientDisconnectedException ignored) {
-                log.debug("Streaming chat client disconnected before error event. conversationId={}, modelId={}", conversationId, model.id());
+                log.info("event=ai_stream_disconnected_before_error conversationId={} modelId={}", conversationId, model.id());
             }
             safeComplete(emitter);
         }
@@ -724,6 +777,14 @@ public class ChatService {
 
     private long elapsedMillis(long startedAt) {
         return Math.max(0L, (System.nanoTime() - startedAt) / 1_000_000L);
+    }
+
+    private String sanitizeLogValue(String value) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        String sanitized = value.replaceAll("[\\r\\n\\t]", "_");
+        return sanitized.length() <= 256 ? sanitized : sanitized.substring(0, 256);
     }
 
     private record TokenUsage(Integer promptTokens, Integer completionTokens, Integer totalTokens) {

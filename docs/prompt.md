@@ -44,7 +44,6 @@
 ## 新对话协作上下文
 
 ```text
-用户是音波，中国河南郑州轻工业大学 24 级学生。
 主要技术栈是 Java 后端，熟悉 Spring Boot、MySQL、Redis、RocketMQ、Dubbo、Spring Cloud、Docker。
 当前目标是学习并实践 Java Agent、Spring AI、Agent、RAG、MCP 等技术。
 
@@ -52,7 +51,6 @@
 - 先解决问题，再解释关键知识点。
 - 解释要偏后端工程视角，通俗但不敷衍。
 - 如果用户理解有偏差，要直接指出并纠正。
-- 目标是帮助用户到大三，也就是 2027 年，达到大厂实习水平。
 ```
 
 ## 本地环境约定
@@ -65,6 +63,8 @@ C:\Users\35575\Desktop\SpringAI-Program
 PostgreSQL、Redis、RocketMQ、RustFS 都部署在 WSL 里的 Docker 中，并把端口映射到 Windows localhost。
 
 常用地址：
+Gateway: localhost:8081
+后端业务服务: localhost:8080
 PostgreSQL: localhost:5432
 Redis: localhost:6379
 RocketMQ NameServer: localhost:9876
@@ -91,8 +91,37 @@ RustFS、RocketMQ、数据库、Redis、模型 API Key 都优先从 local-secret
 涉及 Java / Spring 配置 / 依赖 / Flyway 迁移时，可以运行：
 mvn -pl backend -am -DskipTests compile
 
+网关：
+涉及 gateway / Spring Cloud Gateway / 路由配置时，可以运行：
+mvn -pl gateway -am -DskipTests compile
+
 本地笔记：
 .obsidian/ 是用户查阅 Markdown 文档用的本地目录，不要处理，不要提交。
+```
+
+## 日志实现约定
+
+```text
+以后新增或修改后端 / gateway / MQ / AI / ingestion 等功能时，必须同步考虑日志实现，不能只完成业务代码。
+
+日志要求：
+- 关键业务动作必须有 event=... 日志，例如创建、删除、状态变更、异步任务投递、异步任务消费、外部模型调用完成或失败。
+- 跨服务、跨线程、跨 MQ 的链路必须尽量透传 requestId；如果进入异步线程，需要手动复制 MDC。
+- 正常关键节点使用 INFO。
+- 可恢复失败、业务失败、慢请求使用 WARN。
+- 系统异常、外部依赖不可用、MQ 投递或消费失败使用 ERROR。
+- 日志必须使用 key-value 风格，方便后续 grep、ELK、Loki 或 OpenSearch 采集。
+- 日志中不能打印密码、Cookie、Authorization、API Key、Token、完整请求体等敏感信息。
+- 如果日志字段可能来自用户输入，例如 username、fileName、URL、异常 message，需要做换行、制表符和超长内容处理。
+
+实现功能时，需要优先思考这些日志点：
+1. 入口日志：这个功能从哪个 Controller / Gateway / Consumer 进入。
+2. 状态日志：是否改变了数据库状态、任务状态、文档状态或会话状态。
+3. 外部依赖日志：是否调用了 AI 模型、Embedding、RocketMQ、RustFS、Redis、数据库或 pgvector。
+4. 完成日志：成功时记录必要 ID、耗时、数量、模型、状态等可排查字段。
+5. 失败日志：失败时记录 event、requestId、业务 ID、异常类型、简短 message。
+
+如果本次功能属于纯前端样式、纯文档说明、纯静态配置，且没有后端链路变化，可以不新增运行时日志，但要明确判断原因。
 ```
 
 ## Git 提交习惯

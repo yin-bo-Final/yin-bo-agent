@@ -28,12 +28,15 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
+import org.apache.rocketmq.client.producer.SendResult;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -42,6 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class KnowledgeAdminService {
 
+    private static final Logger log = LoggerFactory.getLogger(KnowledgeAdminService.class);
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_FAILED = "FAILED";
 
@@ -110,8 +114,19 @@ public class KnowledgeAdminService {
         try {
             knowledgeBaseMapper.insert(knowledgeBase);
         } catch (DuplicateKeyException exception) {
+            log.warn(
+                    "event=knowledge_base_create_failed userId={} collectionName={} reason=duplicate_collection",
+                    adminUser.getId(),
+                    sanitizeLogValue(request.collectionName())
+            );
             throw new BusinessException(HttpStatus.CONFLICT, "collection 名称已存在，请换一个");
         }
+        log.info(
+                "event=knowledge_base_created userId={} knowledgeBaseId={} collectionName={}",
+                adminUser.getId(),
+                knowledgeBase.getKnowledgeBaseNo(),
+                sanitizeLogValue(knowledgeBase.getCollectionName())
+        );
         return toKnowledgeBaseResponse(knowledgeBase);
     }
 
@@ -132,6 +147,11 @@ public class KnowledgeAdminService {
         KnowledgeBase knowledgeBase = requireKnowledgeBase(knowledgeBaseId);
         knowledgeBase.setName(request.name().trim());
         knowledgeBaseMapper.updateById(knowledgeBase);
+        log.info(
+                "event=knowledge_base_updated knowledgeBaseId={} name={}",
+                knowledgeBase.getKnowledgeBaseNo(),
+                sanitizeLogValue(knowledgeBase.getName())
+        );
         return toKnowledgeBaseResponse(knowledgeBase);
     }
 
@@ -144,6 +164,11 @@ public class KnowledgeAdminService {
             deleteDocumentByEntity(document);
         }
         knowledgeBaseMapper.deleteById(knowledgeBase.getId());
+        log.info(
+                "event=knowledge_base_deleted knowledgeBaseId={} documentCount={}",
+                knowledgeBase.getKnowledgeBaseNo(),
+                documents.size()
+        );
     }
 
     public KnowledgeBase requireKnowledgeBase(String knowledgeBaseId) {
@@ -213,11 +238,34 @@ public class KnowledgeAdminService {
                 options.maxChunks()
         );
         try {
-            rocketMQTemplate.syncSend(ragProperties.ingestionTopic(), message);
+            SendResult sendResult = rocketMQTemplate.syncSend(ragProperties.ingestionTopic(), message);
+            log.info(
+                    "event=mq_send topic={} action={} documentId={} sourceRequestId={} messageId={} sendStatus={} strategy={} chunkSize={} chunkOverlap={} maxChunks={}",
+                    ragProperties.ingestionTopic(),
+                    message.resolvedAction(),
+                    message.documentId(),
+                    message.resolvedRequestId(),
+                    sendResult.getMsgId(),
+                    sendResult.getSendStatus(),
+                    options.strategy().name(),
+                    options.chunkSize(),
+                    options.chunkOverlap(),
+                    options.maxChunks()
+            );
         } catch (RuntimeException exception) {
             document.setStatus(STATUS_FAILED);
             document.setErrorMessage(truncate("分块任务投递失败，请检查 RocketMQ：" + conciseMessage(exception), 1000));
             knowledgeDocumentMapper.updateById(document);
+            log.error(
+                    "event=mq_send_failed topic={} action={} documentId={} sourceRequestId={} type={} message={}",
+                    ragProperties.ingestionTopic(),
+                    message.resolvedAction(),
+                    message.documentId(),
+                    message.resolvedRequestId(),
+                    exception.getClass().getSimpleName(),
+                    sanitizeLogValue(exception.getMessage()),
+                    exception
+            );
             throw new BusinessException(HttpStatus.BAD_GATEWAY, "分块任务投递失败，请检查 RocketMQ");
         }
         return toDocumentResponse(document);
@@ -239,11 +287,30 @@ public class KnowledgeAdminService {
 
         IngestionTaskMessage message = IngestionTaskMessage.rebuildVectors(document.getDocumentNo());
         try {
-            rocketMQTemplate.syncSend(ragProperties.ingestionTopic(), message);
+            SendResult sendResult = rocketMQTemplate.syncSend(ragProperties.ingestionTopic(), message);
+            log.info(
+                    "event=mq_send topic={} action={} documentId={} sourceRequestId={} messageId={} sendStatus={}",
+                    ragProperties.ingestionTopic(),
+                    message.resolvedAction(),
+                    message.documentId(),
+                    message.resolvedRequestId(),
+                    sendResult.getMsgId(),
+                    sendResult.getSendStatus()
+            );
         } catch (RuntimeException exception) {
             document.setStatus(STATUS_FAILED);
             document.setErrorMessage(truncate("重建向量任务投递失败，请检查 RocketMQ：" + conciseMessage(exception), 1000));
             knowledgeDocumentMapper.updateById(document);
+            log.error(
+                    "event=mq_send_failed topic={} action={} documentId={} sourceRequestId={} type={} message={}",
+                    ragProperties.ingestionTopic(),
+                    message.resolvedAction(),
+                    message.documentId(),
+                    message.resolvedRequestId(),
+                    exception.getClass().getSimpleName(),
+                    sanitizeLogValue(exception.getMessage()),
+                    exception
+            );
             throw new BusinessException(HttpStatus.BAD_GATEWAY, "重建向量任务投递失败，请检查 RocketMQ");
         }
         return toDocumentResponse(document);
@@ -341,6 +408,12 @@ public class KnowledgeAdminService {
                 .eq(KnowledgeChunk::getDocumentId, document.getId()));
         knowledgeDocumentMapper.deleteById(document.getId());
         deleteOriginalDocumentAfterCommit(document);
+        log.info(
+                "event=knowledge_document_deleted documentId={} chunkCount={} vectorDeleteRequested={}",
+                document.getDocumentNo(),
+                chunks.size(),
+                vectorStore != null
+        );
     }
 
     private void deleteVectorDocuments(VectorStore vectorStore, List<KnowledgeChunk> chunks) {
@@ -480,6 +553,14 @@ public class KnowledgeAdminService {
             return "服务未返回具体原因";
         }
         return truncate(message.replaceAll("\\s+", " ").trim(), 180);
+    }
+
+    private String sanitizeLogValue(String value) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        String sanitized = value.replaceAll("[\\r\\n\\t]", "_");
+        return sanitized.length() <= 256 ? sanitized : sanitized.substring(0, 256);
     }
 
     private Instant toInstant(LocalDateTime value) {

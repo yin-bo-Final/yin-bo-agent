@@ -152,6 +152,16 @@ public class DocumentIngestionService {
     ) {
         try {
             KnowledgeDocument document = createDocument(authUser, knowledgeBase, rawDocument, options, STATUS_UPLOADED);
+            log.info(
+                    "event=document_uploaded userId={} knowledgeBaseId={} documentId={} sourceType={} fileName={} sizeBytes={} strategy={}",
+                    authUser.getId(),
+                    knowledgeBase == null ? null : knowledgeBase.getKnowledgeBaseNo(),
+                    document.getDocumentNo(),
+                    document.getSourceType(),
+                    sanitizeLogValue(document.getFileName()),
+                    document.getOriginalSizeBytes(),
+                    options.strategy().name()
+            );
             return toResponse(document);
         } catch (RuntimeException exception) {
             deleteRawDocumentQuietly(rawDocument);
@@ -167,6 +177,7 @@ public class DocumentIngestionService {
                 : requireKnowledgeBaseById(document.getKnowledgeBaseId());
         VectorStore vectorStore = vectorStoreProvider.getIfAvailable();
         if (vectorStore == null) {
+            log.warn("event=ingestion_failed action=CHUNK documentId={} reason=vector_store_unavailable", documentId);
             markFailed(document, new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "当前没有可用的向量存储，请检查 EmbeddingModel 和 PGVector 配置"));
             return;
         }
@@ -175,6 +186,14 @@ public class DocumentIngestionService {
         List<String> vectorDocumentIds = new ArrayList<>();
         List<KnowledgeChunk> oldChunks = listChunkEntities(document.getId());
         try {
+            log.info(
+                    "event=ingestion_started action=CHUNK documentId={} strategy={} chunkSize={} chunkOverlap={} maxChunks={}",
+                    document.getDocumentNo(),
+                    options.strategy().name(),
+                    options.chunkSize(),
+                    options.chunkOverlap(),
+                    options.maxChunks()
+            );
             document.setStatus(STATUS_PROCESSING);
             document.setErrorMessage(null);
             document.setChunkStrategy(options.strategy().name());
@@ -238,10 +257,28 @@ public class DocumentIngestionService {
             knowledgeDocumentMapper.updateById(document);
             deleteChunkEntities(oldChunks);
             deleteVectorDocumentsAfterCommit(vectorStore, oldChunks);
+            log.info(
+                    "event=ingestion_completed action=CHUNK documentId={} knowledgeBaseId={} chunkCount={} textChars={} parseMs={} chunkMs={} embeddingMs={} totalMs={}",
+                    document.getDocumentNo(),
+                    knowledgeBase == null ? null : knowledgeBase.getKnowledgeBaseNo(),
+                    chunks.size(),
+                    cleanText.length(),
+                    parseDurationMs,
+                    chunkDurationMs,
+                    embeddingDurationMs,
+                    totalDurationMs
+            );
         } catch (RuntimeException exception) {
             rollbackVectorDocuments(vectorStore, vectorDocumentIds);
             deleteChunkEntitiesByVectorIds(vectorDocumentIds);
             markFailed(document, exception);
+            log.warn(
+                    "event=ingestion_failed action=CHUNK documentId={} type={} message={}",
+                    document.getDocumentNo(),
+                    exception.getClass().getSimpleName(),
+                    sanitizeLogValue(exception.getMessage()),
+                    exception
+            );
         }
     }
 
@@ -252,12 +289,14 @@ public class DocumentIngestionService {
                 : requireKnowledgeBaseById(document.getKnowledgeBaseId());
         VectorStore vectorStore = vectorStoreProvider.getIfAvailable();
         if (vectorStore == null) {
+            log.warn("event=ingestion_failed action=REBUILD_VECTORS documentId={} reason=vector_store_unavailable", documentId);
             markFailed(document, new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "当前没有可用的向量存储，请检查 EmbeddingModel 和 PGVector 配置"));
             return;
         }
 
         List<KnowledgeChunk> chunks = listChunkEntities(document.getId());
         if (chunks.isEmpty()) {
+            log.warn("event=ingestion_failed action=REBUILD_VECTORS documentId={} reason=no_chunks", documentId);
             markFailed(document, new BusinessException(HttpStatus.BAD_REQUEST, "文档没有可重建的分块"));
             return;
         }
@@ -265,6 +304,11 @@ public class DocumentIngestionService {
         List<String> oldVectorDocumentIds = vectorDocumentIds(chunks);
         List<String> newVectorDocumentIds = new ArrayList<>();
         try {
+            log.info(
+                    "event=ingestion_started action=REBUILD_VECTORS documentId={} chunkCount={}",
+                    document.getDocumentNo(),
+                    chunks.size()
+            );
             transactionTemplate.executeWithoutResult(status -> {
                 document.setStatus(STATUS_PROCESSING);
                 document.setErrorMessage(null);
@@ -300,9 +344,23 @@ public class DocumentIngestionService {
                 knowledgeDocumentMapper.updateById(document);
             });
             deleteVectorDocumentsByIdsAfterCommit(vectorStore, oldVectorDocumentIds);
+            log.info(
+                    "event=ingestion_completed action=REBUILD_VECTORS documentId={} chunkCount={} embeddingMs={} totalMs={}",
+                    document.getDocumentNo(),
+                    chunks.size(),
+                    document.getEmbeddingDurationMs(),
+                    document.getTotalDurationMs()
+            );
         } catch (RuntimeException exception) {
             rollbackVectorDocuments(vectorStore, newVectorDocumentIds);
             markFailed(document, exception);
+            log.warn(
+                    "event=ingestion_failed action=REBUILD_VECTORS documentId={} type={} message={}",
+                    document.getDocumentNo(),
+                    exception.getClass().getSimpleName(),
+                    sanitizeLogValue(exception.getMessage()),
+                    exception
+            );
         }
     }
 
@@ -570,7 +628,13 @@ public class DocumentIngestionService {
         try {
             vectorStore.delete(vectorDocumentIds);
         } catch (RuntimeException rollbackException) {
-            log.warn("Vector document rollback failed. ids={}", vectorDocumentIds, rollbackException);
+            log.warn(
+                    "event=vector_rollback_failed vectorCount={} type={} message={}",
+                    vectorDocumentIds.size(),
+                    rollbackException.getClass().getSimpleName(),
+                    sanitizeLogValue(rollbackException.getMessage()),
+                    rollbackException
+            );
         }
     }
 
@@ -589,7 +653,13 @@ public class DocumentIngestionService {
         try {
             knowledgeDocumentMapper.updateById(document);
         } catch (RuntimeException updateException) {
-            log.warn("Failed to update ingestion failure status. documentId={}", document.getDocumentNo(), updateException);
+            log.warn(
+                    "event=ingestion_status_update_failed documentId={} type={} message={}",
+                    document.getDocumentNo(),
+                    updateException.getClass().getSimpleName(),
+                    sanitizeLogValue(updateException.getMessage()),
+                    updateException
+            );
         }
     }
 
@@ -648,6 +718,14 @@ public class DocumentIngestionService {
             return "服务未返回具体原因";
         }
         return truncate(message.replaceAll("\\s+", " ").trim(), 180);
+    }
+
+    private String sanitizeLogValue(String value) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        String sanitized = value.replaceAll("[\\r\\n\\t]", "_");
+        return sanitized.length() <= 256 ? sanitized : sanitized.substring(0, 256);
     }
 
     private Instant toInstant(LocalDateTime value) {

@@ -11,7 +11,7 @@ spring:
   config:
     import: optional:file:./local-secrets.yml,optional:file:../local-secrets.yml
   application:
-    name: yinbo-agent-backend
+    name: yinbo-agent-service
   datasource:
     url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/yinbo_agent}
     username: ${POSTGRES_USERNAME:}
@@ -68,7 +68,23 @@ management:
       exposure:
         include: health,info
 
+logging:
+  file:
+    name: .logs/service.log
+  logback:
+    rollingpolicy:
+      file-name-pattern: .logs/service.%d{yyyy-MM-dd}.%i.log.gz
+      max-file-size: 20MB
+      max-history: 14
+      total-size-cap: 1GB
+      clean-history-on-start: false
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] app=${spring.application.name} requestId=%X{requestId:-} logger=%logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] app=${spring.application.name} requestId=%X{requestId:-} logger=%logger{36} - %msg%n"
+
 app:
+  logging:
+    slow-request-threshold-ms: ${APP_SLOW_REQUEST_THRESHOLD_MS:3000}
   ai:
     rag:
       embedding-model: ${RAG_EMBEDDING_MODEL:Qwen/Qwen3-Embedding-8B}

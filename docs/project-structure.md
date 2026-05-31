@@ -6,6 +6,7 @@
 
 | 文档 | 用途 |
 | --- | --- |
+| [gateway-structure.md](gateway-structure.md) | 网关模块、服务命名、路由转发和常见改动入口 |
 | [backend-structure.md](backend-structure.md) | 后端包结构、RAG ingestion、Flyway、数据表和常见改动入口 |
 | [frontend-structure.md](frontend-structure.md) | 前端页面结构、API 封装、后台管理 UI 和路由状态 |
 | [frontend-style-guide.md](frontend-style-guide.md) | 前端视觉风格、按钮、弹窗、下拉栏、tooltip 等样式约定 |
@@ -16,28 +17,30 @@
 ```text
 SpringAI-Program/
 ├─ backend/                         # Spring Boot 后端
+├─ gateway/                         # Spring Cloud Gateway 网关
 ├─ frontend/                        # Vue 3 前端
 ├─ docs/                            # 项目文档
 ├─ local-secrets.example.yml        # 本地私密配置模板
 ├─ local-secrets.yml                # 本地私密配置，不提交
-├─ pom.xml                          # Maven 聚合工程，目前聚合 backend
+├─ pom.xml                          # Maven 聚合工程，目前聚合 backend 和 gateway
 └─ README.md                        # 项目入口文档
 ```
 
-当前工程采用“前端单页 + 后端模块化包 + 中间件外置”的结构。后端目前按业务边界拆包，等功能继续变大后，再考虑拆 Maven 多模块，例如 `auth`、`chat`、`rag`、`knowledge`、`ingestion`、`mcp`。
+当前工程采用“前端单页 + 独立网关 + 后端模块化包 + 中间件外置”的结构。`gateway` 是统一入口，`backend` 是业务服务。后端目前按业务边界拆包，等功能继续变大后，再考虑继续拆出更多 Maven 模块或服务，例如 `auth`、`chat`、`rag`、`knowledge`、`ingestion`、`mcp`。
 
 ## 系统分层
 
 ```text
 Vue 3 前端
-  -> Spring Boot 后端
-    -> PostgreSQL 保存业务表
-    -> pgvector 保存知识库向量
-    -> Redis 保存 Session 登录态
-    -> RustFS 保存上传原始文件
-    -> RocketMQ 承载异步 ingestion 任务
-    -> Spring AI 调用聊天模型和 Embedding 模型
-    -> Apache Tika 解析 PDF / Word / Markdown / TXT
+  -> Spring Cloud Gateway 网关
+    -> Spring Boot 业务服务
+      -> PostgreSQL 保存业务表
+      -> pgvector 保存知识库向量
+      -> Redis 保存 Session 登录态
+      -> RustFS 保存上传原始文件
+      -> RocketMQ 承载异步 ingestion 任务
+      -> Spring AI 调用聊天模型和 Embedding 模型
+      -> Apache Tika 解析 PDF / Word / Markdown / TXT
 ```
 
 ## 主要链路
@@ -46,7 +49,7 @@ Vue 3 前端
 
 ```text
 ConversationPage
--> /api/chat 或 /api/chat/stream
+-> gateway /api/chat 或 /api/chat/stream
 -> LoginInterceptor
 -> ChatController
 -> ChatService
@@ -98,6 +101,7 @@ ConversationPage
 
 | 任务 | 先读 |
 | --- | --- |
+| 网关路由、统一入口、限流、鉴权前置 | [gateway-structure.md](gateway-structure.md) |
 | 后端接口、数据库、RAG、RocketMQ、RustFS | [backend-structure.md](backend-structure.md) |
 | 前端页面、后台管理、会话 UI | [frontend-structure.md](frontend-structure.md) |
 | 只改样式 | [frontend-style-guide.md](frontend-style-guide.md) |
@@ -105,7 +109,8 @@ ConversationPage
 
 ## 工程约定
 
-- 后端包名根路径是 `com.yinbo.agent`。
+- 网关包名根路径是 `com.yinbo.gateway`，后端业务服务包名根路径是 `com.yinbo.agent`。
+- 前端 `/api` 请求默认先进入 gateway，再由 gateway 转发到后端业务服务。
 - 后台接口路径统一放在 `/api/admin/**`。
 - 业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本。

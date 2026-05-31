@@ -9,7 +9,7 @@ backend/
 ├─ pom.xml
 └─ src/main/
    ├─ java/com/yinbo/agent/
-   │  ├─ YinboAgentApplication.java
+   │  ├─ YinboAgentServiceApplication.java
    │  ├─ admin/
    │  ├─ auth/
    │  ├─ chat/
@@ -28,7 +28,7 @@ backend/
 
 | 文件 | 说明 |
 | --- | --- |
-| `YinboAgentApplication` | Spring Boot 启动入口，启用配置属性和 Mapper 扫描 |
+| `YinboAgentServiceApplication` | 后端业务服务启动入口，启用配置属性和 Mapper 扫描 |
 
 ## `admin/`
 
@@ -101,6 +101,14 @@ ConversationPage
 -> 保存 user / assistant 消息
 -> 记录响应耗时和 token
 -> 更新会话最近消息时间
+```
+
+关键日志：
+
+```text
+event=ai_chat_completed
+event=ai_call_failed
+event=ai_stream_failed
 ```
 
 相关表：
@@ -230,8 +238,8 @@ MultipartFile / URL
 
 ```text
 KnowledgeAdminService.rechunkDocument
--> RocketMQ 发送 CHUNK 消息
--> DocumentIngestionTaskConsumer
+-> RocketMQ 发送 CHUNK 消息并记录 event=mq_send
+-> DocumentIngestionTaskConsumer 记录 event=mq_consume_started / event=mq_consume_completed
 -> DocumentIngestionService.processDocument
 -> TikaDocumentParser 读取 RustFS 并解析
 -> DocumentTextCleaner 清洗文本
@@ -241,14 +249,15 @@ KnowledgeAdminService.rechunkDocument
 -> VectorStore.add 写入 pgvector
 -> knowledge_chunk 写入分块元数据
 -> status = COMPLETED / FAILED
+-> 记录 event=ingestion_completed / event=ingestion_failed
 ```
 
 重建向量阶段：
 
 ```text
 KnowledgeAdminService.rebuildDocumentVectors
--> RocketMQ 发送 REBUILD_VECTORS 消息
--> DocumentIngestionTaskConsumer
+-> RocketMQ 发送 REBUILD_VECTORS 消息并记录 event=mq_send
+-> DocumentIngestionTaskConsumer 记录 MQ 消费日志
 -> DocumentIngestionService.rebuildDocumentVectors
 -> 读取已有 knowledge_chunk
 -> 写入新向量
