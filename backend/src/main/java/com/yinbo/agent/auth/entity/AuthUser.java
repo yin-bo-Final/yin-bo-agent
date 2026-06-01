@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
 
 @TableName("auth_user")
+// 认证用户实体。
 public class AuthUser {
 
     @TableId(type = IdType.ASSIGN_ID)

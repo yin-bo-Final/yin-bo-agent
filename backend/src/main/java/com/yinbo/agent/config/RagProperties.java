@@ -3,6 +3,7 @@ package com.yinbo.agent.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "app.ai.rag")
+// RAG 入库和向量检索配置。
 public record RagProperties(
         String embeddingModel,
         String rerankerModel,
@@ -18,6 +19,7 @@ public record RagProperties(
         String ingestionConsumerGroup
 ) {
 
+    // 给 RAG 配置补默认值并修正非法组合。
     public RagProperties {
         embeddingModel = blankToDefault(embeddingModel, "Qwen/Qwen3-Embedding-8B");
         rerankerModel = blankToDefault(rerankerModel, "Qwen/Qwen3-Reranker-8B");
@@ -36,14 +38,17 @@ public record RagProperties(
         }
     }
 
+    // 空字符串回退到默认值。
     private static String blankToDefault(String value, String defaultValue) {
         return value == null || value.isBlank() ? defaultValue : value.trim();
     }
 
+    // 非正整数回退到默认值。
     private static Integer positiveOrDefault(Integer value, int defaultValue) {
         return value == null || value <= 0 ? defaultValue : value;
     }
 
+    // 负整数回退到默认值。
     private static Integer nonNegativeOrDefault(Integer value, int defaultValue) {
         return value == null || value < 0 ? defaultValue : value;
     }

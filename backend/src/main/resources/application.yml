@@ -85,6 +85,13 @@ logging:
 app:
   logging:
     slow-request-threshold-ms: ${APP_SLOW_REQUEST_THRESHOLD_MS:3000}
+  concurrency:
+    upload:
+      max-permits: ${UPLOAD_MAX_CONCURRENCY:10}
+      lease-ttl: ${UPLOAD_CONCURRENCY_LEASE_TTL:10m}
+    ingestion:
+      max-permits: ${INGESTION_MAX_CONCURRENCY:5}
+      lease-ttl: ${INGESTION_CONCURRENCY_LEASE_TTL:30m}
   ai:
     rag:
       embedding-model: ${RAG_EMBEDDING_MODEL:Qwen/Qwen3-Embedding-8B}

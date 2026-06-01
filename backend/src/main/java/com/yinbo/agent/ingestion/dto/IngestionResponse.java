@@ -2,6 +2,7 @@ package com.yinbo.agent.ingestion.dto;
 
 import java.time.Instant;
 
+// 文档入库创建响应。
 public record IngestionResponse(
         String documentId,
         String sourceType,

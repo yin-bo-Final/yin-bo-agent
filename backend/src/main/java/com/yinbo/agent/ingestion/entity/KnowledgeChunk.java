@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
 
 @TableName("knowledge_chunk")
+// 知识文档分块实体。
 public class KnowledgeChunk {
 
     @TableId(type = IdType.ASSIGN_ID)

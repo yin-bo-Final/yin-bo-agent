@@ -1,11 +1,11 @@
-package com.yinbo.agent.knowledge;
+package com.yinbo.agent.knowledge.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yinbo.agent.auth.entity.AuthUser;
 import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.config.RagProperties;
-import com.yinbo.agent.ingestion.ChunkingOptions;
+import com.yinbo.agent.ingestion.model.ChunkingOptions;
 import com.yinbo.agent.ingestion.entity.KnowledgeChunk;
 import com.yinbo.agent.ingestion.entity.KnowledgeDocument;
 import com.yinbo.agent.ingestion.mapper.KnowledgeChunkMapper;
@@ -22,7 +22,7 @@ import com.yinbo.agent.knowledge.dto.UpdateChunkRequest;
 import com.yinbo.agent.knowledge.dto.UpdateKnowledgeBaseRequest;
 import com.yinbo.agent.knowledge.entity.KnowledgeBase;
 import com.yinbo.agent.knowledge.mapper.KnowledgeBaseMapper;
-import com.yinbo.agent.storage.ObjectStorageService;
+import com.yinbo.agent.storage.service.ObjectStorageService;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -43,6 +43,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
+// 管理后台知识库业务服务。
 public class KnowledgeAdminService {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeAdminService.class);
@@ -58,6 +59,7 @@ public class KnowledgeAdminService {
     private final JdbcTemplate jdbcTemplate;
     private final ObjectStorageService objectStorageService;
 
+    // 注入知识库、文档、分块、向量和 MQ 相关依赖。
     public KnowledgeAdminService(
             RagProperties ragProperties,
             KnowledgeBaseMapper knowledgeBaseMapper,
@@ -78,12 +80,12 @@ public class KnowledgeAdminService {
         this.objectStorageService = objectStorageService;
     }
 
+    // 查询知识库概览统计。
     public KnowledgeOverviewResponse overview() {
         long knowledgeBaseCount = nullToZero(knowledgeBaseMapper.selectCount(new LambdaQueryWrapper<KnowledgeBase>()));
         long totalDocumentCount = nullToZero(knowledgeDocumentMapper.selectCount(new LambdaQueryWrapper<KnowledgeDocument>()));
-        long baseWithDocuments = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM (SELECT knowledge_base_id FROM knowledge_document WHERE knowledge_base_id IS NOT NULL GROUP BY knowledge_base_id) t",
-                Long.class
+        long baseWithDocuments = queryLongOrZero(
+                "SELECT COUNT(*) FROM (SELECT knowledge_base_id FROM knowledge_document WHERE knowledge_base_id IS NOT NULL GROUP BY knowledge_base_id) t"
         );
         return new KnowledgeOverviewResponse(
                 knowledgeBaseCount,
@@ -94,6 +96,7 @@ public class KnowledgeAdminService {
     }
 
     @Transactional
+    // 创建知识库。
     public KnowledgeBaseResponse create(AuthUser adminUser, CreateKnowledgeBaseRequest request) {
         String requestedEmbeddingModel = request.embeddingModel().trim();
         String configuredEmbeddingModel = ragProperties.embeddingModel();
@@ -130,6 +133,7 @@ public class KnowledgeAdminService {
         return toKnowledgeBaseResponse(knowledgeBase);
     }
 
+    // 查询知识库列表。
     public List<KnowledgeBaseResponse> list() {
         return knowledgeBaseMapper.selectList(new LambdaQueryWrapper<KnowledgeBase>()
                         .orderByDesc(KnowledgeBase::getCreatedAt))
@@ -138,11 +142,13 @@ public class KnowledgeAdminService {
                 .toList();
     }
 
+    // 查询知识库详情。
     public KnowledgeBaseResponse detail(String knowledgeBaseId) {
         return toKnowledgeBaseResponse(requireKnowledgeBase(knowledgeBaseId));
     }
 
     @Transactional
+    // 更新知识库基础信息。
     public KnowledgeBaseResponse updateKnowledgeBase(String knowledgeBaseId, UpdateKnowledgeBaseRequest request) {
         KnowledgeBase knowledgeBase = requireKnowledgeBase(knowledgeBaseId);
         knowledgeBase.setName(request.name().trim());
@@ -156,6 +162,7 @@ public class KnowledgeAdminService {
     }
 
     @Transactional
+    // 删除知识库及其文档和分块。
     public void deleteKnowledgeBase(String knowledgeBaseId) {
         KnowledgeBase knowledgeBase = requireKnowledgeBase(knowledgeBaseId);
         List<KnowledgeDocument> documents = knowledgeDocumentMapper.selectList(new LambdaQueryWrapper<KnowledgeDocument>()
@@ -171,6 +178,7 @@ public class KnowledgeAdminService {
         );
     }
 
+    // 根据业务编号获取知识库。
     public KnowledgeBase requireKnowledgeBase(String knowledgeBaseId) {
         KnowledgeBase knowledgeBase = knowledgeBaseMapper.selectOne(new LambdaQueryWrapper<KnowledgeBase>()
                 .eq(KnowledgeBase::getKnowledgeBaseNo, knowledgeBaseId)
@@ -181,6 +189,7 @@ public class KnowledgeAdminService {
         return knowledgeBase;
     }
 
+    // 查询知识库下的文档列表。
     public List<KnowledgeDocumentResponse> listDocuments(String knowledgeBaseId) {
         KnowledgeBase knowledgeBase = requireKnowledgeBase(knowledgeBaseId);
         return knowledgeDocumentMapper.selectList(new LambdaQueryWrapper<KnowledgeDocument>()
@@ -191,10 +200,12 @@ public class KnowledgeAdminService {
                 .toList();
     }
 
+    // 查询文档详情。
     public KnowledgeDocumentResponse documentDetail(String documentId) {
         return toDocumentResponse(requireDocument(documentId));
     }
 
+    // 查询文档分块列表。
     public List<KnowledgeChunkResponse> listChunks(String documentId) {
         KnowledgeDocument document = requireDocument(documentId);
         return knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunk>()
@@ -205,6 +216,7 @@ public class KnowledgeAdminService {
                 .toList();
     }
 
+    // 投递文档重新分块任务。
     public KnowledgeDocumentResponse rechunkDocument(String documentId, RechunkDocumentRequest request) {
         KnowledgeDocument document = requireDocument(documentId);
         requireKnowledgeBaseById(document.getKnowledgeBaseId());
@@ -271,6 +283,7 @@ public class KnowledgeAdminService {
         return toDocumentResponse(document);
     }
 
+    // 投递文档向量重建任务。
     public KnowledgeDocumentResponse rebuildDocumentVectors(String documentId) {
         KnowledgeDocument document = requireDocument(documentId);
         requireKnowledgeBaseById(document.getKnowledgeBaseId());
@@ -317,11 +330,13 @@ public class KnowledgeAdminService {
     }
 
     @Transactional
+    // 删除文档及其分块。
     public void deleteDocument(String documentId) {
         deleteDocumentByEntity(requireDocument(documentId));
     }
 
     @Transactional
+    // 更新单个分块启用状态。
     public KnowledgeChunkResponse updateChunkEnabled(String chunkId, ChunkEnabledRequest request) {
         KnowledgeChunk chunk = requireChunk(chunkId);
         chunk.setEnabled(request != null && request.enabledValue());
@@ -330,6 +345,7 @@ public class KnowledgeAdminService {
     }
 
     @Transactional
+    // 更新单个分块内容。
     public KnowledgeChunkResponse updateChunk(String chunkId, UpdateChunkRequest request) {
         KnowledgeChunk chunk = requireChunk(chunkId);
         String content = request.content().trim();
@@ -341,6 +357,7 @@ public class KnowledgeAdminService {
     }
 
     @Transactional
+    // 批量更新文档下所有分块的启用状态。
     public List<KnowledgeChunkResponse> updateDocumentChunksEnabled(String documentId, ChunkEnabledRequest request) {
         KnowledgeDocument document = requireDocument(documentId);
         boolean enabled = request != null && request.enabledValue();
@@ -351,6 +368,7 @@ public class KnowledgeAdminService {
     }
 
     @Transactional
+    // 删除单个分块。
     public void deleteChunk(String chunkId) {
         KnowledgeChunk chunk = requireChunk(chunkId);
         VectorStore vectorStore = vectorStoreProvider.getIfAvailable();
@@ -448,6 +466,7 @@ public class KnowledgeAdminService {
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
+            // 事务提交后删除原始文件。
             public void afterCommit() {
                 objectStorageService.deleteQuietly(document.getStorageBucket(), document.getStorageObjectKey());
             }
@@ -531,6 +550,11 @@ public class KnowledgeAdminService {
 
     private long nullToZero(Long value) {
         return value == null ? 0L : value;
+    }
+
+    // 查询必须返回数值的 JDBC 统计指标，空值统一按 0 处理。
+    private long queryLongOrZero(String sql) {
+        return nullToZero(jdbcTemplate.queryForObject(sql, Long.class));
     }
 
     private int estimateTokenCount(String content) {

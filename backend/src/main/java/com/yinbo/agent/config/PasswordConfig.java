@@ -6,9 +6,11 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 @Configuration
+// 密码编码器配置。
 public class PasswordConfig {
 
     @Bean
+    // 创建 BCrypt 密码编码器。
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }

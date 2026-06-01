@@ -1,22 +1,6 @@
+import { parseResponse } from './http';
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
-
-async function parseResponse(response, fallbackMessage) {
-  if (response.ok) {
-    return response.json();
-  }
-
-  let message = fallbackMessage;
-  try {
-    const errorBody = await response.json();
-    if (errorBody?.message) {
-      message = errorBody.message;
-    }
-  } catch (_error) {
-    message = fallbackMessage;
-  }
-
-  throw new Error(message);
-}
 
 export async function login(payload) {
   const response = await fetch(`${API_BASE_URL}/auth/login`, {

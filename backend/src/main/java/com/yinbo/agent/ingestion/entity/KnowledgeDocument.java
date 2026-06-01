@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
 
 @TableName("knowledge_document")
+// 知识文档实体。
 public class KnowledgeDocument {
 
     @TableId(type = IdType.ASSIGN_ID)

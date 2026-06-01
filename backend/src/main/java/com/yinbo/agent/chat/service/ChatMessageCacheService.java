@@ -1,4 +1,4 @@
-package com.yinbo.agent.chat;
+package com.yinbo.agent.chat.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -18,6 +18,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 @Service
+// 会话消息 Redis 缓存服务。
 public class ChatMessageCacheService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatMessageCacheService.class);
@@ -30,11 +31,13 @@ public class ChatMessageCacheService {
     private final StringRedisTemplate stringRedisTemplate;
     private final ObjectMapper objectMapper;
 
+    // 注入 Redis 模板和 JSON 序列化器。
     public ChatMessageCacheService(StringRedisTemplate stringRedisTemplate, ObjectMapper objectMapper) {
         this.stringRedisTemplate = stringRedisTemplate;
         this.objectMapper = objectMapper;
     }
 
+    // 从缓存读取消息，缓存缺失时回源并写回。
     public List<CachedChatMessage> getMessages(
             Long userId,
             Long conversationId,
@@ -53,6 +56,7 @@ public class ChatMessageCacheService {
         return messages;
     }
 
+    // 删除指定会话的消息缓存。
     public void evictMessages(Long userId, Long conversationId) {
         String cacheKey = cacheKey(userId, conversationId);
         deleteCache(cacheKey);
@@ -60,6 +64,7 @@ public class ChatMessageCacheService {
                 .execute(() -> deleteCache(cacheKey));
     }
 
+    // 写入指定会话的消息缓存。
     public void putMessages(Long userId, Long conversationId, List<CachedChatMessage> messages) {
         writeMessages(cacheKey(userId, conversationId), messages);
     }
@@ -100,10 +105,12 @@ public class ChatMessageCacheService {
         }
     }
 
+    // 构建会话消息缓存 key。
     private String cacheKey(Long userId, Long conversationId) {
         return CACHE_KEY_PREFIX + "user:" + userId + ":conversation:" + conversationId;
     }
 
+    // 缓存中的会话消息结构。
     public record CachedChatMessage(
             String role,
             String content,
@@ -113,6 +120,7 @@ public class ChatMessageCacheService {
             Integer totalTokens
     ) {
 
+        // 从数据库消息实体转换为缓存消息。
         public static CachedChatMessage from(ChatMessageEntity message) {
             return new CachedChatMessage(
                     message.getRole(),

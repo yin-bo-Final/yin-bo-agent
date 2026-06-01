@@ -18,8 +18,10 @@ class DocumentSourceReaderTest {
             null,
             null,
             null,
-            1024L
-    ));
+            1024L,
+            null,
+            null
+    ), null);
 
     @Test
     void rejectsLoopbackUrlBeforeDownload() {

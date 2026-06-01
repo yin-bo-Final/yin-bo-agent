@@ -1,9 +1,9 @@
 package com.yinbo.agent.ingestion.optimizer;
 
 import com.yinbo.agent.config.RagProperties;
-import com.yinbo.agent.ingestion.ChunkingOptions;
-import com.yinbo.agent.ingestion.ChunkingStrategy;
-import com.yinbo.agent.ingestion.DocumentChunk;
+import com.yinbo.agent.ingestion.model.ChunkingOptions;
+import com.yinbo.agent.ingestion.model.ChunkingStrategy;
+import com.yinbo.agent.ingestion.model.DocumentChunk;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -11,14 +11,17 @@ import java.util.Set;
 import org.springframework.stereotype.Component;
 
 @Component
+// 文档切块优化器。
 public class DocumentChunkOptimizer {
 
     private final RagProperties ragProperties;
 
+    // 注入 RAG 配置。
     public DocumentChunkOptimizer(RagProperties ragProperties) {
         this.ragProperties = ragProperties;
     }
 
+    // 规范化、去重并合并过短分块。
     public List<DocumentChunk> optimize(List<DocumentChunk> chunks, ChunkingOptions options) {
         List<DocumentChunk> normalized = normalizeAndDedupe(chunks);
         List<DocumentChunk> merged = mergeShortChunks(normalized, options);
@@ -32,6 +35,7 @@ public class DocumentChunkOptimizer {
         return reindexed;
     }
 
+    // 规范化内容并去除重复分块。
     private List<DocumentChunk> normalizeAndDedupe(List<DocumentChunk> chunks) {
         List<DocumentChunk> normalized = new ArrayList<>();
         Set<String> seen = new HashSet<>();
@@ -49,6 +53,7 @@ public class DocumentChunkOptimizer {
         return normalized;
     }
 
+    // 合并过短分块。
     private List<DocumentChunk> mergeShortChunks(List<DocumentChunk> chunks, ChunkingOptions options) {
         List<DocumentChunk> merged = new ArrayList<>();
         DocumentChunk pending = null;
@@ -78,6 +83,7 @@ public class DocumentChunkOptimizer {
         return merged;
     }
 
+    // 自动策略下继续合并分块直到接近上限。
     private List<DocumentChunk> mergeAutoChunks(List<DocumentChunk> chunks, ChunkingOptions options) {
         List<DocumentChunk> current = chunks;
         int totalChars = chunks.stream()
@@ -106,6 +112,7 @@ public class DocumentChunkOptimizer {
         return current;
     }
 
+    // 按顺序合并相邻分块。
     private List<DocumentChunk> mergeSequentially(List<DocumentChunk> chunks, int softLimit) {
         List<DocumentChunk> merged = new ArrayList<>();
         DocumentChunk pending = null;
@@ -132,6 +139,7 @@ public class DocumentChunkOptimizer {
         return merged;
     }
 
+    // 规范化分块内容。
     private String normalizeContent(String content) {
         if (content == null) {
             return "";
@@ -142,6 +150,7 @@ public class DocumentChunkOptimizer {
                 .trim();
     }
 
+    // 返回第一个非空标题。
     private String firstNonBlank(String first, String second) {
         return first == null || first.isBlank() ? second : first;
     }

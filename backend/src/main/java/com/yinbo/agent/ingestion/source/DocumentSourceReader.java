@@ -2,9 +2,9 @@ package com.yinbo.agent.ingestion.source;
 
 import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.config.RagProperties;
-import com.yinbo.agent.ingestion.DocumentSourceType;
-import com.yinbo.agent.ingestion.RawDocument;
-import com.yinbo.agent.storage.ObjectStorageService;
+import com.yinbo.agent.ingestion.model.DocumentSourceType;
+import com.yinbo.agent.ingestion.model.RawDocument;
+import com.yinbo.agent.storage.service.ObjectStorageService;
 import com.yinbo.agent.storage.StoredObject;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -25,6 +25,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
 
 @Component
+// 文档来源读取器。
 public class DocumentSourceReader {
 
     private static final int CONNECT_TIMEOUT_MILLIS = 8_000;
@@ -34,11 +35,13 @@ public class DocumentSourceReader {
     private final RagProperties ragProperties;
     private final ObjectStorageService objectStorageService;
 
+    // 注入 RAG 配置和对象存储服务。
     public DocumentSourceReader(RagProperties ragProperties, ObjectStorageService objectStorageService) {
         this.ragProperties = ragProperties;
         this.objectStorageService = objectStorageService;
     }
 
+    // 读取上传文件并保存原始文件。
     public RawDocument fromUpload(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "请上传一个非空文件");
@@ -72,6 +75,7 @@ public class DocumentSourceReader {
         }
     }
 
+    // 下载 URL 内容并保存原始文件。
     public RawDocument fromUrl(String rawUrl, String requestedFileName) {
         URI uri = parseHttpUri(rawUrl);
         try {
@@ -122,6 +126,7 @@ public class DocumentSourceReader {
         }
     }
 
+    // 解析并校验 HTTP URL。
     private URI parseHttpUri(String rawUrl) {
         if (rawUrl == null || rawUrl.isBlank()) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "URL 不能为空");
@@ -137,6 +142,7 @@ public class DocumentSourceReader {
         }
     }
 
+    // 打开经过安全校验的下载连接。
     private DownloadConnection openSafeConnection(URI initialUri) throws IOException {
         URI currentUri = initialUri;
         for (int redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {

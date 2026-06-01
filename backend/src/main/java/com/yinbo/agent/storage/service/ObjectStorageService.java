@@ -1,7 +1,8 @@
-package com.yinbo.agent.storage;
+package com.yinbo.agent.storage.service;
 
 import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.config.ObjectStorageProperties;
+import com.yinbo.agent.storage.StoredObject;
 import io.minio.BucketExistsArgs;
 import io.minio.GetObjectArgs;
 import io.minio.MakeBucketArgs;
@@ -19,6 +20,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 @Service
+// 对象存储服务。
 public class ObjectStorageService {
 
     private static final Logger log = LoggerFactory.getLogger(ObjectStorageService.class);
@@ -26,6 +28,7 @@ public class ObjectStorageService {
     private final ObjectStorageProperties properties;
     private final MinioClient minioClient;
 
+    // 初始化 MinIO 兼容客户端。
     public ObjectStorageService(ObjectStorageProperties properties) {
         this.properties = properties;
         this.minioClient = MinioClient.builder()
@@ -34,6 +37,7 @@ public class ObjectStorageService {
                 .build();
     }
 
+    // 上传原始文档到对象存储。
     public StoredObject uploadOriginalDocument(
             String fileName,
             String contentType,
@@ -68,6 +72,7 @@ public class ObjectStorageService {
         }
     }
 
+    // 打开对象存储中的文件流。
     public InputStream open(String bucket, String objectKey) throws IOException {
         try {
             return minioClient.getObject(GetObjectArgs.builder()
@@ -79,6 +84,7 @@ public class ObjectStorageService {
         }
     }
 
+    // 静默删除对象存储文件。
     public void deleteQuietly(String bucket, String objectKey) {
         if (objectKey == null || objectKey.isBlank()) {
             return;
@@ -93,6 +99,7 @@ public class ObjectStorageService {
         }
     }
 
+    // 确保目标 bucket 已存在。
     private void ensureBucket() throws Exception {
         boolean exists = minioClient.bucketExists(BucketExistsArgs.builder()
                 .bucket(properties.bucket())
@@ -104,6 +111,7 @@ public class ObjectStorageService {
         }
     }
 
+    // 生成原始文档对象 key。
     private String originalDocumentObjectKey(String fileName) {
         LocalDate today = LocalDate.now();
         return "ingestion/original/"
@@ -118,6 +126,7 @@ public class ObjectStorageService {
                 + sanitizeObjectFileName(fileName);
     }
 
+    // 清洗对象 key 中的文件名。
     private String sanitizeObjectFileName(String value) {
         String fileName = value == null || value.isBlank() ? "uploaded-document" : value.trim();
         fileName = fileName.replace("\\", "/");
@@ -126,6 +135,7 @@ public class ObjectStorageService {
         return fileName.isBlank() ? "uploaded-document" : fileName;
     }
 
+    // 将日期数字格式化为两位。
     private String twoDigits(int value) {
         return value < 10 ? "0" + value : String.valueOf(value);
     }

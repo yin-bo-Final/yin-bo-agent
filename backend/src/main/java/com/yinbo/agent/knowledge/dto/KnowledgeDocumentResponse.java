@@ -2,6 +2,7 @@ package com.yinbo.agent.knowledge.dto;
 
 import java.time.Instant;
 
+// 知识文档响应。
 public record KnowledgeDocumentResponse(
         String documentId,
         String fileName,

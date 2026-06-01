@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
 
 @TableName("knowledge_base")
+// 知识库实体。
 public class KnowledgeBase {
 
     @TableId(type = IdType.ASSIGN_ID)

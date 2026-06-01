@@ -22,7 +22,10 @@ frontend/
    ├─ api/
    │  ├─ adminApi.js
    │  ├─ authApi.js
-   │  └─ chatApi.js
+   │  ├─ chatApi.js
+   │  └─ http.js
+   ├─ components/
+   │  └─ GlobalErrorToasts.vue
    └─ pages/
       ├─ AdminPage.vue
       ├─ AuthPage.vue
@@ -129,10 +132,11 @@ DELETE /api/admin/knowledge/chunks/{chunkId}
 | `authApi.js` | 注册、登录、当前用户、退出、注销 |
 | `chatApi.js` | 模型列表、聊天、流式聊天、会话管理 |
 | `adminApi.js` | Dashboard、知识库、文档、分块管理 |
+| `http.js` | 统一解析响应和错误，429 会触发全局错误弹窗 |
 
 所有需要登录态的请求都带 `credentials: 'include'`。
 
-请求错误处理要优先读取后端返回的 `message` 字段。后端业务失败通常由 `BusinessException` 统一返回。
+请求错误处理要优先读取后端或 gateway 返回的 `message` 字段。后端业务失败通常由 `BusinessException` 统一返回；gateway 限流失败返回 `429` 时，`GlobalErrorToasts` 会展示居中的全局错误弹窗。
 
 开发环境中，`vite.config.js` 会把 `/api` 代理到 gateway 默认地址 `http://localhost:8081`。部署时，`nginx/default.conf` 也把 `/api/` 转发给 `gateway:8081`，再由 gateway 转发到后端业务服务。
 

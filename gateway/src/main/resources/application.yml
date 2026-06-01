@@ -6,14 +6,133 @@ spring:
     import: optional:file:./local-secrets.yml,optional:file:../local-secrets.yml
   application:
     name: yinbo-agent-gateway
+  # 功能：配置 gateway 访问 Redis 的连接信息。
+  # 说明：RedisRateLimiter、用户维度限流身份解析、Redis 信号量都会复用这套连接。
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
   cloud:
     gateway:
       server:
         webflux:
+          # 功能：配置 Spring Cloud Gateway 的请求频率限流默认行为。
+          # 说明：解析不到限流 key 时直接拒绝，避免空 key 导致所有未知请求共用一个桶。
+          filter:
+            request-rate-limiter:
+              deny-empty-key: true
+              empty-key-status-code: TOO_MANY_REQUESTS
+          # 功能：统一处理前端跨域访问。
+          # 说明：CORS 放在 gateway，service 不再重复配置，避免多层响应头冲突。
+          globalcors:
+            add-to-simple-url-handler-mapping: true
+            cors-configurations:
+              "[/api/**]":
+                allowed-origin-patterns:
+                  - "http://localhost:5173"
+                  - "http://127.0.0.1:5173"
+                  - "http://localhost:5174"
+                  - "http://127.0.0.1:5174"
+                allowed-methods:
+                  - GET
+                  - POST
+                  - PUT
+                  - PATCH
+                  - DELETE
+                  - OPTIONS
+                allowed-headers:
+                  - "*"
+                exposed-headers:
+                  - X-Request-Id
+                allow-credentials: true
+          # 功能：去重 CORS 响应头。
+          # 说明：当前端、gateway、后端任一层产生重复头时保留第一个，减少浏览器跨域报错。
           default-filters:
             - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin RETAIN_FIRST
+          # 功能：定义 gateway 到 service 的业务路由。
+          # 说明：高成本接口先匹配专门限流路由，其他 /api/** 请求走通用业务路由。
           routes:
+            # 功能：上传接口频率限流。
+            # 说明：未登录按 IP，登录后按 userId；每次请求消耗 60 token，实现分钟级配额。
+            - id: upload-ip-rate-limit
+              order: -40
+              uri: ${YINBO_AGENT_SERVICE_URI:http://localhost:8080}
+              predicates:
+                - Path=/api/ingestion/documents/upload,/api/admin/knowledge/bases/{knowledgeBaseId}/documents/upload
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@userOrIpKeyResolver}"
+                    status-code: TOO_MANY_REQUESTS
+                    redis-rate-limiter.replenishRate: 5
+                    redis-rate-limiter.burstCapacity: 120
+                    redis-rate-limiter.requestedTokens: 60
+            # 功能：URL 入库接口频率限流。
+            # 说明：URL 入库会下载外部资源，频率限制比普通接口更保守。
+            - id: url-ingestion-ip-rate-limit
+              order: -30
+              uri: ${YINBO_AGENT_SERVICE_URI:http://localhost:8080}
+              predicates:
+                - Path=/api/ingestion/documents/url,/api/admin/knowledge/bases/{knowledgeBaseId}/documents/url
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@userOrIpKeyResolver}"
+                    status-code: TOO_MANY_REQUESTS
+                    redis-rate-limiter.replenishRate: 3
+                    redis-rate-limiter.burstCapacity: 60
+                    redis-rate-limiter.requestedTokens: 60
+            # 功能：流式 AI 对话频率限流。
+            # 说明：SSE 连接持续时间更长，使用独立路由便于单独调整配额。
+            - id: ai-stream-ip-rate-limit
+              order: -20
+              uri: ${YINBO_AGENT_SERVICE_URI:http://localhost:8080}
+              predicates:
+                - Path=/api/chat/stream
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@userOrIpKeyResolver}"
+                    status-code: TOO_MANY_REQUESTS
+                    redis-rate-limiter.replenishRate: 10
+                    redis-rate-limiter.burstCapacity: 60
+                    redis-rate-limiter.requestedTokens: 60
+            # 功能：普通 AI 对话频率限流。
+            # 说明：同步对话比流式请求更短，所以默认分钟配额更高。
+            - id: ai-chat-ip-rate-limit
+              order: -19
+              uri: ${YINBO_AGENT_SERVICE_URI:http://localhost:8080}
+              predicates:
+                - Path=/api/chat
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@userOrIpKeyResolver}"
+                    status-code: TOO_MANY_REQUESTS
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 120
+                    redis-rate-limiter.requestedTokens: 60
+            # 功能：登录和注册接口频率限流。
+            # 说明：未登录场景没有 userId，通常会自动回退到 IP 维度。
+            - id: auth-ip-rate-limit
+              order: -10
+              uri: ${YINBO_AGENT_SERVICE_URI:http://localhost:8080}
+              predicates:
+                - Path=/api/auth/login,/api/auth/register
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@userOrIpKeyResolver}"
+                    status-code: TOO_MANY_REQUESTS
+                    redis-rate-limiter.replenishRate: 10
+                    redis-rate-limiter.burstCapacity: 60
+                    redis-rate-limiter.requestedTokens: 60
+            # 功能：通用业务路由。
+            # 说明：没有命中特殊限流路由的 /api/** 请求都会转发到后端 service。
             - id: yinbo-agent-service-api
+              order: 100
               uri: ${YINBO_AGENT_SERVICE_URI:http://localhost:8080}
               predicates:
                 - Path=/api/**
@@ -41,3 +160,26 @@ logging:
 app:
   logging:
     slow-request-threshold-ms: ${APP_SLOW_REQUEST_THRESHOLD_MS:3000}
+  # 功能：配置 gateway 层并发限流。
+  # 说明：这些配置使用 Redis 信号量，控制同时转发到 service 的高成本请求数量。
+  concurrency:
+    # 功能：上传并发限流。
+    # 说明：第一道防线在 gateway，service 里还有兜底信号量。
+    upload:
+      max-permits: ${UPLOAD_GATEWAY_MAX_CONCURRENCY:${UPLOAD_MAX_CONCURRENCY:10}}
+      lease-ttl: ${UPLOAD_GATEWAY_CONCURRENCY_LEASE_TTL:${UPLOAD_CONCURRENCY_LEASE_TTL:10m}}
+    # 功能：URL 入库并发限流。
+    # 说明：限制同时下载外部 URL 并写入 RustFS 的请求数量。
+    url-ingestion:
+      max-permits: ${URL_INGESTION_GATEWAY_MAX_CONCURRENCY:5}
+      lease-ttl: ${URL_INGESTION_GATEWAY_CONCURRENCY_LEASE_TTL:10m}
+    # 功能：AI 对话并发限流。
+    # 说明：普通对话和流式对话共用同一个全局并发额度。
+    ai-chat:
+      max-permits: ${AI_CHAT_GATEWAY_MAX_CONCURRENCY:20}
+      lease-ttl: ${AI_CHAT_GATEWAY_CONCURRENCY_LEASE_TTL:5m}
+  # 功能：配置 gateway 读取 Spring Session 的 Redis 命名空间。
+  # 说明：RateLimitIdentityResolver 会根据这个 namespace 找到 LOGIN_USER_ID。
+  session:
+    redis:
+      namespace: ${SPRING_SESSION_REDIS_NAMESPACE:yinbo:agent:session}

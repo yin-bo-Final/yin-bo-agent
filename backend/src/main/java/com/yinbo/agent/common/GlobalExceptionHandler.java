@@ -18,6 +18,7 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
 
 @RestControllerAdvice
+// 全局异常响应处理器。
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
@@ -25,6 +26,7 @@ public class GlobalExceptionHandler {
     private static final String UNKNOWN_REQUEST_ID = "-";
 
     @ExceptionHandler(BusinessException.class)
+    // 处理业务异常并返回业务状态码。
     public ResponseEntity<ApiErrorResponse> handleBusiness(BusinessException exception) {
         log.warn(
                 "event=exception requestId={} type={} status={} message={}",
@@ -42,6 +44,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
+    // 处理参数校验异常。
     public ResponseEntity<ApiErrorResponse> handleValidation(MethodArgumentNotValidException exception) {
         String message = exception.getBindingResult().getFieldErrors().stream()
                 .map(FieldError::getDefaultMessage)
@@ -62,6 +65,7 @@ public class GlobalExceptionHandler {
             MissingServletRequestParameterException.class,
             MethodArgumentTypeMismatchException.class
     })
+    // 处理请求体、请求参数和类型转换异常。
     public ResponseEntity<ApiErrorResponse> handleBadRequest(Exception exception) {
         String message = "请求参数不正确，请检查后重试";
         log.warn(
@@ -76,6 +80,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
+    // 处理文件大小超限异常。
     public ResponseEntity<ApiErrorResponse> handleMaxUploadSize(MaxUploadSizeExceededException exception) {
         log.warn(
                 "event=exception requestId={} type={} status={} message={}",
@@ -93,6 +98,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(MultipartException.class)
+    // 处理 multipart 文件上传异常。
     public ResponseEntity<ApiErrorResponse> handleMultipart(MultipartException exception) {
         log.warn(
                 "event=exception requestId={} type={} status={} message={}",
@@ -110,6 +116,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(Exception.class)
+    // 处理未预期的系统异常。
     public ResponseEntity<ApiErrorResponse> handleUnexpected(Exception exception) {
         log.error(
                 "event=exception requestId={} type={} status={} message={}",
@@ -127,11 +134,13 @@ public class GlobalExceptionHandler {
                 ));
     }
 
+    // 读取当前线程 MDC 中的 requestId。
     private static String requestId() {
         String requestId = MDC.get(MDC_REQUEST_ID_KEY);
         return requestId == null ? UNKNOWN_REQUEST_ID : requestId;
     }
 
+    // 清洗写入日志的异常文本。
     private static String sanitizeLogValue(String value) {
         if (value == null || value.isBlank()) {
             return "-";

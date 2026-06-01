@@ -1,7 +1,6 @@
 # 提示词库
 
-这个文件集中维护项目里会用到的提示词。现在后端还没有读取这个文件，先把内容放在这里，后续可以做成数据库配置、热加载配置或后台页面编辑。
-
+这个文件集中维护项目里会用到的提示词。
 ## 平台定位提示词
 
 ```text
@@ -31,15 +30,6 @@
 解释要短，不要把学习节奏打断。
 ```
 
-## 模型选择提示词模板
-
-```text
-当前选择模型：{{modelName}}
-模型标识：{{modelId}}
-
-请使用该模型适合的风格回答用户问题。
-如果该模型暂未接入真实 API，请返回明确的占位说明，并提醒开发者在后端 ChatService 中完成接入。
-```
 
 ## 新对话协作上下文
 
@@ -81,7 +71,7 @@ RustFS、RocketMQ、数据库、Redis、模型 API Key 都优先从 local-secret
 ## 开发和命令习惯
 
 ```text
-用户环境没有 rg 命令，搜索文件和文本时使用 PowerShell 的 Get-ChildItem / Select-String。
+不使用 rg 命令，搜索文件和文本时使用 PowerShell 的 Get-ChildItem / Select-String。
 
 前端：
 不要每次小改动都运行 npm run build 或 npm run dev。
@@ -97,6 +87,44 @@ mvn -pl gateway -am -DskipTests compile
 
 本地笔记：
 .obsidian/ 是用户查阅 Markdown 文档用的本地目录，不要处理，不要提交。
+```
+
+## 代码注释约定
+
+```text
+以后新增或修改代码时，必须同步补充必要注释，不能只写业务代码。
+
+注释风格：
+- 类、接口、枚举、record 前使用一行中文注释，直接说明它的职责。
+- 方法前使用一行中文注释，直接说明这个方法做什么。
+- 注释不使用“功能：”“说明：”这类前缀。
+- 注释要短、准、像标题一样说明职责，不要逐行翻译代码。
+- 复杂逻辑内部可以补充关键步骤注释，但只解释为什么这样做，不解释显而易见的语法。
+
+Java 示例：
+
+// 频率限流响应全局过滤器。
+public class RateLimitResponseGlobalFilter implements GlobalFilter, Ordered {
+
+    // 拦截 RedisRateLimiter 产生的 429 响应并改写响应体。
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        // no-store 避免浏览器或代理缓存限流响应。
+        response.getHeaders().set(HttpHeaders.CACHE_CONTROL, "no-store");
+    }
+}
+
+配置文件示例：
+
+# 网关服务端口。
+server:
+  port: ${GATEWAY_PORT:8081}
+
+每次实现功能时，需要优先检查这些位置是否需要注释：
+1. 新增类、配置类、过滤器、Controller、Service、Consumer、工具类。
+2. 新增入口方法、核心业务方法、回调方法、过滤器顺序方法。
+3. 新增 Redis / MQ / AI / Gateway / 文件上传 / 限流 / 响应写入等关键链路代码。
+4. 新增不容易一眼看懂的条件判断、异常兜底、资源释放、异步处理逻辑。
 ```
 
 ## 日志实现约定

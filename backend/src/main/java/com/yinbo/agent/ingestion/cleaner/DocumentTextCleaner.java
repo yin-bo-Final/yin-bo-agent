@@ -3,8 +3,10 @@ package com.yinbo.agent.ingestion.cleaner;
 import org.springframework.stereotype.Component;
 
 @Component
+// 文档文本清洗器。
 public class DocumentTextCleaner {
 
+    // 清洗解析出的原始文本。
     public String clean(String rawText) {
         if (rawText == null || rawText.isBlank()) {
             return "";

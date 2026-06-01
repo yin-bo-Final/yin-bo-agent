@@ -1,23 +1,7 @@
+import { parseResponse } from './http';
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 const CHAT_REQUEST_TIMEOUT_MS = 45000;
-
-async function parseResponse(response, fallbackMessage) {
-  if (response.ok) {
-    return response.json();
-  }
-
-  let message = fallbackMessage;
-  try {
-    const errorBody = await response.json();
-    if (errorBody?.message) {
-      message = errorBody.message;
-    }
-  } catch (_error) {
-    message = fallbackMessage;
-  }
-
-  throw new Error(message);
-}
 
 export async function fetchModels() {
   const response = await fetch(`${API_BASE_URL}/models`, {

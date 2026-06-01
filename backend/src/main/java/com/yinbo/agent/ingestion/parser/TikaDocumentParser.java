@@ -1,14 +1,14 @@
 package com.yinbo.agent.ingestion.parser;
 
 import com.yinbo.agent.common.BusinessException;
-import com.yinbo.agent.ingestion.ParsedDocument;
-import com.yinbo.agent.ingestion.RawDocument;
+import com.yinbo.agent.ingestion.model.ParsedDocument;
+import com.yinbo.agent.ingestion.model.RawDocument;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import com.yinbo.agent.storage.ObjectStorageService;
+import com.yinbo.agent.storage.service.ObjectStorageService;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.AutoDetectParser;
@@ -19,6 +19,7 @@ import org.springframework.stereotype.Component;
 import org.xml.sax.SAXException;
 
 @Component
+// Tika 文档解析器。
 public class TikaDocumentParser {
 
     private static final String PARSER_NAME = "TIKA";
@@ -26,10 +27,12 @@ public class TikaDocumentParser {
     private final AutoDetectParser parser = new AutoDetectParser();
     private final ObjectStorageService objectStorageService;
 
+    // 注入对象存储服务。
     public TikaDocumentParser(ObjectStorageService objectStorageService) {
         this.objectStorageService = objectStorageService;
     }
 
+    // 解析原始文档为文本和元数据。
     public ParsedDocument parse(RawDocument rawDocument) {
         Metadata metadata = new Metadata();
         metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, rawDocument.fileName());
@@ -58,10 +61,12 @@ public class TikaDocumentParser {
         return new ParsedDocument(text, resolveTitle(metadata, rawDocument.fileName()), toMetadataMap(metadata));
     }
 
+    // 返回解析器名称。
     public String parserName() {
         return PARSER_NAME;
     }
 
+    // 打开原始文档输入流。
     private InputStream openInputStream(RawDocument rawDocument) throws IOException {
         if (rawDocument.hasStoredObject()) {
             return objectStorageService.open(rawDocument.storageBucket(), rawDocument.storageObjectKey());
@@ -72,6 +77,7 @@ public class TikaDocumentParser {
         throw new BusinessException(HttpStatus.BAD_REQUEST, "原始文件不存在，请重新上传");
     }
 
+    // 从元数据或文件名解析文档标题。
     private String resolveTitle(Metadata metadata, String fileName) {
         String title = metadata.get(TikaCoreProperties.TITLE);
         if (title != null && !title.isBlank()) {
@@ -81,6 +87,7 @@ public class TikaDocumentParser {
         return dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
     }
 
+    // 转换 Tika 元数据为普通 Map。
     private Map<String, String> toMetadataMap(Metadata metadata) {
         Map<String, String> metadataMap = new LinkedHashMap<>();
         for (String name : metadata.names()) {

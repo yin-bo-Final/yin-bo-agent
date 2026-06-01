@@ -1,35 +1,6 @@
+import { parseResponse } from './http';
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
-
-async function parseResponse(response, fallbackMessage) {
-  const contentLength = response.headers.get('content-length');
-  const contentType = response.headers.get('content-type') || '';
-
-  if (response.ok) {
-    if (response.status === 204 || contentLength === '0') {
-      return null;
-    }
-    const bodyText = await response.text();
-    if (!bodyText) {
-      return null;
-    }
-    return contentType.includes('application/json') ? JSON.parse(bodyText) : bodyText;
-  }
-
-  let message = fallbackMessage;
-  try {
-    const bodyText = await response.text();
-    const errorBody = bodyText && contentType.includes('application/json') ? JSON.parse(bodyText) : null;
-    if (errorBody?.message) {
-      message = errorBody.message;
-    } else if (bodyText && !contentType.includes('application/json')) {
-      message = bodyText;
-    }
-  } catch (_error) {
-    message = fallbackMessage;
-  }
-
-  throw new Error(message);
-}
 
 export async function fetchAdminDashboard() {
   const response = await fetch(`${API_BASE_URL}/admin/dashboard`, {

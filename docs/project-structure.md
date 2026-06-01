@@ -4,13 +4,13 @@
 
 ## 文档导航
 
-| 文档 | 用途 |
-| --- | --- |
-| [gateway-structure.md](gateway-structure.md) | 网关模块、服务命名、路由转发和常见改动入口 |
-| [backend-structure.md](backend-structure.md) | 后端包结构、RAG ingestion、Flyway、数据表和常见改动入口 |
-| [frontend-structure.md](frontend-structure.md) | 前端页面结构、API 封装、后台管理 UI 和路由状态 |
-| [frontend-style-guide.md](frontend-style-guide.md) | 前端视觉风格、按钮、弹窗、下拉栏、tooltip 等样式约定 |
-| [prompt.md](prompt.md) | 项目提示词、协作习惯、本地中间件位置和 Git 提交习惯 |
+| 文档                                                 | 用途                                    |
+| -------------------------------------------------- | ------------------------------------- |
+| [gateway-structure.md](gateway-structure.md)       | 网关模块、服务命名、路由转发和常见改动入口                 |
+| [backend-structure.md](backend-structure.md)       | 后端包结构、RAG ingestion、Flyway、数据表和常见改动入口 |
+| [frontend-structure.md](frontend-structure.md)     | 前端页面结构、API 封装、后台管理 UI 和路由状态           |
+| [frontend-style-guide.md](frontend-style-guide.md) | 前端视觉风格、按钮、弹窗、下拉栏、tooltip 等样式约定        |
+| [prompt.md](prompt.md)                             | 项目提示词、协作习惯、本地中间件位置和 Git 提交习惯          |
 
 ## 顶层目录
 
@@ -36,7 +36,7 @@ Vue 3 前端
     -> Spring Boot 业务服务
       -> PostgreSQL 保存业务表
       -> pgvector 保存知识库向量
-      -> Redis 保存 Session 登录态
+      -> Redis 保存 Session 登录态、gateway 上传并发信号量和 service 兜底信号量
       -> RustFS 保存上传原始文件
       -> RocketMQ 承载异步 ingestion 任务
       -> Spring AI 调用聊天模型和 Embedding 模型
@@ -85,15 +85,15 @@ ConversationPage
 
 ## 数据表边界
 
-| 表 | 主要模块 | 说明 |
-| --- | --- | --- |
-| `auth_user` | `auth` | 用户、密码哈希、角色、状态 |
-| `chat_conversation` | `chat` | 会话、模型、置顶、最近消息时间 |
-| `chat_message` | `chat` | 消息内容、耗时、token |
-| `knowledge_base` | `knowledge` | 知识库名称、collection、Embedding 模型 |
-| `knowledge_document` | `ingestion` / `knowledge` | 文档元数据、RustFS 对象信息、状态、耗时 |
-| `knowledge_chunk` | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数、向量 ID |
-| `knowledge_chunk_vector` | Spring AI PGVector | 向量存储表 |
+| 表                        | 主要模块                      | 说明                            |
+| ------------------------ | ------------------------- | ----------------------------- |
+| `auth_user`              | `auth`                    | 用户、密码哈希、角色、状态                 |
+| `chat_conversation`      | `chat`                    | 会话、模型、置顶、最近消息时间               |
+| `chat_message`           | `chat`                    | 消息内容、耗时、token                 |
+| `knowledge_base`         | `knowledge`               | 知识库名称、collection、Embedding 模型 |
+| `knowledge_document`     | `ingestion` / `knowledge` | 文档元数据、RustFS 对象信息、状态、耗时       |
+| `knowledge_chunk`        | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数、向量 ID     |
+| `knowledge_chunk_vector` | Spring AI PGVector        | 向量存储表                         |
 
 数据库结构由 Flyway 接管，迁移脚本位于 `backend/src/main/resources/db/migration`。不要恢复旧的 `schema.sql`。
 
@@ -116,6 +116,6 @@ ConversationPage
 - 数据库结构变更必须新增 Flyway 迁移脚本。
 - 原始文件进入 RustFS，数据库保存对象定位信息。
 - 向量在 pgvector，由 `vectorDocumentId` 关联业务分块。
-- RocketMQ 当前负责分块和重建向量异步化。
+- RocketMQ 当前负责分块和重建向量异步化，消费者通过 Redis 信号量限制全系统处理并发。
 - 前端暂时没有 Vue Router，使用路径解析和 `window.history` 维护页面状态。
 - 新增后台 UI 要复用现有按钮、表格、弹窗、下拉栏和 tooltip 风格。

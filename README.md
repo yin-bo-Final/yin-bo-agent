@@ -6,19 +6,19 @@
 
 ## 技术栈
 
-| 分层 | 技术 |
-| --- | --- |
-| 网关 | Spring Cloud Gateway Server WebFlux、Actuator |
-| 后端业务服务 | Java 17、Spring Boot 3.5.9、Maven |
-| Web | Spring Web、Validation、Actuator |
-| 数据库 | PostgreSQL、pgvector、Flyway、MyBatis-Plus、Spring JDBC |
-| 登录态 | Session、Spring Session Data Redis、Redis、BCrypt |
-| AI | Spring AI 1.1.6、OpenAI Compatible ChatModel、EmbeddingModel |
-| RAG | Apache Tika、Spring AI PGVector Store、Qwen3 Embedding / Reranker 配置 |
-| 异步 | RocketMQ Spring Boot Starter |
-| 文件存储 | RustFS，使用 MinIO Java SDK 访问 S3 兼容接口 |
-| 前端 | Vue 3、Vite、marked、DOMPurify |
-| 部署 | WSL Docker 中间件、前端 Docker + Nginx、Gateway、后端 Spring Boot |
+| 分层     | 技术                                                                 |
+| ------ | ------------------------------------------------------------------ |
+| 网关     | Spring Cloud Gateway Server WebFlux、Actuator                       |
+| 后端业务服务 | Java 17、Spring Boot 3.5.9、Maven                                    |
+| Web    | Spring Web、Validation、Actuator                                     |
+| 数据库    | PostgreSQL、pgvector、Flyway、MyBatis-Plus、Spring JDBC                |
+| 登录态    | Session、Spring Session Data Redis、Redis、BCrypt                     |
+| AI     | Spring AI 1.1.6、OpenAI Compatible ChatModel、EmbeddingModel         |
+| RAG    | Apache Tika、Spring AI PGVector Store、Qwen3 Embedding / Reranker 配置 |
+| 异步     | RocketMQ Spring Boot Starter                                       |
+| 文件存储   | RustFS，使用 MinIO Java SDK 访问 S3 兼容接口                                |
+| 前端     | Vue 3、Vite、marked、DOMPurify                                        |
+| 部署     | WSL Docker 中间件、前端 Docker + Nginx、Gateway、后端 Spring Boot            |
 
 ## 架构概览
 
@@ -28,7 +28,7 @@ Vue 3 前端
     -> Spring Boot 业务服务
       -> PostgreSQL 保存业务表
       -> pgvector 保存知识库向量
-      -> Redis 保存 Session 登录态
+      -> Redis 保存 Session 登录态、gateway 上传并发信号量和 service 兜底信号量
       -> RustFS 保存上传原始文件
       -> RocketMQ 承载异步 ingestion 任务
       -> Spring AI 调用聊天模型和 Embedding 模型
@@ -107,7 +107,9 @@ RAG 文档入库链路：
 ### Ingestion 流水线
 
 - 上传阶段只负责 RustFS 落盘和文档元数据保存
+- 上传阶段先由 gateway 通过 Redis 信号量限制全系统同时上传任务数，service 层保留兜底信号量
 - 分块和向量化通过 RocketMQ 异步执行
+- RocketMQ 消费者通过 Redis 信号量限制全系统同时处理的分块 / 向量化任务数
 - 支持状态：`UPLOADED`、`PROCESSING`、`COMPLETED`、`FAILED`
 - 支持分块策略：`AUTO`、`RECURSIVE`、`NONE`
 - 自动策略会根据文本长度调整切块参数
@@ -207,6 +209,16 @@ RUSTFS_ENDPOINT: http://localhost:9000
 RUSTFS_BUCKET: yinbo-agent-documents
 YINBO_AGENT_SERVICE_URI: http://localhost:8080
 APP_SLOW_REQUEST_THRESHOLD_MS: 3000
+UPLOAD_GATEWAY_MAX_CONCURRENCY: 10
+UPLOAD_GATEWAY_CONCURRENCY_LEASE_TTL: 10m
+URL_INGESTION_GATEWAY_MAX_CONCURRENCY: 5
+URL_INGESTION_GATEWAY_CONCURRENCY_LEASE_TTL: 10m
+AI_CHAT_GATEWAY_MAX_CONCURRENCY: 20
+AI_CHAT_GATEWAY_CONCURRENCY_LEASE_TTL: 5m
+UPLOAD_MAX_CONCURRENCY: 10
+UPLOAD_CONCURRENCY_LEASE_TTL: 10m
+INGESTION_MAX_CONCURRENCY: 5
+INGESTION_CONCURRENCY_LEASE_TTL: 30m
 INGESTION_MAX_FILE_SIZE: 50MB
 INGESTION_MAX_REQUEST_SIZE: 100MB
 ```
@@ -348,17 +360,19 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 ## 开发约定
 
 - 后台接口统一走 `/api/admin/**`，并通过 `AdminGuard` 校验管理员。
-- 前端请求统一进入 gateway，gateway 只做 `/api/**` 转发；登录态和业务权限仍由后端业务服务校验。
+- 前端请求统一进入 gateway，gateway 负责 `/api/**` 转发、CORS、`X-Request-Id`、部分高成本接口 IP 限流和上传并发限流；登录态和业务权限仍由后端业务服务校验。
+- 频率限流基于 Spring Cloud Gateway `RedisRateLimiter`，当前覆盖上传、URL 入库、AI 对话、登录注册；未登录时按 IP 限流，登录后按 `userId` 限流，触发后返回统一 `429` JSON。
+- 上传并发限流第一道防线在 gateway，默认全局最多 `10` 个上传请求同时转发；URL 入库默认最多 `5` 个同时转发，AI 对话默认最多 `20` 个同时转发；业务服务保留上传信号量做兜底保护，RocketMQ ingestion 默认全局最多 `5` 个同时处理。
 - gateway 会生成或透传 `X-Request-Id`，并写入当前启动工作目录下的 `.logs/gateway.log`；后端业务服务会把同一个 requestId 写入 `.logs/service.log`。
 - gateway 和 service 日志使用统一 key-value 风格；超过 `APP_SLOW_REQUEST_THRESHOLD_MS` 的请求会以 `WARN` 记录，默认阈值 `3000ms`。
 - 日志按“日期 + 大小”滚动：单文件最大 `20MB`，保留 `14` 天，总日志体积上限 `1GB`，历史文件会压缩为 `.gz`。
 - 关键业务日志使用 `event=...`：登录注册、知识库变更、文档上传、AI 调用、RocketMQ 投递消费、ingestion 完成或失败都会有明确事件。
 - 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
-- 数据库结构变更必须新增 Flyway 迁移脚本，不再使用 `schema.sql`。
+- 数据库结构变更必须新增 Flyway 迁移脚本。
 - 上传文件大小默认限制为单文件 `50MB`，单请求 `100MB`。
 - 原始文件只进 RustFS，不把大文件二进制塞进 PostgreSQL。
 - 分块文本改动后必须重建向量，否则 pgvector 中仍是旧文本语义。
-- RocketMQ 当前负责异步分块和异步重建向量，后续可以补重试、死信队列和任务监控页。
+- RocketMQ 当前负责异步分块和异步重建向量；消费者拿不到 Redis 信号量时抛异常交给 RocketMQ 重试，后续可以补死信队列和失败任务管理页。
 - 前端后台 UI 继续沿用当前灰色工程风格，改样式前先看 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
 ## 下一步

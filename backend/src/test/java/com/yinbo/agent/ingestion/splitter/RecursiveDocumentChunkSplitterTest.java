@@ -2,9 +2,9 @@ package com.yinbo.agent.ingestion.splitter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.yinbo.agent.ingestion.ChunkingOptions;
-import com.yinbo.agent.ingestion.ChunkingStrategy;
-import com.yinbo.agent.ingestion.DocumentChunk;
+import com.yinbo.agent.ingestion.model.ChunkingOptions;
+import com.yinbo.agent.ingestion.model.ChunkingStrategy;
+import com.yinbo.agent.ingestion.model.DocumentChunk;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 

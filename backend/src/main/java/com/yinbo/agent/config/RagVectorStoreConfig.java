@@ -12,11 +12,13 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 @Configuration
+// RAG 向量存储配置。
 public class RagVectorStoreConfig {
 
     private static final int MAX_INDEXED_VECTOR_DIMENSIONS = 2000;
 
     @Bean
+    // 创建知识库使用的 PGVector 向量存储。
     public VectorStore knowledgeVectorStore(
             JdbcTemplate jdbcTemplate,
             EmbeddingModel embeddingModel,
@@ -35,6 +37,7 @@ public class RagVectorStoreConfig {
                 .build();
     }
 
+    // 解析 pgvector 索引类型。
     static PgIndexType parseIndexType(String value) {
         try {
             return PgIndexType.valueOf(value.trim().toUpperCase(Locale.ROOT));
@@ -46,6 +49,7 @@ public class RagVectorStoreConfig {
         }
     }
 
+    // 校验索引类型和向量维度是否兼容。
     static void validateIndexDimensions(PgIndexType indexType, int dimensions) {
         if ((indexType == PgIndexType.HNSW || indexType == PgIndexType.IVFFLAT)
                 && dimensions > MAX_INDEXED_VECTOR_DIMENSIONS) {

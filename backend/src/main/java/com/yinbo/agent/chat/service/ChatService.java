@@ -1,4 +1,4 @@
-package com.yinbo.agent.chat;
+package com.yinbo.agent.chat.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
@@ -11,7 +11,7 @@ import com.yinbo.agent.chat.dto.ConversationDetailResponse;
 import com.yinbo.agent.chat.dto.ConversationMessageResponse;
 import com.yinbo.agent.chat.dto.ConversationSummaryResponse;
 import com.yinbo.agent.chat.dto.PinConversationRequest;
-import com.yinbo.agent.chat.ChatMessageCacheService.CachedChatMessage;
+import com.yinbo.agent.chat.service.ChatMessageCacheService.CachedChatMessage;
 import com.yinbo.agent.chat.entity.ChatConversation;
 import com.yinbo.agent.chat.entity.ChatMessageEntity;
 import com.yinbo.agent.chat.mapper.ChatConversationMapper;
@@ -49,6 +49,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @Service
+// AI 对话业务服务。
 public class ChatService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatService.class);
@@ -93,6 +94,7 @@ public class ChatService {
     private final ChatMessageMapper chatMessageMapper;
     private final ChatMessageCacheService chatMessageCacheService;
 
+    // 注入模型配置、模型客户端、会话消息 Mapper 和缓存服务。
     public ChatService(
             AiModelProperties aiModelProperties,
             ObjectProvider<ChatModel> chatModelProvider,
@@ -108,6 +110,7 @@ public class ChatService {
     }
 
     @Transactional
+    // 执行普通非流式 AI 对话。
     public ChatResponse chat(AuthUser authUser, ChatRequest request) {
         AiModelProperties.ModelOption model = aiModelProperties.findById(request.modelId());
         ChatMessage latestUserMessage = latestUserMessageOf(request);
@@ -194,6 +197,7 @@ public class ChatService {
         );
     }
 
+    // 启动 SSE 流式 AI 对话。
     public SseEmitter streamChat(AuthUser authUser, ChatRequest request) {
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
         Map<String, String> mdcContext = MDC.getCopyOfContextMap();
@@ -210,6 +214,7 @@ public class ChatService {
         return emitter;
     }
 
+    // 查询当前用户的会话列表。
     public List<ConversationSummaryResponse> listConversations(AuthUser authUser) {
         return chatConversationMapper.selectList(new LambdaQueryWrapper<ChatConversation>()
                         .eq(ChatConversation::getUserId, authUser.getId())
@@ -219,6 +224,7 @@ public class ChatService {
                 .toList();
     }
 
+    // 查询当前用户拥有的会话详情。
     public ConversationDetailResponse getConversationDetail(AuthUser authUser, String conversationId) {
         ChatConversation conversation = requireOwnedConversation(authUser.getId(), conversationId);
         List<ConversationMessageResponse> messages = loadConversationMessages(authUser.getId(), conversation.getId()).stream()
@@ -235,6 +241,7 @@ public class ChatService {
     }
 
     @Transactional
+    // 更新会话置顶状态。
     public ConversationSummaryResponse updateConversationPin(
             AuthUser authUser,
             String conversationId,
@@ -252,12 +259,14 @@ public class ChatService {
     }
 
     @Transactional
+    // 取消指定会话置顶。
     public ConversationSummaryResponse unpinConversation(AuthUser authUser, String conversationId) {
         ChatConversation conversation = requireOwnedConversation(authUser.getId(), conversationId);
         unpinConversationById(authUser.getId(), conversation);
         return toConversationSummary(conversation);
     }
 
+    // 按会话主键取消置顶。
     private void unpinConversationById(Long userId, ChatConversation conversation) {
         chatConversationMapper.update(null, new LambdaUpdateWrapper<ChatConversation>()
                 .eq(ChatConversation::getId, conversation.getId())
@@ -267,6 +276,7 @@ public class ChatService {
     }
 
     @Transactional
+    // 删除指定会话及其消息。
     public void deleteConversation(AuthUser authUser, String conversationId) {
         ChatConversation conversation = requireOwnedConversation(authUser.getId(), conversationId);
         chatMessageMapper.delete(new LambdaQueryWrapper<ChatMessageEntity>()
@@ -276,6 +286,7 @@ public class ChatService {
         evictConversationMessagesAfterCommit(authUser.getId(), conversation.getId());
     }
 
+    // 转换会话列表项响应。
     private ConversationSummaryResponse toConversationSummary(ChatConversation conversation) {
         return new ConversationSummaryResponse(
                 conversation.getConversationNo(),
@@ -288,6 +299,7 @@ public class ChatService {
         );
     }
 
+    // 执行流式对话主流程。
     private void doStreamChat(AuthUser authUser, ChatRequest request, SseEmitter emitter) {
         AiModelProperties.ModelOption model = aiModelProperties.findById(request.modelId());
         ChatMessage latestUserMessage;
@@ -414,6 +426,7 @@ public class ChatService {
         }
     }
 
+    // 在模型客户端不可用时输出降级流式内容。
     private void streamFallbackContent(
             SseEmitter emitter,
             ChatConversation conversation,
@@ -451,6 +464,7 @@ public class ChatService {
         emitter.complete();
     }
 
+    // 按小片段发送文本内容。
     private void sendChunkedContent(SseEmitter emitter, String conversationId, String modelId, String content) {
         int chunkSize = 24;
         for (int start = 0; start < content.length(); start += chunkSize) {
@@ -459,6 +473,7 @@ public class ChatService {
         }
     }
 
+    // 发送单个 SSE 事件。
     private void sendStreamEvent(SseEmitter emitter, String eventName, ChatStreamEvent event) {
         try {
             emitter.send(SseEmitter.event().name(eventName).data(event));
@@ -470,6 +485,7 @@ public class ChatService {
         }
     }
 
+    // 判断异常是否来自客户端断开连接。
     private boolean isClientDisconnected(Throwable throwable) {
         Throwable current = throwable;
         while (current != null) {
@@ -485,6 +501,7 @@ public class ChatService {
         return false;
     }
 
+    // 安全结束 SSE 连接。
     private void safeComplete(SseEmitter emitter) {
         try {
             emitter.complete();
@@ -493,6 +510,7 @@ public class ChatService {
         }
     }
 
+    // 客户端断开连接异常。
     private static class ClientDisconnectedException extends RuntimeException {
 
         ClientDisconnectedException(Throwable cause) {
@@ -500,6 +518,7 @@ public class ChatService {
         }
     }
 
+    // 调用同步模型接口。
     private ModelCallResult callModel(
             ChatModel chatModel,
             List<CachedChatMessage> conversationMessages,
@@ -576,6 +595,7 @@ public class ChatService {
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
+            // 事务提交后执行缓存操作。
             public void afterCommit() {
                 action.run();
             }

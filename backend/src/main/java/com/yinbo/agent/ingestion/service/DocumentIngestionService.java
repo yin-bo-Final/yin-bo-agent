@@ -1,9 +1,17 @@
-package com.yinbo.agent.ingestion;
+package com.yinbo.agent.ingestion.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yinbo.agent.auth.entity.AuthUser;
 import com.yinbo.agent.common.BusinessException;
+import com.yinbo.agent.common.service.RedisSemaphoreService;
+import com.yinbo.agent.config.ConcurrencyLimitProperties;
 import com.yinbo.agent.config.RagProperties;
+import com.yinbo.agent.ingestion.model.ChunkingOptions;
+import com.yinbo.agent.ingestion.model.ChunkingStrategy;
+import com.yinbo.agent.ingestion.model.DocumentChunk;
+import com.yinbo.agent.ingestion.model.DocumentSourceType;
+import com.yinbo.agent.ingestion.model.ParsedDocument;
+import com.yinbo.agent.ingestion.model.RawDocument;
 import com.yinbo.agent.ingestion.cleaner.DocumentTextCleaner;
 import com.yinbo.agent.ingestion.dto.IngestionResponse;
 import com.yinbo.agent.ingestion.entity.KnowledgeChunk;
@@ -16,7 +24,7 @@ import com.yinbo.agent.ingestion.source.DocumentSourceReader;
 import com.yinbo.agent.ingestion.splitter.RecursiveDocumentChunkSplitter;
 import com.yinbo.agent.knowledge.entity.KnowledgeBase;
 import com.yinbo.agent.knowledge.mapper.KnowledgeBaseMapper;
-import com.yinbo.agent.storage.ObjectStorageService;
+import com.yinbo.agent.storage.service.ObjectStorageService;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -25,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -39,6 +48,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 @Service
+// 文档入库核心业务服务。
 public class DocumentIngestionService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentIngestionService.class);
@@ -46,8 +56,11 @@ public class DocumentIngestionService {
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_COMPLETED = "COMPLETED";
     private static final String STATUS_FAILED = "FAILED";
+    private static final String UPLOAD_SEMAPHORE_NAME = "service:ingestion:upload:global";
 
     private final RagProperties ragProperties;
+    private final ConcurrencyLimitProperties concurrencyLimitProperties;
+    private final RedisSemaphoreService redisSemaphoreService;
     private final ObjectProvider<VectorStore> vectorStoreProvider;
     private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
@@ -60,8 +73,11 @@ public class DocumentIngestionService {
     private final ObjectStorageService objectStorageService;
     private final TransactionTemplate transactionTemplate;
 
+    // 注入文档入库、对象存储、向量存储和事务相关依赖。
     public DocumentIngestionService(
             RagProperties ragProperties,
+            ConcurrencyLimitProperties concurrencyLimitProperties,
+            RedisSemaphoreService redisSemaphoreService,
             ObjectProvider<VectorStore> vectorStoreProvider,
             KnowledgeBaseMapper knowledgeBaseMapper,
             KnowledgeDocumentMapper knowledgeDocumentMapper,
@@ -75,6 +91,8 @@ public class DocumentIngestionService {
             TransactionTemplate transactionTemplate
     ) {
         this.ragProperties = ragProperties;
+        this.concurrencyLimitProperties = concurrencyLimitProperties;
+        this.redisSemaphoreService = redisSemaphoreService;
         this.vectorStoreProvider = vectorStoreProvider;
         this.knowledgeBaseMapper = knowledgeBaseMapper;
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
@@ -88,6 +106,7 @@ public class DocumentIngestionService {
         this.transactionTemplate = transactionTemplate;
     }
 
+    // 上传文件并创建默认知识库外的待处理文档。
     public IngestionResponse ingestUpload(
             AuthUser authUser,
             MultipartFile file,
@@ -96,11 +115,14 @@ public class DocumentIngestionService {
             Integer chunkOverlap,
             Integer maxChunks
     ) {
-        RawDocument rawDocument = documentSourceReader.fromUpload(file);
-        ChunkingOptions options = ChunkingOptions.from(ragProperties, strategy, chunkSize, chunkOverlap, maxChunks);
-        return createUploadedDocument(authUser, null, rawDocument, options);
+        return withUploadPermit(authUser, null, file, () -> {
+            RawDocument rawDocument = documentSourceReader.fromUpload(file);
+            ChunkingOptions options = ChunkingOptions.from(ragProperties, strategy, chunkSize, chunkOverlap, maxChunks);
+            return createUploadedDocument(authUser, null, rawDocument, options);
+        });
     }
 
+    // 上传文件并创建指定知识库下的待处理文档。
     public IngestionResponse ingestUpload(
             AuthUser authUser,
             KnowledgeBase knowledgeBase,
@@ -110,11 +132,14 @@ public class DocumentIngestionService {
             Integer chunkOverlap,
             Integer maxChunks
     ) {
-        RawDocument rawDocument = documentSourceReader.fromUpload(file);
-        ChunkingOptions options = ChunkingOptions.from(ragProperties, strategy, chunkSize, chunkOverlap, maxChunks);
-        return createUploadedDocument(authUser, knowledgeBase, rawDocument, options);
+        return withUploadPermit(authUser, knowledgeBase, file, () -> {
+            RawDocument rawDocument = documentSourceReader.fromUpload(file);
+            ChunkingOptions options = ChunkingOptions.from(ragProperties, strategy, chunkSize, chunkOverlap, maxChunks);
+            return createUploadedDocument(authUser, knowledgeBase, rawDocument, options);
+        });
     }
 
+    // 录入 URL 并创建默认知识库外的待处理文档。
     public IngestionResponse ingestUrl(
             AuthUser authUser,
             String url,
@@ -129,6 +154,7 @@ public class DocumentIngestionService {
         return createUploadedDocument(authUser, null, rawDocument, options);
     }
 
+    // 录入 URL 并创建指定知识库下的待处理文档。
     public IngestionResponse ingestUrl(
             AuthUser authUser,
             KnowledgeBase knowledgeBase,
@@ -144,6 +170,7 @@ public class DocumentIngestionService {
         return createUploadedDocument(authUser, knowledgeBase, rawDocument, options);
     }
 
+    // 创建已上传状态的文档记录。
     private IngestionResponse createUploadedDocument(
             AuthUser authUser,
             KnowledgeBase knowledgeBase,
@@ -169,7 +196,84 @@ public class DocumentIngestionService {
         }
     }
 
+    // 在上传并发许可保护下执行上传动作。
+    private IngestionResponse withUploadPermit(
+            AuthUser authUser,
+            KnowledgeBase knowledgeBase,
+            MultipartFile file,
+            Supplier<IngestionResponse> uploadAction
+    ) {
+        ConcurrencyLimitProperties.Limit limit = concurrencyLimitProperties.upload();
+        RedisSemaphoreService.Permit permit = acquireUploadPermit(authUser, knowledgeBase, file, limit);
+        long startedAt = System.nanoTime();
+        try (permit) {
+            IngestionResponse response = uploadAction.get();
+            log.info(
+                    "event=upload_concurrency_completed userId={} knowledgeBaseId={} documentId={} maxPermits={} costMs={}",
+                    authUser.getId(),
+                    knowledgeBase == null ? null : knowledgeBase.getKnowledgeBaseNo(),
+                    response.documentId(),
+                    limit.maxPermits(),
+                    elapsedMillis(startedAt)
+            );
+            return response;
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "event=upload_concurrency_failed userId={} knowledgeBaseId={} fileName={} maxPermits={} costMs={} type={} message={}",
+                    authUser.getId(),
+                    knowledgeBase == null ? null : knowledgeBase.getKnowledgeBaseNo(),
+                    sanitizeLogValue(file == null ? null : file.getOriginalFilename()),
+                    limit.maxPermits(),
+                    elapsedMillis(startedAt),
+                    exception.getClass().getSimpleName(),
+                    sanitizeLogValue(exception.getMessage())
+            );
+            throw exception;
+        }
+    }
+
+    // 获取 service 层上传并发许可。
+    private RedisSemaphoreService.Permit acquireUploadPermit(
+            AuthUser authUser,
+            KnowledgeBase knowledgeBase,
+            MultipartFile file,
+            ConcurrencyLimitProperties.Limit limit
+    ) {
+        try {
+            return redisSemaphoreService.tryAcquire(
+                            UPLOAD_SEMAPHORE_NAME,
+                            limit.maxPermits(),
+                            limit.leaseTtl()
+                    )
+                    .orElseThrow(() -> {
+                        log.warn(
+                                "event=upload_concurrency_limited userId={} knowledgeBaseId={} fileName={} maxPermits={}",
+                                authUser.getId(),
+                                knowledgeBase == null ? null : knowledgeBase.getKnowledgeBaseNo(),
+                                sanitizeLogValue(file == null ? null : file.getOriginalFilename()),
+                                limit.maxPermits()
+                        );
+                        return new BusinessException(HttpStatus.TOO_MANY_REQUESTS, "当前上传任务较多，请稍后再试");
+                    });
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            log.error(
+                    "event=upload_concurrency_unavailable userId={} knowledgeBaseId={} fileName={} maxPermits={} type={} message={}",
+                    authUser.getId(),
+                    knowledgeBase == null ? null : knowledgeBase.getKnowledgeBaseNo(),
+                    sanitizeLogValue(file == null ? null : file.getOriginalFilename()),
+                    limit.maxPermits(),
+                    exception.getClass().getSimpleName(),
+                    sanitizeLogValue(exception.getMessage()),
+                    exception
+            );
+            throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "上传并发控制暂时不可用，请稍后再试");
+        }
+    }
+
     @Transactional
+    // 解析、清洗、切块并向量化文档。
     public void processDocument(String documentId, ChunkingOptions options) {
         KnowledgeDocument document = requireDocument(documentId);
         KnowledgeBase knowledgeBase = document.getKnowledgeBaseId() == null
@@ -282,6 +386,7 @@ public class DocumentIngestionService {
         }
     }
 
+    // 重建已有文档分块的向量。
     public void rebuildDocumentVectors(String documentId) {
         KnowledgeDocument document = requireDocument(documentId);
         KnowledgeBase knowledgeBase = document.getKnowledgeBaseId() == null
@@ -364,6 +469,7 @@ public class DocumentIngestionService {
         }
     }
 
+    // 写入向量文档。
     private void addVectorDocuments(VectorStore vectorStore, List<Document> vectorDocuments) {
         try {
             vectorStore.add(vectorDocuments);
@@ -375,6 +481,7 @@ public class DocumentIngestionService {
         }
     }
 
+    // 校验分块是否适合 Embedding。
     private void validateChunksForEmbedding(List<DocumentChunk> chunks, ChunkingOptions options) {
         for (DocumentChunk chunk : chunks) {
             if (chunk.content().length() <= ChunkingOptions.MAX_EMBEDDING_CHUNK_CHARS) {
@@ -393,6 +500,7 @@ public class DocumentIngestionService {
         }
     }
 
+    // 解析文档文本。
     private ParsedDocument parseDocument(KnowledgeDocument document, RawDocument rawDocument) {
         if (rawDocument.hasStoredObject()) {
             return tikaDocumentParser.parse(rawDocument);
@@ -410,6 +518,7 @@ public class DocumentIngestionService {
         throw new BusinessException(HttpStatus.BAD_REQUEST, "原始文件不存在，请重新上传");
     }
 
+    // 将文档实体还原为原始文档描述。
     private RawDocument toRawDocument(KnowledgeDocument document) {
         DocumentSourceType sourceType;
         try {
@@ -431,6 +540,7 @@ public class DocumentIngestionService {
         );
     }
 
+    // 根据业务编号获取文档。
     private KnowledgeDocument requireDocument(String documentId) {
         KnowledgeDocument document = knowledgeDocumentMapper.selectOne(new LambdaQueryWrapper<KnowledgeDocument>()
                 .eq(KnowledgeDocument::getDocumentNo, documentId)
@@ -441,6 +551,7 @@ public class DocumentIngestionService {
         return document;
     }
 
+    // 根据主键获取知识库。
     private KnowledgeBase requireKnowledgeBaseById(Long knowledgeBaseId) {
         KnowledgeBase knowledgeBase = knowledgeBaseMapper.selectById(knowledgeBaseId);
         if (knowledgeBase == null) {
@@ -497,6 +608,7 @@ public class DocumentIngestionService {
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
+            // 事务提交后删除旧向量。
             public void afterCommit() {
                 rollbackVectorDocuments(vectorStore, vectorDocumentIds);
             }

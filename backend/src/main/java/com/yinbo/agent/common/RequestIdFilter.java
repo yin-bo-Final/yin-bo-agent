@@ -20,6 +20,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
+// RequestId 链路追踪过滤器。
 public class RequestIdFilter extends OncePerRequestFilter {
 
     public static final String REQUEST_ID_HEADER = "X-Request-Id";
@@ -31,6 +32,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
 
     private final long slowRequestThresholdMs;
 
+    // 读取慢请求阈值配置。
     public RequestIdFilter(
             @Value("${app.logging.slow-request-threshold-ms:3000}") long slowRequestThresholdMs
     ) {
@@ -38,6 +40,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
     }
 
     @Override
+    // 为每个请求生成或透传 requestId，并记录访问日志。
     protected void doFilterInternal(
             HttpServletRequest request,
             HttpServletResponse response,
@@ -83,6 +86,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
         }
     }
 
+    // 解析请求头中的 X-Request-Id。
     private static String resolveRequestId(HttpServletRequest request) {
         String requestId = request.getHeader(REQUEST_ID_HEADER);
         if (StringUtils.hasText(requestId) && SAFE_REQUEST_ID.matcher(requestId).matches()) {
@@ -91,6 +95,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
         return UUID.randomUUID().toString().replace("-", "");
     }
 
+    // 解析客户端 IP。
     private static String resolveClientIp(HttpServletRequest request) {
         String forwardedFor = request.getHeader("X-Forwarded-For");
         if (StringUtils.hasText(forwardedFor)) {
@@ -99,6 +104,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
         return sanitizeLogValue(request.getRemoteAddr());
     }
 
+    // 清洗日志文本。
     private static String sanitizeLogValue(String value) {
         if (!StringUtils.hasText(value)) {
             return UNKNOWN;

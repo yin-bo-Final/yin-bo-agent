@@ -1,14 +1,16 @@
-package com.yinbo.agent.ingestion;
+package com.yinbo.agent.ingestion.model;
 
 import com.yinbo.agent.common.BusinessException;
 import java.util.Locale;
 import org.springframework.http.HttpStatus;
 
+// 文档切块策略。
 public enum ChunkingStrategy {
     AUTO,
     RECURSIVE,
     NONE;
 
+    // 解析前端传入的切块策略。
     public static ChunkingStrategy from(String value) {
         if (value == null || value.isBlank()) {
             return AUTO;

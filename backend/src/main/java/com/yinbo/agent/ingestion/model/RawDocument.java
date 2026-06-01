@@ -1,5 +1,6 @@
-package com.yinbo.agent.ingestion;
+package com.yinbo.agent.ingestion.model;
 
+// 待入库的原始文档。
 public record RawDocument(
         DocumentSourceType sourceType,
         String sourceUrl,
@@ -13,6 +14,7 @@ public record RawDocument(
         String storageEtag
 ) {
 
+    // 判断原始文档是否已经存入对象存储。
     public boolean hasStoredObject() {
         return storageObjectKey != null && !storageObjectKey.isBlank();
     }

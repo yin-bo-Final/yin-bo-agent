@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
 
 @TableName("chat_conversation")
+// AI 对话会话实体。
 public class ChatConversation {
 
     @TableId(type = IdType.ASSIGN_ID)

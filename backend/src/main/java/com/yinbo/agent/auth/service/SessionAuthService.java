@@ -1,6 +1,7 @@
-package com.yinbo.agent.auth;
+package com.yinbo.agent.auth.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.yinbo.agent.auth.AuthConstants;
 import com.yinbo.agent.auth.dto.AuthUserView;
 import com.yinbo.agent.auth.dto.CurrentUserResponse;
 import com.yinbo.agent.auth.dto.DeleteAccountRequest;
@@ -26,6 +27,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 @Service
+// 基于 Spring Session 的认证服务实现。
 public class SessionAuthService implements AuthService {
 
     private static final Logger log = LoggerFactory.getLogger(SessionAuthService.class);
@@ -35,6 +37,7 @@ public class SessionAuthService implements AuthService {
     private final AuthUserMapper authUserMapper;
     private final PasswordEncoder passwordEncoder;
 
+    // 注入用户 Mapper 和密码编码器。
     public SessionAuthService(AuthUserMapper authUserMapper, PasswordEncoder passwordEncoder) {
         this.authUserMapper = authUserMapper;
         this.passwordEncoder = passwordEncoder;
@@ -42,6 +45,7 @@ public class SessionAuthService implements AuthService {
 
     @Override
     @Transactional
+    // 注册普通用户并创建登录 Session。
     public LoginResponse register(RegisterRequest request, HttpServletRequest httpRequest) {
         String username = normalizeUsername(request.username());
         ensureUsernameAvailable(username);
@@ -72,6 +76,7 @@ public class SessionAuthService implements AuthService {
 
     @Override
     @Transactional
+    // 校验用户名密码并创建登录 Session。
     public LoginResponse login(LoginRequest request, HttpServletRequest httpRequest) {
         String username = normalizeUsername(request.username());
         AuthUser authUser;
@@ -101,6 +106,7 @@ public class SessionAuthService implements AuthService {
         return response;
     }
 
+    // 创建新的登录 Session 并写入 gateway 限流需要的用户 ID。
     private LoginResponse createLoginSession(AuthUser authUser, HttpServletRequest httpRequest) {
         authUser.setLastLoginAt(LocalDateTime.now());
         authUserMapper.updateById(authUser);
@@ -119,11 +125,13 @@ public class SessionAuthService implements AuthService {
 
         HttpSession session = httpRequest.getSession(true);
         session.setAttribute(AuthConstants.LOGIN_USER_SESSION_KEY, loginUser);
+        session.setAttribute(AuthConstants.LOGIN_USER_ID_SESSION_KEY, authUser.getId());
 
         return new LoginResponse(session.getId(), loginUser.loginAt(), toView(authUser));
     }
 
     @Override
+    // 返回当前登录用户信息。
     public CurrentUserResponse currentUser(HttpServletRequest httpRequest) {
         HttpSession session = httpRequest.getSession(false);
         LoginUser loginUser = session == null
@@ -134,6 +142,7 @@ public class SessionAuthService implements AuthService {
     }
 
     @Override
+    // 退出登录并销毁当前 Session。
     public LogoutResponse logout(HttpServletRequest httpRequest) {
         HttpSession session = httpRequest.getSession(false);
         LoginUser loginUser = session == null
@@ -154,6 +163,7 @@ public class SessionAuthService implements AuthService {
 
     @Override
     @Transactional
+    // 校验密码后注销当前账号。
     public LogoutResponse deleteAccount(DeleteAccountRequest request, HttpServletRequest httpRequest) {
         AuthUser authUser = requireActiveUser(httpRequest);
         if (!passwordEncoder.matches(request.password(), authUser.getPasswordHash())) {
@@ -180,6 +190,7 @@ public class SessionAuthService implements AuthService {
         return new LogoutResponse("账号已注销", Instant.now());
     }
 
+    // 创建或修正启动时的种子管理员账号。
     public AuthUser createSeedUser(String username, String rawPassword, String displayName) {
         AuthUser authUser = new AuthUser();
         authUser.setUsername(normalizeUsername(username));
@@ -204,6 +215,7 @@ public class SessionAuthService implements AuthService {
     }
 
     @Override
+    // 获取当前请求的有效用户。
     public AuthUser requireActiveUser(HttpServletRequest httpRequest) {
         HttpSession session = httpRequest.getSession(false);
         LoginUser loginUser = session == null
@@ -221,6 +233,7 @@ public class SessionAuthService implements AuthService {
         return authUser;
     }
 
+    // 按用户名查找唯一有效用户。
     private AuthUser findSingleActiveUserByUsername(String username) {
         List<AuthUser> authUsers = authUserMapper.selectList(new LambdaQueryWrapper<AuthUser>()
                 .eq(AuthUser::getUsername, username)
@@ -236,6 +249,7 @@ public class SessionAuthService implements AuthService {
         return authUsers.get(0);
     }
 
+    // 校验用户名未被有效账号占用。
     private void ensureUsernameAvailable(String username) {
         Long activeCount = authUserMapper.selectCount(new LambdaQueryWrapper<AuthUser>()
                 .eq(AuthUser::getUsername, username)
@@ -245,10 +259,12 @@ public class SessionAuthService implements AuthService {
         }
     }
 
+    // 规范化用户名。
     private String normalizeUsername(String username) {
         return username == null ? "" : username.trim();
     }
 
+    // 清洗写入日志的用户输入。
     private String sanitizeLogValue(String value) {
         if (value == null || value.isBlank()) {
             return "-";
@@ -257,6 +273,7 @@ public class SessionAuthService implements AuthService {
         return sanitized.length() <= 128 ? sanitized : sanitized.substring(0, 128);
     }
 
+    // 转换为前端可见的用户视图。
     private AuthUserView toView(AuthUser authUser) {
         return new AuthUserView(
                 authUser.getId(),

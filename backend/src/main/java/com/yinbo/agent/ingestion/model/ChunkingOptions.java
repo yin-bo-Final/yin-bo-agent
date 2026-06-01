@@ -1,9 +1,10 @@
-package com.yinbo.agent.ingestion;
+package com.yinbo.agent.ingestion.model;
 
 import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.config.RagProperties;
 import org.springframework.http.HttpStatus;
 
+// 文档切块参数。
 public record ChunkingOptions(
         ChunkingStrategy strategy,
         int chunkSize,
@@ -12,6 +13,7 @@ public record ChunkingOptions(
 ) {
     public static final int MAX_EMBEDDING_CHUNK_CHARS = 24_000;
 
+    // 根据请求参数和 RAG 默认配置生成切块参数。
     public static ChunkingOptions from(
             RagProperties ragProperties,
             String strategy,
@@ -42,6 +44,7 @@ public record ChunkingOptions(
         return new ChunkingOptions(resolvedStrategy, resolvedChunkSize, resolvedChunkOverlap, resolvedMaxChunks);
     }
 
+    // 根据文本长度自适应切块大小。
     public ChunkingOptions adaptForTextLength(int textLength) {
         if (strategy != ChunkingStrategy.AUTO || textLength <= 0) {
             return this;

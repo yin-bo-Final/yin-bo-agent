@@ -1,8 +1,9 @@
 package com.yinbo.agent.ingestion.splitter;
 
 import com.yinbo.agent.common.BusinessException;
-import com.yinbo.agent.ingestion.ChunkingOptions;
-import com.yinbo.agent.ingestion.DocumentChunk;
+import com.yinbo.agent.ingestion.model.ChunkingOptions;
+import com.yinbo.agent.ingestion.model.ChunkingStrategy;
+import com.yinbo.agent.ingestion.model.DocumentChunk;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -11,6 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
 @Component
+// 递归文档切块器。
 public class RecursiveDocumentChunkSplitter {
 
     private static final Pattern MARKDOWN_HEADING_PATTERN = Pattern.compile("^(#{1,6})\\s+(.+?)\\s*$");
@@ -24,11 +26,12 @@ public class RecursiveDocumentChunkSplitter {
             " "
     );
 
+    // 根据切块参数把文本拆成分块。
     public List<DocumentChunk> split(String text, String documentTitle, ChunkingOptions options) {
         if (text == null || text.isBlank()) {
             return List.of();
         }
-        if (options.strategy() == com.yinbo.agent.ingestion.ChunkingStrategy.NONE) {
+        if (options.strategy() == ChunkingStrategy.NONE) {
             String title = documentTitle == null || documentTitle.isBlank() ? "未命名文档" : documentTitle.trim();
             return List.of(new DocumentChunk(0, title, text.trim()));
         }
@@ -55,7 +58,7 @@ public class RecursiveDocumentChunkSplitter {
             chunks.add(new DocumentChunk(chunks.size(), current.title(), content.trim()));
         }
 
-        if (options.strategy() != com.yinbo.agent.ingestion.ChunkingStrategy.AUTO && chunks.size() > options.maxChunks()) {
+        if (options.strategy() != ChunkingStrategy.AUTO && chunks.size() > options.maxChunks()) {
             throw new BusinessException(
                     HttpStatus.BAD_REQUEST,
                     "文档切块数量超过上限，请调大 chunkSize 或 maxChunks"
@@ -64,6 +67,7 @@ public class RecursiveDocumentChunkSplitter {
         return chunks;
     }
 
+    // 按 Markdown 标题切分章节。
     private List<Section> splitSections(String text, String documentTitle) {
         String fallbackTitle = documentTitle == null || documentTitle.isBlank() ? "未命名文档" : documentTitle.trim();
         String[] lines = text.split("\\n", -1);
@@ -92,6 +96,7 @@ public class RecursiveDocumentChunkSplitter {
         return sections.isEmpty() ? List.of(new Section(fallbackTitle, text)) : sections;
     }
 
+    // 追加一个非空章节。
     private void appendSection(List<Section> sections, String title, StringBuilder content) {
         String sectionContent = content.toString().trim();
         if (!sectionContent.isBlank()) {
@@ -100,6 +105,7 @@ public class RecursiveDocumentChunkSplitter {
         content.setLength(0);
     }
 
+    // 按分隔符递归切分文本。
     private List<String> splitRecursive(String text, int chunkSize, int separatorIndex) {
         if (text.length() <= chunkSize) {
             return List.of(text);
