@@ -30,7 +30,7 @@ public record RagProperties(
         defaultChunkOverlap = nonNegativeOrDefault(defaultChunkOverlap, 150);
         defaultMaxChunks = positiveOrDefault(defaultMaxChunks, 200);
         minChunkSize = positiveOrDefault(minChunkSize, 80);
-        maxSourceBytes = maxSourceBytes == null || maxSourceBytes <= 0 ? 50L * 1024L * 1024L : maxSourceBytes;
+        maxSourceBytes = maxSourceBytes == null || maxSourceBytes <= 0 ? 200L * 1024L * 1024L : maxSourceBytes;
         ingestionTopic = blankToDefault(ingestionTopic, "rag-ingestion-task");
         ingestionConsumerGroup = blankToDefault(ingestionConsumerGroup, "yinbo-agent-ingestion-consumer");
         if (defaultChunkOverlap >= defaultChunkSize) {

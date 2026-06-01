@@ -2,8 +2,8 @@ package com.yinbo.gateway.filter;
 
 import com.yinbo.gateway.concurrent.RedisSemaphoreService;
 import com.yinbo.gateway.config.ConcurrencyLimitProperties;
+import com.yinbo.gateway.ip.ClientIpResolver;
 import com.yinbo.gateway.response.GatewayErrorResponseWriter;
-import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,16 +30,19 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
     private final ConcurrencyLimitProperties concurrencyLimitProperties;
     private final RedisSemaphoreService redisSemaphoreService;
     private final GatewayErrorResponseWriter errorResponseWriter;
+    private final ClientIpResolver clientIpResolver;
 
     // 注入资源并发限流所需依赖。
     public ResourceConcurrencyGlobalFilter(
             ConcurrencyLimitProperties concurrencyLimitProperties,
             RedisSemaphoreService redisSemaphoreService,
-            GatewayErrorResponseWriter errorResponseWriter
+            GatewayErrorResponseWriter errorResponseWriter,
+            ClientIpResolver clientIpResolver
     ) {
         this.concurrencyLimitProperties = concurrencyLimitProperties;
         this.redisSemaphoreService = redisSemaphoreService;
         this.errorResponseWriter = errorResponseWriter;
+        this.clientIpResolver = clientIpResolver;
     }
 
     // 对上传、URL 入库和 AI 对话执行 gateway 层并发限流。
@@ -77,7 +80,7 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
     // 声明资源并发限流过滤器的执行顺序。
     @Override
     public int getOrder() {
-        return Ordered.HIGHEST_PRECEDENCE + 3;
+        return Ordered.HIGHEST_PRECEDENCE + 4;
     }
 
     // 识别当前请求对应的高成本资源。
@@ -126,7 +129,7 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
                 resourceLimit.resource(),
                 requestId(request),
                 request.getURI().getRawPath(),
-                resolveClientIp(request),
+                clientIpResolver.resolve(request),
                 resourceLimit.limit().maxPermits()
         );
         return errorResponseWriter.write(exchange, HttpStatus.TOO_MANY_REQUESTS, resourceLimit.limitedMessage());
@@ -144,7 +147,7 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
                 resourceLimit.resource(),
                 requestId(request),
                 request.getURI().getRawPath(),
-                resolveClientIp(request),
+                clientIpResolver.resolve(request),
                 resourceLimit.limit().maxPermits(),
                 exception.getClass().getSimpleName(),
                 sanitizeLogValue(exception.getMessage()),
@@ -167,7 +170,7 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
                 requestId(request),
                 request.getURI().getRawPath(),
                 exchange.getResponse().getStatusCode() == null ? 0 : exchange.getResponse().getStatusCode().value(),
-                resolveClientIp(request),
+                clientIpResolver.resolve(request),
                 resourceLimit.limit().maxPermits(),
                 signalType.name(),
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
@@ -178,25 +181,6 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
     private static String requestId(ServerHttpRequest request) {
         String requestId = request.getHeaders().getFirst(REQUEST_ID_HEADER);
         return StringUtils.hasText(requestId) ? sanitizeLogValue(requestId) : UNKNOWN;
-    }
-
-    // 解析客户端 IP。
-    private static String resolveClientIp(ServerHttpRequest request) {
-        String forwardedFor = request.getHeaders().getFirst("X-Forwarded-For");
-        if (StringUtils.hasText(forwardedFor)) {
-            return sanitizeLogValue(forwardedFor.split(",", 2)[0].trim());
-        }
-
-        String realIp = request.getHeaders().getFirst("X-Real-IP");
-        if (StringUtils.hasText(realIp)) {
-            return sanitizeLogValue(realIp);
-        }
-
-        InetSocketAddress remoteAddress = request.getRemoteAddress();
-        if (remoteAddress == null || remoteAddress.getAddress() == null) {
-            return UNKNOWN;
-        }
-        return sanitizeLogValue(remoteAddress.getAddress().getHostAddress());
     }
 
     // 清洗日志文本。

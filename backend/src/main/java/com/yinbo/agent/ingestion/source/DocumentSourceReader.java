@@ -49,7 +49,7 @@ public class DocumentSourceReader {
         String fileName = sanitizeFileName(file.getOriginalFilename(), "uploaded-document");
         long sizeBytes = file.getSize();
         if (sizeBytes > ragProperties.maxSourceBytes()) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "文档超过当前允许大小");
+            throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "文件大小不能超过 200MB");
         }
         try (InputStream inputStream = file.getInputStream()) {
             StoredObject storedObject = objectStorageService.uploadOriginalDocument(
@@ -85,7 +85,7 @@ public class DocumentSourceReader {
                 URI finalUri = downloadConnection.uri();
                 long contentLength = connection.getContentLengthLong();
                 if (contentLength > ragProperties.maxSourceBytes()) {
-                    throw new BusinessException(HttpStatus.BAD_REQUEST, "URL 文件超过当前允许大小");
+                    throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "文件大小不能超过 200MB");
                 }
 
                 byte[] bytes;
@@ -249,7 +249,7 @@ public class DocumentSourceReader {
         while ((read = inputStream.read(buffer)) != -1) {
             totalBytes += read;
             if (totalBytes > maxBytes) {
-                throw new BusinessException(HttpStatus.BAD_REQUEST, "文档超过当前允许大小");
+                throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "文件大小不能超过 200MB");
             }
             outputStream.write(buffer, 0, read);
         }

@@ -6,7 +6,7 @@
 
 | 文档                                                           | 用途                                    |
 | ------------------------------------------------------------ | ------------------------------------- |
-| [docs/gateway-structure.md](docs/gateway-structure.md)       | 网关模块、路由转发、限流、并发控制和统一错误响应               |
+| [docs/gateway-structure.md](docs/gateway-structure.md)       | 网关模块、路由转发、真实 IP、限流、并发控制和统一错误响应          |
 | [docs/backend-structure.md](docs/backend-structure.md)       | 后端包结构、RAG ingestion、Flyway、数据表和常见改动入口 |
 | [docs/frontend-structure.md](docs/frontend-structure.md)     | 前端页面结构、API 封装、后台管理 UI 和路由状态           |
 | [docs/frontend-style-guide.md](docs/frontend-style-guide.md) | 前端视觉风格、按钮、弹窗、下拉栏、tooltip 等样式约定        |
@@ -103,7 +103,7 @@ ConversationPage
 
 | 任务 | 先读 |
 | --- | --- |
-| 网关路由、统一入口、限流、鉴权前置 | [docs/gateway-structure.md](docs/gateway-structure.md) |
+| 网关路由、统一入口、真实 IP、限流、鉴权前置 | [docs/gateway-structure.md](docs/gateway-structure.md) |
 | 后端接口、数据库、RAG、RocketMQ、RustFS | [docs/backend-structure.md](docs/backend-structure.md) |
 | 前端页面、后台管理、会话 UI | [docs/frontend-structure.md](docs/frontend-structure.md) |
 | 只改样式 | [docs/frontend-style-guide.md](docs/frontend-style-guide.md) |

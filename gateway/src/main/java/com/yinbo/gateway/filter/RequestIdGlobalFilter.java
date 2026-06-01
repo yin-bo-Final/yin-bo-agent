@@ -1,6 +1,6 @@
 package com.yinbo.gateway.filter;
 
-import java.net.InetSocketAddress;
+import com.yinbo.gateway.ip.ClientIpResolver;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
@@ -28,12 +28,15 @@ public class RequestIdGlobalFilter implements GlobalFilter, Ordered {
     private static final String UNKNOWN = "-";
 
     private final long slowRequestThresholdMs;
+    private final ClientIpResolver clientIpResolver;
 
-    // 读取慢请求阈值配置。
+    // 读取慢请求阈值配置并注入真实 IP 解析器。
     public RequestIdGlobalFilter(
-            @Value("${app.logging.slow-request-threshold-ms:3000}") long slowRequestThresholdMs
+            @Value("${app.logging.slow-request-threshold-ms:3000}") long slowRequestThresholdMs,
+            ClientIpResolver clientIpResolver
     ) {
         this.slowRequestThresholdMs = slowRequestThresholdMs;
+        this.clientIpResolver = clientIpResolver;
     }
 
     // 生成或透传 X-Request-Id，并记录 gateway 访问日志。
@@ -81,7 +84,7 @@ public class RequestIdGlobalFilter implements GlobalFilter, Ordered {
                                 status,
                                 costMs,
                                 true,
-                                resolveClientIp(request),
+                                clientIpResolver.resolve(request),
                                 sanitizeLogValue(request.getHeaders().getFirst("User-Agent"))
                         );
                     } else {
@@ -93,7 +96,7 @@ public class RequestIdGlobalFilter implements GlobalFilter, Ordered {
                                 status,
                                 costMs,
                                 false,
-                                resolveClientIp(request),
+                                clientIpResolver.resolve(request),
                                 sanitizeLogValue(request.getHeaders().getFirst("User-Agent"))
                         );
                     }
@@ -113,20 +116,6 @@ public class RequestIdGlobalFilter implements GlobalFilter, Ordered {
             return requestId;
         }
         return UUID.randomUUID().toString().replace("-", "");
-    }
-
-    // 解析客户端 IP。
-    private static String resolveClientIp(ServerHttpRequest request) {
-        String forwardedFor = request.getHeaders().getFirst("X-Forwarded-For");
-        if (StringUtils.hasText(forwardedFor)) {
-            return sanitizeLogValue(forwardedFor.split(",", 2)[0].trim());
-        }
-
-        InetSocketAddress remoteAddress = request.getRemoteAddress();
-        if (remoteAddress == null || remoteAddress.getAddress() == null) {
-            return UNKNOWN;
-        }
-        return sanitizeLogValue(remoteAddress.getAddress().getHostAddress());
     }
 
     // 清洗日志文本。

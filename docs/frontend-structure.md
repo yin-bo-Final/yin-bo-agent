@@ -138,7 +138,7 @@ DELETE /api/admin/knowledge/chunks/{chunkId}
 
 请求错误处理要优先读取后端或 gateway 返回的 `message` 字段。后端业务失败通常由 `BusinessException` 统一返回；gateway 限流失败返回 `429` 时，`GlobalErrorToasts` 会展示居中的全局错误弹窗。
 
-开发环境中，`vite.config.js` 会把 `/api` 代理到 gateway 默认地址 `http://localhost:8081`。部署时，`nginx/default.conf` 也把 `/api/` 转发给 `gateway:8081`，再由 gateway 转发到后端业务服务。
+开发环境中，`vite.config.js` 会把 `/api` 代理到 gateway 默认地址 `http://localhost:8081`。部署时，`nginx/default.conf` 也把 `/api/` 转发给 `gateway:8081`，再由 gateway 转发到后端业务服务。Nginx 的 `client_max_body_size` 默认设置为 `220m`，避免 200MB 附近的上传在进入 gateway 前被 Nginx 默认 1MB 限制拦截。
 
 ## `styles.css`
 

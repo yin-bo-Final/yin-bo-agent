@@ -92,7 +92,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
                 .body(new ApiErrorResponse(
                         HttpStatus.PAYLOAD_TOO_LARGE.value(),
-                        "单文件最大支持 50MB，单次请求最大支持 100MB",
+                        "文件大小不能超过 200MB",
                         Instant.now()
                 ));
     }

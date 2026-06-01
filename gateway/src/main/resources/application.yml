@@ -139,9 +139,23 @@ spring:
 
 management:
   endpoints:
+    enabled-by-default: false
     web:
       exposure:
-        include: health,info,gateway
+        include: health,info
+  endpoint:
+    health:
+      enabled: true
+      show-details: never
+      show-components: never
+    info:
+      enabled: true
+    gateway:
+      enabled: false
+    env:
+      show-values: never
+    configprops:
+      show-values: never
 
 logging:
   file:
@@ -160,6 +174,12 @@ logging:
 app:
   logging:
     slow-request-threshold-ms: ${APP_SLOW_REQUEST_THRESHOLD_MS:3000}
+  # 功能：配置 gateway 信任的上游代理网段。
+  # 说明：只有直接来源 IP 命中这些网段时，才会读取 X-Forwarded-For / X-Real-IP。
+  gateway:
+    trusted-proxies: ${GATEWAY_TRUSTED_PROXIES:127.0.0.1/32,::1/128,172.16.0.0/12}
+    request-size:
+      upload-max-size: ${UPLOAD_GATEWAY_MAX_BODY_SIZE:200MB}
   # 功能：配置 gateway 层并发限流。
   # 说明：这些配置使用 Redis 信号量，控制同时转发到 service 的高成本请求数量。
   concurrency:

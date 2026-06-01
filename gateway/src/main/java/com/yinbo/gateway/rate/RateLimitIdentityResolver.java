@@ -1,6 +1,6 @@
 package com.yinbo.gateway.rate;
 
-import java.net.InetSocketAddress;
+import com.yinbo.gateway.ip.ClientIpResolver;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import org.slf4j.Logger;
@@ -21,24 +21,26 @@ public class RateLimitIdentityResolver {
     private static final Logger log = LoggerFactory.getLogger(RateLimitIdentityResolver.class);
     private static final String SESSION_COOKIE_NAME = "SESSION";
     private static final String LOGIN_USER_ID_HASH_KEY = "sessionAttr:LOGIN_USER_ID";
-    private static final String UNKNOWN_IP = "unknown";
 
     private final ReactiveRedisTemplate<String, Object> springSessionRedisTemplate;
+    private final ClientIpResolver clientIpResolver;
     private final String sessionNamespace;
 
-    // 注入 Spring Session Redis 读取器和 session 命名空间。
+    // 注入 Spring Session Redis 读取器、真实 IP 解析器和 session 命名空间。
     public RateLimitIdentityResolver(
             ReactiveRedisTemplate<String, Object> springSessionRedisTemplate,
+            ClientIpResolver clientIpResolver,
             @Value("${app.session.redis.namespace:yinbo:agent:session}") String sessionNamespace
     ) {
         this.springSessionRedisTemplate = springSessionRedisTemplate;
+        this.clientIpResolver = clientIpResolver;
         this.sessionNamespace = sessionNamespace;
     }
 
     // 解析当前请求的限流身份。
     public Mono<String> resolve(ServerWebExchange exchange) {
         ServerHttpRequest request = exchange.getRequest();
-        String ipKey = "ip:" + resolveClientIp(request);
+        String ipKey = "ip:" + clientIpResolver.resolve(request);
         String sessionId = resolveSessionId(request);
         if (!StringUtils.hasText(sessionId)) {
             return Mono.just(ipKey);
@@ -86,29 +88,10 @@ public class RateLimitIdentityResolver {
         return sanitizeIdentity(value);
     }
 
-    // 解析客户端 IP。
-    private static String resolveClientIp(ServerHttpRequest request) {
-        String forwardedFor = request.getHeaders().getFirst("X-Forwarded-For");
-        if (StringUtils.hasText(forwardedFor)) {
-            return sanitizeIdentity(forwardedFor.split(",", 2)[0].trim());
-        }
-
-        String realIp = request.getHeaders().getFirst("X-Real-IP");
-        if (StringUtils.hasText(realIp)) {
-            return sanitizeIdentity(realIp);
-        }
-
-        InetSocketAddress remoteAddress = request.getRemoteAddress();
-        if (remoteAddress == null || remoteAddress.getAddress() == null) {
-            return UNKNOWN_IP;
-        }
-        return sanitizeIdentity(remoteAddress.getAddress().getHostAddress());
-    }
-
     // 清洗限流身份字符串。
     private static String sanitizeIdentity(String value) {
         if (!StringUtils.hasText(value)) {
-            return UNKNOWN_IP;
+            return "unknown";
         }
         return value.replaceAll("[^A-Za-z0-9:.\\-]", "_");
     }

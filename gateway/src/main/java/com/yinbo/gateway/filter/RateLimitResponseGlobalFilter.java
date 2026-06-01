@@ -1,7 +1,7 @@
 package com.yinbo.gateway.filter;
 
+import com.yinbo.gateway.ip.ClientIpResolver;
 import com.yinbo.gateway.response.GatewayErrorResponseWriter;
-import java.net.InetSocketAddress;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,10 +29,15 @@ public class RateLimitResponseGlobalFilter implements GlobalFilter, Ordered {
     private static final String RATE_LIMIT_MESSAGE = "请求过于频繁，请稍后再试";
 
     private final GatewayErrorResponseWriter errorResponseWriter;
+    private final ClientIpResolver clientIpResolver;
 
-    // 注入统一错误响应写入器。
-    public RateLimitResponseGlobalFilter(GatewayErrorResponseWriter errorResponseWriter) {
+    // 注入统一错误响应写入器和真实 IP 解析器。
+    public RateLimitResponseGlobalFilter(
+            GatewayErrorResponseWriter errorResponseWriter,
+            ClientIpResolver clientIpResolver
+    ) {
         this.errorResponseWriter = errorResponseWriter;
+        this.clientIpResolver = clientIpResolver;
     }
 
     // 拦截 RedisRateLimiter 产生的 429 响应并改写响应体。
@@ -64,7 +69,7 @@ public class RateLimitResponseGlobalFilter implements GlobalFilter, Ordered {
     private Mono<Void> writeRateLimitResponse(ServerHttpResponse response, ServerWebExchange exchange) {
         String requestId = requestId(exchange.getRequest());
         String routeId = routeId(exchange);
-        String clientIp = resolveClientIp(exchange.getRequest());
+        String clientIp = clientIpResolver.resolve(exchange.getRequest());
         String path = exchange.getRequest().getURI().getRawPath();
 
         log.warn(
@@ -87,25 +92,6 @@ public class RateLimitResponseGlobalFilter implements GlobalFilter, Ordered {
     private static String routeId(ServerWebExchange exchange) {
         Route route = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
         return route == null ? UNKNOWN : sanitizeLogValue(route.getId());
-    }
-
-    // 解析客户端 IP。
-    private static String resolveClientIp(ServerHttpRequest request) {
-        String forwardedFor = request.getHeaders().getFirst("X-Forwarded-For");
-        if (StringUtils.hasText(forwardedFor)) {
-            return sanitizeLogValue(forwardedFor.split(",", 2)[0].trim());
-        }
-
-        String realIp = request.getHeaders().getFirst("X-Real-IP");
-        if (StringUtils.hasText(realIp)) {
-            return sanitizeLogValue(realIp);
-        }
-
-        InetSocketAddress remoteAddress = request.getRemoteAddress();
-        if (remoteAddress == null || remoteAddress.getAddress() == null) {
-            return UNKNOWN;
-        }
-        return sanitizeLogValue(remoteAddress.getAddress().getHostAddress());
     }
 
     // 清洗日志文本。

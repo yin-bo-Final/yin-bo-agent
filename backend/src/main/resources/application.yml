@@ -38,8 +38,8 @@ spring:
     clean-disabled: true
   servlet:
     multipart:
-      max-file-size: ${INGESTION_MAX_FILE_SIZE:50MB}
-      max-request-size: ${INGESTION_MAX_REQUEST_SIZE:100MB}
+      max-file-size: ${INGESTION_MAX_FILE_SIZE:200MB}
+      max-request-size: ${INGESTION_MAX_REQUEST_SIZE:220MB}
   ai:
     openai:
       base-url: ${OPENAI_BASE_URL:https://api.siliconflow.cn}
@@ -64,9 +64,21 @@ rocketmq:
 
 management:
   endpoints:
+    enabled-by-default: false
     web:
       exposure:
         include: health,info
+  endpoint:
+    health:
+      enabled: true
+      show-details: never
+      show-components: never
+    info:
+      enabled: true
+    env:
+      show-values: never
+    configprops:
+      show-values: never
 
 logging:
   file:
@@ -103,7 +115,7 @@ app:
       default-chunk-overlap: ${RAG_DEFAULT_CHUNK_OVERLAP:150}
       default-max-chunks: ${RAG_DEFAULT_MAX_CHUNKS:200}
       min-chunk-size: ${RAG_MIN_CHUNK_SIZE:80}
-      max-source-bytes: ${RAG_MAX_SOURCE_BYTES:52428800}
+      max-source-bytes: ${RAG_MAX_SOURCE_BYTES:209715200}
       ingestion-topic: ${RAG_INGESTION_TOPIC:rag-ingestion-task}
       ingestion-consumer-group: ${RAG_INGESTION_CONSUMER_GROUP:yinbo-agent-ingestion-consumer}
     models:

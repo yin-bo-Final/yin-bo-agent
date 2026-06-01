@@ -10,6 +10,7 @@ gateway/src/main/
 │  ├─ concurrent/   # Redis 分布式信号量
 │  ├─ config/       # 网关配置 Bean 和配置属性
 │  ├─ filter/       # 全局过滤器
+│  ├─ ip/           # 可信代理和真实 IP 解析
 │  ├─ rate/         # 限流身份解析
 │  └─ response/     # 统一错误响应
 └─ resources/
@@ -30,8 +31,11 @@ gateway/src/main/
 | `spring.cloud.gateway.server.webflux.globalcors` | 统一处理 `/api/**` 的 CORS |
 | `spring.cloud.gateway.server.webflux.default-filters` | 去重 CORS 响应头，避免多层代理产生重复头 |
 | `spring.cloud.gateway.server.webflux.routes` | 配置 `/api/**` 到后端 service 的路由转发，并给高成本接口挂频率限流 |
+| `management` | 收口 Actuator，只启用和暴露 `health`、`info` |
 | `logging` | 配置 gateway 日志文件、日志格式和日志滚动策略 |
 | `app.logging` | 配置慢请求阈值 |
+| `app.gateway.trusted-proxies` | 配置允许读取 `X-Forwarded-For` / `X-Real-IP` 的可信代理网段 |
+| `app.gateway.request-size` | 配置上传请求体大小限制，默认 `200MB` |
 | `app.concurrency` | 配置上传、URL 入库、AI 对话的并发信号量限制 |
 | `app.session.redis.namespace` | 配置 gateway 读取 Spring Session 时使用的 Redis namespace |
 
@@ -106,6 +110,64 @@ Redis 分布式信号量服务，用来限制高成本接口的“同时执行�
 
 `userOrIpKeyResolver` 会委托 `RateLimitIdentityResolver` 决定当前请求按 `userId` 限流还是按 IP 限流。
 
+### `GatewayRequestSizeProperties.java`
+
+Gateway 请求体大小限制配置属性，对应 `app.gateway.request-size`。
+
+主要功能：
+
+| 配置项 | 功能 | 默认值 |
+| --- | --- | --- |
+| `uploadMaxSize` | 上传接口请求体最大大小 | `200MB` |
+
+核心结构：
+
+| 结构 | 功能 |
+| --- | --- |
+| `GatewayRequestSizeProperties` | 保存上传请求体大小限制配置 |
+| `uploadMaxSize` | 控制 gateway 允许转发的上传请求体上限 |
+
+## `ip` 模块
+
+### `TrustedProxyProperties.java`
+
+可信代理配置属性，对应 `app.gateway.trusted-proxies`。
+
+主要功能：
+
+| 功能     | 说明                                            |
+| ------ | --------------------------------------------- |
+| 配置可信代理 | 保存允许读取转发头的代理 CIDR 网段                          |
+| 默认配置   | 默认信任 `127.0.0.1/32`、`::1/128`、`172.16.0.0/12` |
+| 配置兜底   | 未配置时使用默认值，避免可信代理列表为空                          |
+
+生产环境建议把 `GATEWAY_TRUSTED_PROXIES` 收窄到 Nginx、负载均衡或 API 网关的真实出口网段，避免把普通客户端所在网段误配置为可信代理。
+
+### `ClientIpResolver.java`
+
+客户端真实 IP 解析模块。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 防止伪造 | 直接来源 IP 不在可信代理网段时，忽略 `X-Forwarded-For` 和 `X-Real-IP` |
+| 解析转发链 | 直接来源 IP 可信时，从 `X-Forwarded-For` 右往左找到第一个非可信代理 IP |
+| 兼容 `X-Real-IP` | `X-Forwarded-For` 不可用时读取 `X-Real-IP` |
+| 统一出口 | 日志、IP 限流、资源并发日志统一复用同一套真实 IP 规则 |
+| 配置校验 | 非法 CIDR 配置会记录 warn 并跳过 |
+
+核心方法：
+
+| 方法 | 功能 |
+| --- | --- |
+| `resolve(ServerHttpRequest request)` | 解析当前请求的客户端真实 IP |
+| `remoteAddress(ServerHttpRequest request)` | 读取当前 TCP 连接的直接来源 IP |
+| `resolveForwardedFor(String forwardedFor)` | 从转发链中解析真实客户端 IP |
+| `isTrustedProxy(InetAddress address)` | 判断 IP 是否属于可信代理网段 |
+| `parseIp(String value)` | 解析并规范化 IP 文本 |
+| `sanitizeIdentity(String value)` | 清洗限流和日志中的 IP 文本 |
+
 ## `rate` 模块
 
 ### `RateLimitIdentityResolver.java`
@@ -119,7 +181,7 @@ Redis 分布式信号量服务，用来限制高成本接口的“同时执行�
 | 未登录限流 | 没有 Session 或 Session 里没有 `LOGIN_USER_ID` 时，返回 `ip:{clientIp}` |
 | 登录后限流 | Redis Session 中存在 `LOGIN_USER_ID` 时，返回 `user:{userId}` |
 | Session 读取 | 从 `SESSION` Cookie 拼出 Spring Session Redis key 并读取用户 ID |
-| IP 解析 | 按 `X-Forwarded-For`、`X-Real-IP`、`remoteAddress` 的优先级解析客户端 IP |
+| IP 解析 | 通过 `ClientIpResolver` 获取可信代理规则处理后的真实 IP |
 | 异常兜底 | 读取 Redis Session 失败时记录 warn，并回退到 IP 限流 |
 
 核心方法：
@@ -129,7 +191,6 @@ Redis 分布式信号量服务，用来限制高成本接口的“同时执行�
 | `resolve(ServerWebExchange exchange)` | 返回 RedisRateLimiter 使用的限流 key |
 | `toUserKey(Object value)` | 把 Session 中的用户 ID 转成 `user:{id}` |
 | `resolveSessionId(ServerHttpRequest request)` | 从 Cookie 中解析 Session ID |
-| `resolveClientIp(ServerHttpRequest request)` | 解析客户端 IP |
 | `sanitizeIdentity(String value)` | 清洗限流 key，避免非法字符进入 Redis key |
 | `sanitizeLogValue(String value)` | 清洗日志文本 |
 
@@ -144,6 +205,7 @@ Redis 分布式信号量服务，用来限制高成本接口的“同时执行�
 | `RequestIdGlobalFilter` | 生成或透传 `X-Request-Id`，写入响应头并记录访问日志 |
 | `GatewayErrorGlobalFilter` | 捕获 gateway 转发链路异常，并写入统一 JSON 错误响应 |
 | `RateLimitResponseGlobalFilter` | 改写 RedisRateLimiter 产生的 `429` 响应 |
+| `UploadRequestSizeGlobalFilter` | 对上传接口做 `200MB` 请求体大小限制 |
 | `ResourceConcurrencyGlobalFilter` | 对上传、URL 入库、AI 对话做 Redis 信号量并发限制 |
 
 ### `RequestIdGlobalFilter.java`
@@ -168,7 +230,6 @@ RequestId 链路追踪全局过滤器。
 | `filter(ServerWebExchange exchange, GatewayFilterChain chain)` | 处理 requestId、继续过滤器链、记录访问日志 |
 | `getOrder()` | 保证 requestId 过滤器最先执行 |
 | `resolveRequestId(ServerHttpRequest request)` | 解析或生成 requestId |
-| `resolveClientIp(ServerHttpRequest request)` | 解析客户端 IP |
 | `sanitizeLogValue(String value)` | 清洗日志文本 |
 
 ### `GatewayErrorGlobalFilter.java`
@@ -220,7 +281,6 @@ Gateway 异常统一响应全局过滤器。
 | `writeRateLimitResponse(...)` | 写入统一频率限流响应 |
 | `requestId(...)` | 读取 requestId |
 | `routeId(...)` | 读取当前命中的路由 ID |
-| `resolveClientIp(...)` | 解析客户端 IP |
 | `sanitizeLogValue(...)` | 清洗日志文本 |
 
 统一响应示例：
@@ -232,6 +292,44 @@ Gateway 异常统一响应全局过滤器。
   "requestId": "xxx",
   "path": "/api/chat",
   "timestamp": "2026-06-01T08:00:00Z"
+}
+```
+
+### `UploadRequestSizeGlobalFilter.java`
+
+上传请求体大小限制全局过滤器。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 上传大小限制 | 上传接口请求体默认不能超过 `200MB` |
+| 立即拦截 | 请求头带 `Content-Length` 且超过限制时，直接返回 `413` |
+| 流式兜底 | 没有 `Content-Length` 时，读取请求体过程中累计字节数并在超限时中断 |
+| 统一响应 | 超限时复用 `GatewayErrorResponseWriter` 返回统一 JSON |
+| 超限日志 | 记录 `event=upload_request_too_large`，包含 requestId、path、clientIp、receivedBytes、maxBytes |
+
+核心方法：
+
+| 方法 | 功能 |
+| --- | --- |
+| `filter(ServerWebExchange exchange, GatewayFilterChain chain)` | 判断上传接口并执行请求体大小限制 |
+| `getOrder()` | 控制过滤器顺序，保证先做大小限制再抢并发许可 |
+| `isUploadRequest(ServerHttpRequest request)` | 判断当前请求是否是上传接口 |
+| `writeFileTooLargeResponse(...)` | 写入文件过大响应 |
+| `requestId(...)` | 读取 requestId |
+| `readableSize(long bytes)` | 格式化文件大小限制 |
+| `sanitizeLogValue(String value)` | 清洗日志文本 |
+
+超限响应示例：
+
+```json
+{
+  "status": 413,
+  "message": "文件大小不能超过 200MB",
+  "requestId": "xxx",
+  "path": "/api/ingestion/documents/upload",
+  "timestamp": "2026-06-02T01:00:00Z"
 }
 ```
 
@@ -263,7 +361,6 @@ Gateway 异常统一响应全局过滤器。
 | `writeUnavailableResponse(...)` | 写入并发控制不可用响应 |
 | `logCompleted(...)` | 记录资源请求完成日志 |
 | `requestId(...)` | 读取 requestId |
-| `resolveClientIp(...)` | 解析客户端 IP |
 | `sanitizeLogValue(...)` | 清洗日志文本 |
 
 当前资源规则：
@@ -287,6 +384,40 @@ Gateway 异常统一响应全局过滤器。
   "path": "/api/ingestion/documents/upload",
   "timestamp": "2026-06-01T08:00:00Z"
 }
+```
+
+## Actuator 安全收口
+
+gateway 的 Actuator 默认只保留健康检查和基础信息。
+
+主要配置：
+
+| 配置 | 功能 |
+| --- | --- |
+| `management.endpoints.enabled-by-default=false` | 默认禁用所有 actuator endpoint |
+| `management.endpoint.health.enabled=true` | 只显式启用健康检查 |
+| `management.endpoint.info.enabled=true` | 只显式启用基础信息 |
+| `management.endpoints.web.exposure.include=health,info` | Web 入口只暴露 `health` 和 `info` |
+| `management.endpoint.gateway.enabled=false` | 禁用 Spring Cloud Gateway 路由调试端点 |
+| `management.endpoint.health.show-details=never` | 健康检查不展示组件详情 |
+| `management.endpoint.env.show-values=never` | 即使以后启用 env，也不展示配置值 |
+| `management.endpoint.configprops.show-values=never` | 即使以后启用 configprops，也不展示配置值 |
+
+默认可访问：
+
+```text
+/actuator/health
+/actuator/info
+```
+
+默认不可暴露：
+
+```text
+/actuator/gateway
+/actuator/env
+/actuator/configprops
+/actuator/beans
+/actuator/mappings
 ```
 
 ## `response` 模块
@@ -324,6 +455,8 @@ Gateway 统一错误响应写入器。
 | CORS 响应头去重            | `application.yml`                                                 |
 | `X-Request-Id` 生成和透传  | `RequestIdGlobalFilter`                                           |
 | gateway 访问日志          | `RequestIdGlobalFilter`                                           |
+| 可信代理真实 IP 解析          | `TrustedProxyProperties`、`ClientIpResolver`                      |
+| 上传请求体大小限制             | `GatewayRequestSizeProperties`、`UploadRequestSizeGlobalFilter`   |
 | RedisRateLimiter 频率限流 | `application.yml`、`RateLimitConfig`、`RateLimitIdentityResolver`   |
 | 未登录按 IP 限流            | `RateLimitIdentityResolver`                                       |
 | 登录后按 userId 限流        | `RateLimitIdentityResolver`                                       |
@@ -332,4 +465,5 @@ Gateway 统一错误响应写入器。
 | 上传并发限制                | `ResourceConcurrencyGlobalFilter`、`RedisSemaphoreService`         |
 | URL 入库并发限制            | `ResourceConcurrencyGlobalFilter`、`RedisSemaphoreService`         |
 | AI 对话并发限制             | `ResourceConcurrencyGlobalFilter`、`RedisSemaphoreService`         |
+| Actuator 安全收口           | `application.yml`                                                 |
 | 日志文件和滚动               | `application.yml`                                                 |
