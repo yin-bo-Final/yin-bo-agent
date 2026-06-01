@@ -142,6 +142,11 @@ SpringAI-Program/
 │  ├─ pom.xml
 │  └─ src/main/
 │     ├─ java/com/yinbo/gateway/
+│     │  ├─ concurrent/              # Redis 分布式信号量
+│     │  ├─ config/                  # 网关配置 Bean 和配置属性
+│     │  ├─ filter/                  # 全局过滤器
+│     │  ├─ rate/                    # 限流身份解析
+│     │  ├─ response/                # 统一 gateway 错误响应
 │     │  └─ YinboAgentGatewayApplication.java
 │     └─ resources/
 │        └─ application.yml
@@ -155,19 +160,19 @@ SpringAI-Program/
 │  ├─ public/
 │  ├─ nginx/default.conf
 │  └─ vite.config.js
+├─ project-structure.md             # 项目结构总览和文档导航
+├─ codex.md                         # 给 AI / Codex 阅读的协作规则和提示词
 ├─ docs/
-│  ├─ project-structure.md          # 项目结构总览和文档导航
 │  ├─ gateway-structure.md          # 网关模块边界和路由
 │  ├─ backend-structure.md          # 后端模块边界
 │  ├─ frontend-structure.md         # 前端模块边界
-│  ├─ frontend-style-guide.md       # 前端样式约定
-│  └─ prompt.md
+│  └─ frontend-style-guide.md       # 前端样式约定
 ├─ local-secrets.example.yml        # 本地私密配置模板
 ├─ local-secrets.yml                # 本地私密配置，不提交
 └─ pom.xml                          # Maven 聚合工程
 ```
 
-整体结构导航见 [docs/project-structure.md](docs/project-structure.md)。网关模块说明见 [docs/gateway-structure.md](docs/gateway-structure.md)，后端模块说明见 [docs/backend-structure.md](docs/backend-structure.md)，前端模块说明见 [docs/frontend-structure.md](docs/frontend-structure.md)。前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
+整体结构导航见 [project-structure.md](project-structure.md)。AI / Codex 协作规则见 [codex.md](codex.md)。网关模块说明见 [docs/gateway-structure.md](docs/gateway-structure.md)，后端模块说明见 [docs/backend-structure.md](docs/backend-structure.md)，前端模块说明见 [docs/frontend-structure.md](docs/frontend-structure.md)。前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
 ## 本地配置
 
@@ -360,7 +365,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 ## 开发约定
 
 - 后台接口统一走 `/api/admin/**`，并通过 `AdminGuard` 校验管理员。
-- 前端请求统一进入 gateway，gateway 负责 `/api/**` 转发、CORS、`X-Request-Id`、部分高成本接口 IP 限流和上传并发限流；登录态和业务权限仍由后端业务服务校验。
+- 前端请求统一进入 gateway，gateway 负责 `/api/**` 转发、CORS、`X-Request-Id`、高成本接口频率限流、资源并发限流和统一 gateway 错误响应；登录态和业务权限仍由后端业务服务校验。
 - 频率限流基于 Spring Cloud Gateway `RedisRateLimiter`，当前覆盖上传、URL 入库、AI 对话、登录注册；未登录时按 IP 限流，登录后按 `userId` 限流，触发后返回统一 `429` JSON。
 - 上传并发限流第一道防线在 gateway，默认全局最多 `10` 个上传请求同时转发；URL 入库默认最多 `5` 个同时转发，AI 对话默认最多 `20` 个同时转发；业务服务保留上传信号量做兜底保护，RocketMQ ingestion 默认全局最多 `5` 个同时处理。
 - gateway 会生成或透传 `X-Request-Id`，并写入当前启动工作目录下的 `.logs/gateway.log`；后端业务服务会把同一个 requestId 写入 `.logs/service.log`。

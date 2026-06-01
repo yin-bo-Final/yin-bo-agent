@@ -1,11 +1,7 @@
 package com.yinbo.gateway.filter;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yinbo.gateway.response.GatewayErrorResponseWriter;
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,10 +10,7 @@ import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.cloud.gateway.route.Route;
 import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
 import org.springframework.core.Ordered;
-import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.http.server.reactive.ServerHttpResponseDecorator;
@@ -35,11 +28,11 @@ public class RateLimitResponseGlobalFilter implements GlobalFilter, Ordered {
     private static final String UNKNOWN = "-";
     private static final String RATE_LIMIT_MESSAGE = "请求过于频繁，请稍后再试";
 
-    private final ObjectMapper objectMapper;
+    private final GatewayErrorResponseWriter errorResponseWriter;
 
-    // 注入 JSON 序列化器。
-    public RateLimitResponseGlobalFilter(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
+    // 注入统一错误响应写入器。
+    public RateLimitResponseGlobalFilter(GatewayErrorResponseWriter errorResponseWriter) {
+        this.errorResponseWriter = errorResponseWriter;
     }
 
     // 拦截 RedisRateLimiter 产生的 429 响应并改写响应体。
@@ -64,7 +57,7 @@ public class RateLimitResponseGlobalFilter implements GlobalFilter, Ordered {
     // 声明频率限流响应过滤器的执行顺序。
     @Override
     public int getOrder() {
-        return Ordered.HIGHEST_PRECEDENCE + 1;
+        return Ordered.HIGHEST_PRECEDENCE + 2;
     }
 
     // 写入统一的频率限流响应。
@@ -74,12 +67,6 @@ public class RateLimitResponseGlobalFilter implements GlobalFilter, Ordered {
         String clientIp = resolveClientIp(exchange.getRequest());
         String path = exchange.getRequest().getURI().getRawPath();
 
-        // no-store 避免浏览器或代理缓存限流响应。
-        response.setStatusCode(HttpStatus.TOO_MANY_REQUESTS);
-        response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
-        response.getHeaders().set(HttpHeaders.CACHE_CONTROL, "no-store");
-        response.getHeaders().set(REQUEST_ID_HEADER, requestId);
-
         log.warn(
                 "event=rate_limited requestId={} routeId={} path={} clientIp={}",
                 requestId,
@@ -87,25 +74,7 @@ public class RateLimitResponseGlobalFilter implements GlobalFilter, Ordered {
                 path,
                 clientIp
         );
-
-        byte[] body = serializeBody(Map.of(
-                "status", HttpStatus.TOO_MANY_REQUESTS.value(),
-                "message", RATE_LIMIT_MESSAGE,
-                "requestId", requestId,
-                "path", path,
-                "timestamp", Instant.now().toString()
-        ));
-        DataBuffer buffer = response.bufferFactory().wrap(body);
-        return response.writeWith(Mono.just(buffer));
-    }
-
-    // 序列化频率限流响应体。
-    private byte[] serializeBody(Map<String, Object> body) {
-        try {
-            return objectMapper.writeValueAsBytes(body);
-        } catch (JsonProcessingException exception) {
-            return ("{\"status\":429,\"message\":\"" + RATE_LIMIT_MESSAGE + "\"}").getBytes(StandardCharsets.UTF_8);
-        }
+        return errorResponseWriter.write(exchange, response, HttpStatus.TOO_MANY_REQUESTS, RATE_LIMIT_MESSAGE);
     }
 
     // 从请求头读取 requestId。

@@ -1,26 +1,18 @@
 package com.yinbo.gateway.filter;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yinbo.gateway.concurrent.RedisSemaphoreService;
 import com.yinbo.gateway.config.ConcurrencyLimitProperties;
+import com.yinbo.gateway.response.GatewayErrorResponseWriter;
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
-import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpRequest;
-import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ServerWebExchange;
@@ -37,17 +29,17 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
 
     private final ConcurrencyLimitProperties concurrencyLimitProperties;
     private final RedisSemaphoreService redisSemaphoreService;
-    private final ObjectMapper objectMapper;
+    private final GatewayErrorResponseWriter errorResponseWriter;
 
     // 注入资源并发限流所需依赖。
     public ResourceConcurrencyGlobalFilter(
             ConcurrencyLimitProperties concurrencyLimitProperties,
             RedisSemaphoreService redisSemaphoreService,
-            ObjectMapper objectMapper
+            GatewayErrorResponseWriter errorResponseWriter
     ) {
         this.concurrencyLimitProperties = concurrencyLimitProperties;
         this.redisSemaphoreService = redisSemaphoreService;
-        this.objectMapper = objectMapper;
+        this.errorResponseWriter = errorResponseWriter;
     }
 
     // 对上传、URL 入库和 AI 对话执行 gateway 层并发限流。
@@ -85,7 +77,7 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
     // 声明资源并发限流过滤器的执行顺序。
     @Override
     public int getOrder() {
-        return Ordered.HIGHEST_PRECEDENCE + 2;
+        return Ordered.HIGHEST_PRECEDENCE + 3;
     }
 
     // 识别当前请求对应的高成本资源。
@@ -137,7 +129,7 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
                 resolveClientIp(request),
                 resourceLimit.limit().maxPermits()
         );
-        return writeJsonResponse(exchange, HttpStatus.TOO_MANY_REQUESTS, resourceLimit.limitedMessage());
+        return errorResponseWriter.write(exchange, HttpStatus.TOO_MANY_REQUESTS, resourceLimit.limitedMessage());
     }
 
     // 写入资源并发控制不可用响应。
@@ -158,7 +150,7 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
                 sanitizeLogValue(exception.getMessage()),
                 exception
         );
-        return writeJsonResponse(exchange, HttpStatus.SERVICE_UNAVAILABLE, resourceLimit.unavailableMessage());
+        return errorResponseWriter.write(exchange, HttpStatus.SERVICE_UNAVAILABLE, resourceLimit.unavailableMessage());
     }
 
     // 记录资源并发许可使用完成日志。
@@ -180,36 +172,6 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
                 signalType.name(),
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
         );
-    }
-
-    // 写入统一 JSON 响应。
-    private Mono<Void> writeJsonResponse(ServerWebExchange exchange, HttpStatus status, String message) {
-        ServerHttpRequest request = exchange.getRequest();
-        ServerHttpResponse response = exchange.getResponse();
-        response.setStatusCode(status);
-        response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
-        response.getHeaders().set(HttpHeaders.CACHE_CONTROL, "no-store");
-        response.getHeaders().set(REQUEST_ID_HEADER, requestId(request));
-
-        byte[] body = serializeBody(Map.of(
-                "status", status.value(),
-                "message", message,
-                "requestId", requestId(request),
-                "path", request.getURI().getRawPath(),
-                "timestamp", Instant.now().toString()
-        ), status, message);
-        DataBuffer buffer = response.bufferFactory().wrap(body);
-        return response.writeWith(Mono.just(buffer));
-    }
-
-    // 序列化 JSON 响应体。
-    private byte[] serializeBody(Map<String, Object> body, HttpStatus status, String message) {
-        try {
-            return objectMapper.writeValueAsBytes(body);
-        } catch (JsonProcessingException exception) {
-            return ("{\"status\":" + status.value() + ",\"message\":\"" + message + "\"}")
-                    .getBytes(StandardCharsets.UTF_8);
-        }
     }
 
     // 从请求头读取 requestId。

@@ -4,13 +4,13 @@
 
 ## 文档导航
 
-| 文档                                                 | 用途                                    |
-| -------------------------------------------------- | ------------------------------------- |
-| [gateway-structure.md](gateway-structure.md)       | 网关模块、服务命名、路由转发和常见改动入口                 |
-| [backend-structure.md](backend-structure.md)       | 后端包结构、RAG ingestion、Flyway、数据表和常见改动入口 |
-| [frontend-structure.md](frontend-structure.md)     | 前端页面结构、API 封装、后台管理 UI 和路由状态           |
-| [frontend-style-guide.md](frontend-style-guide.md) | 前端视觉风格、按钮、弹窗、下拉栏、tooltip 等样式约定        |
-| [prompt.md](prompt.md)                             | 项目提示词、协作习惯、本地中间件位置和 Git 提交习惯          |
+| 文档                                                           | 用途                                    |
+| ------------------------------------------------------------ | ------------------------------------- |
+| [docs/gateway-structure.md](docs/gateway-structure.md)       | 网关模块、路由转发、限流、并发控制和统一错误响应               |
+| [docs/backend-structure.md](docs/backend-structure.md)       | 后端包结构、RAG ingestion、Flyway、数据表和常见改动入口 |
+| [docs/frontend-structure.md](docs/frontend-structure.md)     | 前端页面结构、API 封装、后台管理 UI 和路由状态           |
+| [docs/frontend-style-guide.md](docs/frontend-style-guide.md) | 前端视觉风格、按钮、弹窗、下拉栏、tooltip 等样式约定        |
+| [codex.md](codex.md)                                         | 项目提示词、协作习惯、本地中间件位置和 Git 提交习惯          |
 
 ## 顶层目录
 
@@ -19,7 +19,9 @@ SpringAI-Program/
 ├─ backend/                         # Spring Boot 后端
 ├─ gateway/                         # Spring Cloud Gateway 网关
 ├─ frontend/                        # Vue 3 前端
-├─ docs/                            # 项目文档
+├─ docs/                            # 模块细分文档
+├─ codex.md                         # 给 AI / Codex 阅读的协作规则和提示词
+├─ project-structure.md             # 项目结构总览和文档导航
 ├─ local-secrets.example.yml        # 本地私密配置模板
 ├─ local-secrets.yml                # 本地私密配置，不提交
 ├─ pom.xml                          # Maven 聚合工程，目前聚合 backend 和 gateway
@@ -101,11 +103,11 @@ ConversationPage
 
 | 任务 | 先读 |
 | --- | --- |
-| 网关路由、统一入口、限流、鉴权前置 | [gateway-structure.md](gateway-structure.md) |
-| 后端接口、数据库、RAG、RocketMQ、RustFS | [backend-structure.md](backend-structure.md) |
-| 前端页面、后台管理、会话 UI | [frontend-structure.md](frontend-structure.md) |
-| 只改样式 | [frontend-style-guide.md](frontend-style-guide.md) |
-| 新对话交接、工作习惯、提交规范 | [prompt.md](prompt.md) |
+| 网关路由、统一入口、限流、鉴权前置 | [docs/gateway-structure.md](docs/gateway-structure.md) |
+| 后端接口、数据库、RAG、RocketMQ、RustFS | [docs/backend-structure.md](docs/backend-structure.md) |
+| 前端页面、后台管理、会话 UI | [docs/frontend-structure.md](docs/frontend-structure.md) |
+| 只改样式 | [docs/frontend-style-guide.md](docs/frontend-style-guide.md) |
+| 新对话交接、工作习惯、提交规范 | [codex.md](codex.md) |
 
 ## 工程约定
 
