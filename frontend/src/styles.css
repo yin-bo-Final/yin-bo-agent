@@ -4290,7 +4290,8 @@ input {
 }
 
 .kc-primary-button:disabled,
-.kc-ghost-button:disabled {
+.kc-ghost-button:disabled,
+.kc-row-actions button:disabled {
   color: #a0aec0;
   border-color: #e5e7eb;
   background: #f3f4f6;
@@ -4298,12 +4299,20 @@ input {
   cursor: not-allowed;
 }
 
+.kc-row-actions button:disabled:hover {
+  color: #a0aec0;
+  border-color: #e5e7eb;
+  background: #f3f4f6;
+  box-shadow: none;
+  transform: none;
+}
+
 .admin-sidebar-rail button[data-tooltip]::after {
   content: attr(data-tooltip);
   position: absolute;
   left: calc(100% + 12px);
   top: 50%;
-  z-index: 80;
+  z-index: 10020;
   width: max-content;
   max-width: 220px;
   padding: 8px 10px;
@@ -4328,7 +4337,7 @@ input {
   position: absolute;
   left: calc(100% + 6px);
   top: 50%;
-  z-index: 81;
+  z-index: 10021;
   width: 6px;
   height: 6px;
   background: #000000;
@@ -4371,6 +4380,50 @@ input {
 .kc-row-actions.compact button {
   min-height: 34px;
   padding-inline: 12px;
+}
+
+.kc-row-actions.task-actions {
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.kc-row-actions.task-actions button {
+  width: 76px;
+  min-width: 76px;
+  padding-inline: 0;
+}
+
+.kc-floating-tooltip {
+  position: fixed;
+  z-index: 10050;
+  width: max-content;
+  max-width: min(420px, 60vw);
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #000000;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  pointer-events: none;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.kc-floating-tooltip.top {
+  transform: translateY(-100%);
+}
+
+.task-detail-grid {
+  grid-template-columns: 140px minmax(0, 1fr);
+}
+
+.task-detail-grid .kc-detail-value {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .kc-content {
@@ -4624,10 +4677,35 @@ input {
   grid-template-columns: 32px 44px minmax(420px, 1fr) 80px minmax(390px, 0.9fr);
 }
 
+.task-grid {
+  min-width: 0;
+  grid-template-columns: minmax(300px, 1.45fr) 110px 120px 100px minmax(190px, 0.9fr) 300px;
+}
+
 .kc-table-head.chunk-grid,
 .kc-table-row.chunk-grid {
   gap: 10px;
   padding-inline: 20px;
+}
+
+.kc-table-head.task-grid,
+.kc-table-row.task-grid {
+  gap: 10px;
+  padding-inline: 20px;
+}
+
+.kc-table-head.task-grid > span:nth-child(3),
+.kc-table-head.task-grid > span:nth-child(4),
+.kc-table-row.task-grid > span:nth-child(3),
+.kc-table-row.task-grid > span:nth-child(4) {
+  justify-self: center;
+  text-align: center;
+}
+
+.kc-table-head.task-grid > span:last-child,
+.kc-table-row.task-grid > span:last-child {
+  justify-self: center;
+  text-align: center;
 }
 
 .kc-table-body {
@@ -4708,6 +4786,7 @@ input {
 }
 
 .kc-table-row.document-grid > span,
+.kc-table-row.task-grid > span,
 .kc-table-row.chunk-grid > span,
 .kc-link-cell span {
   overflow: hidden;
@@ -4715,12 +4794,14 @@ input {
   white-space: nowrap;
 }
 
-.kc-table-row.document-grid > .kc-cell-tooltip {
+.kc-table-row.document-grid > .kc-cell-tooltip,
+.kc-table-row.task-grid > .kc-cell-tooltip {
   position: relative;
   overflow: visible;
 }
 
-.kc-table-row.document-grid > .kc-cell-tooltip > span {
+.kc-table-row.document-grid > .kc-cell-tooltip > span,
+.kc-table-row.task-grid > .kc-cell-tooltip > span {
   display: block;
   min-width: 0;
   overflow: hidden;

@@ -394,11 +394,11 @@ gateway 的 Actuator 默认只保留健康检查和基础信息。
 
 | 配置 | 功能 |
 | --- | --- |
-| `management.endpoints.enabled-by-default=false` | 默认禁用所有 actuator endpoint |
-| `management.endpoint.health.enabled=true` | 只显式启用健康检查 |
-| `management.endpoint.info.enabled=true` | 只显式启用基础信息 |
+| `management.endpoints.access.default=none` | 默认禁止访问所有 actuator endpoint |
+| `management.endpoint.health.access=read-only` | 只读开放健康检查 |
+| `management.endpoint.info.access=read-only` | 只读开放基础信息 |
 | `management.endpoints.web.exposure.include=health,info` | Web 入口只暴露 `health` 和 `info` |
-| `management.endpoint.gateway.enabled=false` | 禁用 Spring Cloud Gateway 路由调试端点 |
+| `management.endpoint.gateway.access=none` | 禁用 Spring Cloud Gateway 路由调试端点 |
 | `management.endpoint.health.show-details=never` | 健康检查不展示组件详情 |
 | `management.endpoint.env.show-values=never` | 即使以后启用 env，也不展示配置值 |
 | `management.endpoint.configprops.show-values=never` | 即使以后启用 configprops，也不展示配置值 |

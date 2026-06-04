@@ -10,6 +10,7 @@ import com.yinbo.agent.ingestion.model.ChunkingOptions;
 import com.yinbo.agent.ingestion.model.ChunkingStrategy;
 import com.yinbo.agent.ingestion.model.DocumentChunk;
 import com.yinbo.agent.ingestion.model.DocumentSourceType;
+import com.yinbo.agent.ingestion.model.IngestionExecutionResult;
 import com.yinbo.agent.ingestion.model.ParsedDocument;
 import com.yinbo.agent.ingestion.model.RawDocument;
 import com.yinbo.agent.ingestion.cleaner.DocumentTextCleaner;
@@ -22,6 +23,8 @@ import com.yinbo.agent.ingestion.optimizer.DocumentChunkOptimizer;
 import com.yinbo.agent.ingestion.parser.TikaDocumentParser;
 import com.yinbo.agent.ingestion.source.DocumentSourceReader;
 import com.yinbo.agent.ingestion.splitter.RecursiveDocumentChunkSplitter;
+import com.yinbo.agent.ingestion.vector.PgVectorRepository;
+import com.yinbo.agent.ingestion.vector.PgVectorRow;
 import com.yinbo.agent.knowledge.entity.KnowledgeBase;
 import com.yinbo.agent.knowledge.mapper.KnowledgeBaseMapper;
 import com.yinbo.agent.storage.service.ObjectStorageService;
@@ -34,15 +37,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Supplier;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.document.Document;
-import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -52,6 +50,7 @@ import org.springframework.web.multipart.MultipartFile;
 public class DocumentIngestionService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentIngestionService.class);
+    private static final String STATUS_UPLOADING = "UPLOADING";
     private static final String STATUS_UPLOADED = "UPLOADED";
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_COMPLETED = "COMPLETED";
@@ -61,7 +60,8 @@ public class DocumentIngestionService {
     private final RagProperties ragProperties;
     private final ConcurrencyLimitProperties concurrencyLimitProperties;
     private final RedisSemaphoreService redisSemaphoreService;
-    private final ObjectProvider<VectorStore> vectorStoreProvider;
+    private final EmbeddingModel embeddingModel;
+    private final PgVectorRepository pgVectorRepository;
     private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
     private final KnowledgeChunkMapper knowledgeChunkMapper;
@@ -78,7 +78,8 @@ public class DocumentIngestionService {
             RagProperties ragProperties,
             ConcurrencyLimitProperties concurrencyLimitProperties,
             RedisSemaphoreService redisSemaphoreService,
-            ObjectProvider<VectorStore> vectorStoreProvider,
+            EmbeddingModel embeddingModel,
+            PgVectorRepository pgVectorRepository,
             KnowledgeBaseMapper knowledgeBaseMapper,
             KnowledgeDocumentMapper knowledgeDocumentMapper,
             KnowledgeChunkMapper knowledgeChunkMapper,
@@ -93,7 +94,8 @@ public class DocumentIngestionService {
         this.ragProperties = ragProperties;
         this.concurrencyLimitProperties = concurrencyLimitProperties;
         this.redisSemaphoreService = redisSemaphoreService;
-        this.vectorStoreProvider = vectorStoreProvider;
+        this.embeddingModel = embeddingModel;
+        this.pgVectorRepository = pgVectorRepository;
         this.knowledgeBaseMapper = knowledgeBaseMapper;
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
         this.knowledgeChunkMapper = knowledgeChunkMapper;
@@ -116,9 +118,8 @@ public class DocumentIngestionService {
             Integer maxChunks
     ) {
         return withUploadPermit(authUser, null, file, () -> {
-            RawDocument rawDocument = documentSourceReader.fromUpload(file);
             ChunkingOptions options = ChunkingOptions.from(ragProperties, strategy, chunkSize, chunkOverlap, maxChunks);
-            return createUploadedDocument(authUser, null, rawDocument, options);
+            return createUploadDocument(authUser, null, file, options);
         });
     }
 
@@ -133,9 +134,8 @@ public class DocumentIngestionService {
             Integer maxChunks
     ) {
         return withUploadPermit(authUser, knowledgeBase, file, () -> {
-            RawDocument rawDocument = documentSourceReader.fromUpload(file);
             ChunkingOptions options = ChunkingOptions.from(ragProperties, strategy, chunkSize, chunkOverlap, maxChunks);
-            return createUploadedDocument(authUser, knowledgeBase, rawDocument, options);
+            return createUploadDocument(authUser, knowledgeBase, file, options);
         });
     }
 
@@ -193,6 +193,102 @@ public class DocumentIngestionService {
         } catch (RuntimeException exception) {
             deleteRawDocumentQuietly(rawDocument);
             throw exception;
+        }
+    }
+
+    // 创建上传中文档记录，文件保存成功后改为已上传。
+    private IngestionResponse createUploadDocument(
+            AuthUser authUser,
+            KnowledgeBase knowledgeBase,
+            MultipartFile file,
+            ChunkingOptions options
+    ) {
+        validateUploadFile(file);
+        KnowledgeDocument document = createDocument(
+                authUser,
+                knowledgeBase,
+                toUploadingRawDocument(file),
+                options,
+                STATUS_UPLOADING
+        );
+        RawDocument storedRawDocument = null;
+        try {
+            storedRawDocument = documentSourceReader.fromUpload(file);
+            applyStoredRawDocument(document, storedRawDocument);
+            document.setStatus(STATUS_UPLOADED);
+            document.setErrorMessage(null);
+            knowledgeDocumentMapper.updateById(document);
+            log.info(
+                    "event=document_uploaded userId={} knowledgeBaseId={} documentId={} sourceType={} fileName={} sizeBytes={} strategy={}",
+                    authUser.getId(),
+                    knowledgeBase == null ? null : knowledgeBase.getKnowledgeBaseNo(),
+                    document.getDocumentNo(),
+                    document.getSourceType(),
+                    sanitizeLogValue(document.getFileName()),
+                    document.getOriginalSizeBytes(),
+                    options.strategy().name()
+            );
+            return toResponse(document);
+        } catch (RuntimeException exception) {
+            deleteRawDocumentQuietly(storedRawDocument);
+            markUploadFailed(document, exception);
+            throw exception;
+        }
+    }
+
+    // 校验上传文件基础约束。
+    private void validateUploadFile(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "请上传一个非空文件");
+        }
+        if (file.getSize() > ragProperties.maxSourceBytes()) {
+            throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "文件大小不能超过 200MB");
+        }
+    }
+
+    // 创建上传中状态使用的原始文档信息。
+    private RawDocument toUploadingRawDocument(MultipartFile file) {
+        return new RawDocument(
+                DocumentSourceType.UPLOAD,
+                null,
+                sanitizeFileName(file.getOriginalFilename(), "uploaded-document"),
+                file.getContentType(),
+                file.getSize(),
+                null,
+                null,
+                null,
+                null,
+                null
+        );
+    }
+
+    // 把对象存储结果回填到文档记录。
+    private void applyStoredRawDocument(KnowledgeDocument document, RawDocument rawDocument) {
+        document.setSourceType(rawDocument.sourceType().name());
+        document.setSourceUrl(rawDocument.sourceUrl());
+        document.setFileName(rawDocument.fileName());
+        document.setContentType(rawDocument.contentType());
+        document.setOriginalSizeBytes(rawDocument.sizeBytes());
+        document.setStorageProvider(rawDocument.storageProvider());
+        document.setStorageBucket(rawDocument.storageBucket());
+        document.setStorageObjectKey(rawDocument.storageObjectKey());
+        document.setStorageEtag(rawDocument.storageEtag());
+    }
+
+    // 上传失败时保留失败文档，便于后台排查。
+    private void markUploadFailed(KnowledgeDocument document, RuntimeException exception) {
+        document.setStatus(STATUS_FAILED);
+        document.setErrorMessage(truncate("文件上传失败：" + conciseMessage(exception), 1000));
+        try {
+            knowledgeDocumentMapper.updateById(document);
+        } catch (RuntimeException updateException) {
+            log.warn(
+                    "event=upload_status_update_failed documentId={} type={} message={}",
+                    document.getDocumentNo(),
+                    updateException.getClass().getSimpleName(),
+                    sanitizeLogValue(updateException.getMessage()),
+                    updateException
+            );
         }
     }
 
@@ -272,23 +368,14 @@ public class DocumentIngestionService {
         }
     }
 
-    @Transactional
     // 解析、清洗、切块并向量化文档。
-    public void processDocument(String documentId, ChunkingOptions options) {
+    public IngestionExecutionResult processDocument(String documentId, ChunkingOptions options) {
         KnowledgeDocument document = requireDocument(documentId);
         KnowledgeBase knowledgeBase = document.getKnowledgeBaseId() == null
                 ? null
                 : requireKnowledgeBaseById(document.getKnowledgeBaseId());
-        VectorStore vectorStore = vectorStoreProvider.getIfAvailable();
-        if (vectorStore == null) {
-            log.warn("event=ingestion_failed action=CHUNK documentId={} reason=vector_store_unavailable", documentId);
-            markFailed(document, new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "当前没有可用的向量存储，请检查 EmbeddingModel 和 PGVector 配置"));
-            return;
-        }
 
         long totalStartedAt = System.nanoTime();
-        List<String> vectorDocumentIds = new ArrayList<>();
-        List<KnowledgeChunk> oldChunks = listChunkEntities(document.getId());
         try {
             log.info(
                     "event=ingestion_started action=CHUNK documentId={} strategy={} chunkSize={} chunkOverlap={} maxChunks={}",
@@ -328,39 +415,60 @@ public class DocumentIngestionService {
                 throw new BusinessException(HttpStatus.BAD_REQUEST, "优化后切块数量超过上限，请调大 chunkSize 或 maxChunks");
             }
 
-            List<Document> vectorDocuments = new ArrayList<>();
+            List<String> vectorDocumentIds = new ArrayList<>();
             List<KnowledgeChunk> chunkEntities = new ArrayList<>();
             for (DocumentChunk chunk : chunks) {
                 String vectorDocumentId = UUID.randomUUID().toString();
                 vectorDocumentIds.add(vectorDocumentId);
-                vectorDocuments.add(toVectorDocument(document, knowledgeBase, rawDocument, parsedDocument, chunk, vectorDocumentId));
                 chunkEntities.add(toChunkEntity(document, chunk, vectorDocumentId));
             }
             long chunkDurationMs = elapsedMillis(chunkStartedAt);
 
             long embeddingStartedAt = System.nanoTime();
-            addVectorDocuments(vectorStore, vectorDocuments);
+            List<float[]> embeddings = embedChunks(chunks);
             long embeddingDurationMs = elapsedMillis(embeddingStartedAt);
-            chunkEntities.forEach(knowledgeChunkMapper::insert);
 
-            document.setTextCharCount(cleanText.length());
-            document.setTextContent(cleanText);
-            document.setChunkCount(chunks.size());
-            document.setStatus(STATUS_COMPLETED);
-            document.setErrorMessage(null);
-            document.setChunkStrategy(options.strategy().name());
-            document.setChunkSize(options.chunkSize());
-            document.setChunkOverlap(options.chunkOverlap());
-            document.setMaxChunks(options.maxChunks());
-            document.setParseDurationMs(parseDurationMs);
-            document.setChunkDurationMs(chunkDurationMs);
-            document.setEmbeddingDurationMs(embeddingDurationMs);
+            List<PgVectorRow> vectorRows = new ArrayList<>();
+            for (int i = 0; i < chunks.size(); i++) {
+                vectorRows.add(toVectorRow(
+                        document,
+                        knowledgeBase,
+                        rawDocument,
+                        parsedDocument,
+                        chunks.get(i),
+                        vectorDocumentIds.get(i),
+                        embeddings.get(i)
+                ));
+            }
+
             long totalDurationMs = elapsedMillis(totalStartedAt);
-            document.setTotalDurationMs(totalDurationMs);
-            document.setOtherDurationMs(Math.max(0, totalDurationMs - parseDurationMs - chunkDurationMs - embeddingDurationMs));
-            knowledgeDocumentMapper.updateById(document);
-            deleteChunkEntities(oldChunks);
-            deleteVectorDocumentsAfterCommit(vectorStore, oldChunks);
+            ChunkingOptions finalOptions = options;
+            int finalChunkCount = chunks.size();
+            transactionTemplate.executeWithoutResult(status -> {
+                KnowledgeDocument lockedDocument = requireDocumentForUpdate(documentId);
+                List<KnowledgeChunk> oldChunks = listChunkEntities(lockedDocument.getId());
+                pgVectorRepository.insertAll(vectorRows);
+                chunkEntities.forEach(knowledgeChunkMapper::insert);
+                deleteChunkEntities(oldChunks);
+                pgVectorRepository.deleteByIds(vectorDocumentIds(oldChunks));
+
+                lockedDocument.setTextCharCount(cleanText.length());
+                lockedDocument.setTextContent(cleanText);
+                lockedDocument.setChunkCount(finalChunkCount);
+                lockedDocument.setStatus(STATUS_COMPLETED);
+                lockedDocument.setErrorMessage(null);
+                lockedDocument.setChunkStrategy(finalOptions.strategy().name());
+                lockedDocument.setChunkSize(finalOptions.chunkSize());
+                lockedDocument.setChunkOverlap(finalOptions.chunkOverlap());
+                lockedDocument.setMaxChunks(finalOptions.maxChunks());
+                lockedDocument.setTextExtractedAt(document.getTextExtractedAt());
+                lockedDocument.setParseDurationMs(parseDurationMs);
+                lockedDocument.setChunkDurationMs(chunkDurationMs);
+                lockedDocument.setEmbeddingDurationMs(embeddingDurationMs);
+                lockedDocument.setTotalDurationMs(totalDurationMs);
+                lockedDocument.setOtherDurationMs(Math.max(0, totalDurationMs - parseDurationMs - chunkDurationMs - embeddingDurationMs));
+                knowledgeDocumentMapper.updateById(lockedDocument);
+            });
             log.info(
                     "event=ingestion_completed action=CHUNK documentId={} knowledgeBaseId={} chunkCount={} textChars={} parseMs={} chunkMs={} embeddingMs={} totalMs={}",
                     document.getDocumentNo(),
@@ -372,108 +480,142 @@ public class DocumentIngestionService {
                     embeddingDurationMs,
                     totalDurationMs
             );
+            return IngestionExecutionResult.succeeded();
         } catch (RuntimeException exception) {
-            rollbackVectorDocuments(vectorStore, vectorDocumentIds);
-            deleteChunkEntitiesByVectorIds(vectorDocumentIds);
-            markFailed(document, exception);
+            boolean retryable = isRetryableFailure(exception);
+            if (!retryable) {
+                markFailed(document, exception);
+            }
             log.warn(
-                    "event=ingestion_failed action=CHUNK documentId={} type={} message={}",
+                    "event=ingestion_failed action=CHUNK documentId={} retryable={} type={} message={}",
                     document.getDocumentNo(),
+                    retryable,
                     exception.getClass().getSimpleName(),
                     sanitizeLogValue(exception.getMessage()),
                     exception
             );
+            return IngestionExecutionResult.failure(retryable, conciseMessage(exception));
         }
     }
 
     // 重建已有文档分块的向量。
-    public void rebuildDocumentVectors(String documentId) {
+    public IngestionExecutionResult rebuildDocumentVectors(String documentId) {
         KnowledgeDocument document = requireDocument(documentId);
         KnowledgeBase knowledgeBase = document.getKnowledgeBaseId() == null
                 ? null
                 : requireKnowledgeBaseById(document.getKnowledgeBaseId());
-        VectorStore vectorStore = vectorStoreProvider.getIfAvailable();
-        if (vectorStore == null) {
-            log.warn("event=ingestion_failed action=REBUILD_VECTORS documentId={} reason=vector_store_unavailable", documentId);
-            markFailed(document, new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "当前没有可用的向量存储，请检查 EmbeddingModel 和 PGVector 配置"));
-            return;
-        }
 
         List<KnowledgeChunk> chunks = listChunkEntities(document.getId());
         if (chunks.isEmpty()) {
             log.warn("event=ingestion_failed action=REBUILD_VECTORS documentId={} reason=no_chunks", documentId);
             markFailed(document, new BusinessException(HttpStatus.BAD_REQUEST, "文档没有可重建的分块"));
-            return;
+            return IngestionExecutionResult.failure(false, "文档没有可重建的分块");
         }
 
         List<String> oldVectorDocumentIds = vectorDocumentIds(chunks);
-        List<String> newVectorDocumentIds = new ArrayList<>();
         try {
             log.info(
                     "event=ingestion_started action=REBUILD_VECTORS documentId={} chunkCount={}",
                     document.getDocumentNo(),
                     chunks.size()
             );
-            transactionTemplate.executeWithoutResult(status -> {
-                document.setStatus(STATUS_PROCESSING);
-                document.setErrorMessage(null);
-                knowledgeDocumentMapper.updateById(document);
-
-                RawDocument rawDocument = toRawDocument(document);
-                ParsedDocument parsedDocument = new ParsedDocument(
-                        document.getTextContent() == null ? "" : document.getTextContent(),
-                        documentTitle(document),
-                        Map.of()
-                );
-                List<Document> vectorDocuments = new ArrayList<>();
-                for (KnowledgeChunk chunk : chunks) {
-                    String vectorDocumentId = UUID.randomUUID().toString();
-                    newVectorDocumentIds.add(vectorDocumentId);
-                    chunk.setVectorDocumentId(vectorDocumentId);
-                    DocumentChunk documentChunk = new DocumentChunk(
+            RawDocument rawDocument = toRawDocument(document);
+            ParsedDocument parsedDocument = new ParsedDocument(
+                    document.getTextContent() == null ? "" : document.getTextContent(),
+                    documentTitle(document),
+                    Map.of()
+            );
+            List<DocumentChunk> documentChunks = chunks.stream()
+                    .map(chunk -> new DocumentChunk(
                             chunk.getChunkIndex() == null ? 0 : chunk.getChunkIndex(),
                             chunk.getTitle(),
                             chunk.getContent()
-                    );
-                    vectorDocuments.add(toVectorDocument(document, knowledgeBase, rawDocument, parsedDocument, documentChunk, vectorDocumentId));
-                }
-
-                long embeddingStartedAt = System.nanoTime();
-                addVectorDocuments(vectorStore, vectorDocuments);
+                    ))
+                    .toList();
+            long embeddingStartedAt = System.nanoTime();
+            List<float[]> embeddings = embedTexts(documentChunks.stream().map(DocumentChunk::content).toList());
+            long embeddingDurationMs = elapsedMillis(embeddingStartedAt);
+            List<PgVectorRow> vectorRows = new ArrayList<>();
+            for (int i = 0; i < chunks.size(); i++) {
+                KnowledgeChunk chunk = chunks.get(i);
+                DocumentChunk documentChunk = documentChunks.get(i);
+                String vectorDocumentId = UUID.randomUUID().toString();
+                chunk.setVectorDocumentId(vectorDocumentId);
+                vectorRows.add(toVectorRow(
+                        document,
+                        knowledgeBase,
+                        rawDocument,
+                        parsedDocument,
+                        documentChunk,
+                        vectorDocumentId,
+                        embeddings.get(i)
+                ));
+            }
+            transactionTemplate.executeWithoutResult(status -> {
+                KnowledgeDocument lockedDocument = requireDocumentForUpdate(documentId);
+                lockedDocument.setStatus(STATUS_PROCESSING);
+                lockedDocument.setErrorMessage(null);
+                pgVectorRepository.insertAll(vectorRows);
                 chunks.forEach(knowledgeChunkMapper::updateById);
+                pgVectorRepository.deleteByIds(oldVectorDocumentIds);
 
-                document.setStatus(STATUS_COMPLETED);
-                document.setErrorMessage(null);
-                document.setEmbeddingDurationMs(elapsedMillis(embeddingStartedAt));
-                refreshDurationSummary(document);
-                knowledgeDocumentMapper.updateById(document);
+                lockedDocument.setStatus(STATUS_COMPLETED);
+                lockedDocument.setErrorMessage(null);
+                lockedDocument.setEmbeddingDurationMs(embeddingDurationMs);
+                refreshDurationSummary(lockedDocument);
+                knowledgeDocumentMapper.updateById(lockedDocument);
             });
-            deleteVectorDocumentsByIdsAfterCommit(vectorStore, oldVectorDocumentIds);
             log.info(
                     "event=ingestion_completed action=REBUILD_VECTORS documentId={} chunkCount={} embeddingMs={} totalMs={}",
                     document.getDocumentNo(),
                     chunks.size(),
-                    document.getEmbeddingDurationMs(),
-                    document.getTotalDurationMs()
+                    embeddingDurationMs,
+                    nullToZero(document.getParseDurationMs()) + nullToZero(document.getChunkDurationMs()) + embeddingDurationMs + nullToZero(document.getOtherDurationMs())
             );
+            return IngestionExecutionResult.succeeded();
         } catch (RuntimeException exception) {
-            rollbackVectorDocuments(vectorStore, newVectorDocumentIds);
-            markFailed(document, exception);
+            boolean retryable = isRetryableFailure(exception);
+            if (!retryable) {
+                markFailed(document, exception);
+            }
             log.warn(
-                    "event=ingestion_failed action=REBUILD_VECTORS documentId={} type={} message={}",
+                    "event=ingestion_failed action=REBUILD_VECTORS documentId={} retryable={} type={} message={}",
                     document.getDocumentNo(),
+                    retryable,
                     exception.getClass().getSimpleName(),
                     sanitizeLogValue(exception.getMessage()),
                     exception
             );
+            return IngestionExecutionResult.failure(retryable, conciseMessage(exception));
         }
     }
 
-    // 写入向量文档。
-    private void addVectorDocuments(VectorStore vectorStore, List<Document> vectorDocuments) {
+    // 将文档标记为最终失败。
+    public void markDocumentFailed(String documentId, String message) {
+        KnowledgeDocument document = requireDocument(documentId);
+        markFailed(document, new BusinessException(HttpStatus.BAD_GATEWAY, message));
+    }
+
+    // 对分块文本生成向量，远程调用保持在数据库事务外。
+    private List<float[]> embedChunks(List<DocumentChunk> chunks) {
+        return embedTexts(chunks.stream().map(DocumentChunk::content).toList());
+    }
+
+    // 对文本列表生成向量。
+    private List<float[]> embedTexts(List<String> texts) {
+        if (texts == null || texts.isEmpty()) {
+            return List.of();
+        }
         try {
-            vectorStore.add(vectorDocuments);
+            List<float[]> embeddings = embeddingModel.embed(texts);
+            if (embeddings.size() != texts.size()) {
+                throw new BusinessException(HttpStatus.BAD_GATEWAY, "Embedding 返回数量和分块数量不一致");
+            }
+            return embeddings;
         } catch (RuntimeException exception) {
+            if (exception instanceof BusinessException businessException) {
+                throw businessException;
+            }
             throw new BusinessException(
                     HttpStatus.BAD_GATEWAY,
                     "向量化失败，请检查 Embedding 服务或切块大小：" + conciseMessage(exception)
@@ -551,6 +693,17 @@ public class DocumentIngestionService {
         return document;
     }
 
+    // 在当前事务内锁定文档行，避免并发任务同时提交分块结果。
+    private KnowledgeDocument requireDocumentForUpdate(String documentId) {
+        KnowledgeDocument document = knowledgeDocumentMapper.selectOne(new LambdaQueryWrapper<KnowledgeDocument>()
+                .eq(KnowledgeDocument::getDocumentNo, documentId)
+                .last("FOR UPDATE"));
+        if (document == null) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "文档不存在");
+        }
+        return document;
+    }
+
     // 根据主键获取知识库。
     private KnowledgeBase requireKnowledgeBaseById(Long knowledgeBaseId) {
         KnowledgeBase knowledgeBase = knowledgeBaseMapper.selectById(knowledgeBaseId);
@@ -576,14 +729,6 @@ public class DocumentIngestionService {
         }
     }
 
-    private void deleteChunkEntitiesByVectorIds(List<String> vectorDocumentIds) {
-        if (vectorDocumentIds == null || vectorDocumentIds.isEmpty()) {
-            return;
-        }
-        knowledgeChunkMapper.delete(new LambdaQueryWrapper<KnowledgeChunk>()
-                .in(KnowledgeChunk::getVectorDocumentId, vectorDocumentIds));
-    }
-
     private List<String> vectorDocumentIds(List<KnowledgeChunk> chunks) {
         if (chunks == null || chunks.isEmpty()) {
             return List.of();
@@ -592,27 +737,6 @@ public class DocumentIngestionService {
                 .map(KnowledgeChunk::getVectorDocumentId)
                 .filter(value -> value != null && !value.isBlank())
                 .toList();
-    }
-
-    private void deleteVectorDocumentsAfterCommit(VectorStore vectorStore, List<KnowledgeChunk> chunks) {
-        deleteVectorDocumentsByIdsAfterCommit(vectorStore, vectorDocumentIds(chunks));
-    }
-
-    private void deleteVectorDocumentsByIdsAfterCommit(VectorStore vectorStore, List<String> vectorDocumentIds) {
-        if (vectorDocumentIds == null || vectorDocumentIds.isEmpty()) {
-            return;
-        }
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            rollbackVectorDocuments(vectorStore, vectorDocumentIds);
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            // 事务提交后删除旧向量。
-            public void afterCommit() {
-                rollbackVectorDocuments(vectorStore, vectorDocumentIds);
-            }
-        });
     }
 
     private String documentTitle(KnowledgeDocument document) {
@@ -661,19 +785,21 @@ public class DocumentIngestionService {
         return document;
     }
 
-    private Document toVectorDocument(
+    private PgVectorRow toVectorRow(
             KnowledgeDocument document,
             KnowledgeBase knowledgeBase,
             RawDocument rawDocument,
             ParsedDocument parsedDocument,
             DocumentChunk chunk,
-            String vectorDocumentId
+            String vectorDocumentId,
+            float[] embedding
     ) {
-        return Document.builder()
-                .id(vectorDocumentId)
-                .text(chunk.content())
-                .metadata(toVectorMetadata(document, knowledgeBase, rawDocument, parsedDocument, chunk))
-                .build();
+        return new PgVectorRow(
+                vectorDocumentId,
+                chunk.content(),
+                toVectorMetadata(document, knowledgeBase, rawDocument, parsedDocument, chunk),
+                embedding
+        );
     }
 
     private Map<String, Object> toVectorMetadata(
@@ -731,23 +857,6 @@ public class DocumentIngestionService {
         chunkEntity.setTokenCount(estimateTokenCount(chunk.content()));
         chunkEntity.setCharCount(chunk.content().length());
         return chunkEntity;
-    }
-
-    private void rollbackVectorDocuments(VectorStore vectorStore, List<String> vectorDocumentIds) {
-        if (vectorDocumentIds.isEmpty()) {
-            return;
-        }
-        try {
-            vectorStore.delete(vectorDocumentIds);
-        } catch (RuntimeException rollbackException) {
-            log.warn(
-                    "event=vector_rollback_failed vectorCount={} type={} message={}",
-                    vectorDocumentIds.size(),
-                    rollbackException.getClass().getSimpleName(),
-                    sanitizeLogValue(rollbackException.getMessage()),
-                    rollbackException
-            );
-        }
     }
 
     private void refreshDurationSummary(KnowledgeDocument document) {
@@ -830,6 +939,23 @@ public class DocumentIngestionService {
             return "服务未返回具体原因";
         }
         return truncate(message.replaceAll("\\s+", " ").trim(), 180);
+    }
+
+    // 判断失败是否适合交给 MQ 重试。
+    private boolean isRetryableFailure(RuntimeException exception) {
+        if (exception instanceof BusinessException businessException) {
+            return businessException.getStatus().is5xxServerError();
+        }
+        return true;
+    }
+
+    // 清洗上传文件名。
+    private String sanitizeFileName(String value, String fallback) {
+        String fileName = value == null || value.isBlank() ? fallback : value.trim();
+        fileName = fileName.replace("\\", "/");
+        fileName = fileName.substring(fileName.lastIndexOf('/') + 1);
+        fileName = fileName.replaceAll("[\\p{Cntrl}]", "");
+        return fileName.isBlank() ? fallback : fileName;
     }
 
     private String sanitizeLogValue(String value) {

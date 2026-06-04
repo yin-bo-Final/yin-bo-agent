@@ -66,6 +66,18 @@ Flyway 初始迁移脚本。
 | 向量表 | 创建 `knowledge_chunk_vector`，供 Spring AI PGVector Store 使用 |
 | 索引 | 创建用户、会话、文档、分块和向量检索相关索引 |
 
+### `db/migration/V2__create_ingestion_task.sql`
+
+Flyway 入库任务迁移脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 任务表 | 创建 `ingestion_task` 记录分块和重建向量任务 |
+| 失败追踪 | 保存任务状态、重试次数、失败原因、requestId 和 MQ messageId |
+| 后台查询 | 支持后台失败任务列表和手动重试 |
+
 当前业务表边界：
 
 | 表 | 主要模块 | 功能 |
@@ -77,6 +89,7 @@ Flyway 初始迁移脚本。
 | `knowledge_document` | `ingestion` / `knowledge` | 文档来源、对象存储信息、解析状态、分块参数和耗时 |
 | `knowledge_chunk` | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数和向量文档 ID |
 | `knowledge_chunk_vector` | Spring AI PGVector | 向量内容、metadata、embedding 和 HNSW 索引 |
+| `ingestion_task` | `ingestion` | 分块 / 重建向量任务状态、重试次数、失败原因和 MQ messageId |
 
 ## 根包
 
@@ -685,14 +698,18 @@ ingestion/
 ├─ cleaner/
 │  └─ DocumentTextCleaner.java
 ├─ controller/
-│  └─ IngestionController.java
+│  ├─ IngestionController.java
+│  └─ IngestionTaskAdminController.java
 ├─ dto/
+│  ├─ IngestionTaskResponse.java
 │  ├─ IngestionResponse.java
 │  └─ UrlIngestionRequest.java
 ├─ entity/
+│  ├─ IngestionTask.java
 │  ├─ KnowledgeChunk.java
 │  └─ KnowledgeDocument.java
 ├─ mapper/
+│  ├─ IngestionTaskMapper.java
 │  ├─ KnowledgeChunkMapper.java
 │  └─ KnowledgeDocumentMapper.java
 ├─ model/
@@ -710,11 +727,16 @@ ingestion/
 │  ├─ DocumentIngestionTaskConsumer.java
 │  └─ IngestionTaskMessage.java
 ├─ service/
-│  └─ DocumentIngestionService.java
+│  ├─ DocumentIngestionService.java
+│  ├─ IngestionTaskAdminService.java
+│  └─ IngestionTaskService.java
 ├─ source/
 │  └─ DocumentSourceReader.java
-└─ splitter/
-   └─ RecursiveDocumentChunkSplitter.java
+├─ splitter/
+│  └─ RecursiveDocumentChunkSplitter.java
+└─ vector/
+   ├─ PgVectorRepository.java
+   └─ PgVectorRow.java
 ```
 
 ### `IngestionController.java`
@@ -734,6 +756,26 @@ ingestion/
 | --- | --- |
 | `uploadDocument(...)` | 校验管理员后调用 `DocumentIngestionService.ingestUpload(...)` |
 | `ingestUrl(...)` | 校验管理员后调用 `DocumentIngestionService.ingestUrl(...)` |
+
+### `IngestionTaskAdminController.java`
+
+管理后台入库任务接口。
+
+接口：
+
+| 方法 | 路径 | 功能 |
+| --- | --- | --- |
+| `GET` | `/api/admin/ingestion/tasks/failed` | 查询失败或死信状态的入库任务 |
+| `POST` | `/api/admin/ingestion/tasks/{taskId}/retry` | 手动重试失败入库任务 |
+| `DELETE` | `/api/admin/ingestion/tasks/{taskId}` | 删除失败入库任务 |
+
+核心方法：
+
+| 方法 | 功能 |
+| --- | --- |
+| `failedTasks(...)` | 校验管理员后返回失败任务列表 |
+| `retryTask(...)` | 校验管理员后重新投递失败任务 |
+| `deleteTask(...)` | 校验管理员后删除失败任务 |
 
 ### `DocumentSourceReader.java`
 
@@ -770,12 +812,12 @@ ingestion/
 
 | 功能 | 说明 |
 | --- | --- |
-| 上传入库 | 创建 `UPLOADED` 状态文档记录 |
+| 上传入库 | 先创建 `UPLOADING` 状态文档记录，RustFS 保存成功后改为 `UPLOADED` |
 | URL 入库 | 下载 URL 后创建 `UPLOADED` 状态文档记录 |
 | 上传兜底并发 | 使用 `service:ingestion:upload:global` Redis 信号量 |
 | 分块处理 | 将文档状态置为 `PROCESSING`，解析、清洗、分块、优化、向量化 |
-| 向量重建 | 对已有分块重新生成向量，事务成功后删除旧向量 |
-| 向量写入 | 使用 Spring AI `VectorStore.add(...)` 写入 pgvector |
+| 向量重建 | 事务外生成 embedding，短事务内写入新向量、更新分块并删除旧向量 |
+| 向量写入 | 使用 `PgVectorRepository` 直接写入 `knowledge_chunk_vector`，和 `knowledge_chunk` 共用 PostgreSQL 事务 |
 | 失败处理 | 标记 `FAILED`，记录错误信息和耗时 |
 | 对象清理 | 入库失败时清理已上传的原始文件 |
 
@@ -789,19 +831,77 @@ ingestion/
 | `ingestUrl(AuthUser, KnowledgeBase, String, ...)` | 录入 URL 并创建指定知识库下的待处理文档 |
 | `processDocument(String documentId, ChunkingOptions options)` | 执行分块和向量化 |
 | `rebuildDocumentVectors(String documentId)` | 重建文档已有分块的向量 |
+| `markDocumentFailed(String documentId, String message)` | 在重试耗尽时把文档标记为失败 |
 | `withUploadPermit(...)` | 在上传并发许可保护下执行上传动作 |
-| `addVectorDocuments(...)` | 批量写入向量文档 |
+| `embedTexts(...)` | 事务外调用 Embedding 模型生成向量 |
+| `toVectorRow(...)` | 组装待写入 PGVector 表的向量行 |
 | `validateChunksForEmbedding(...)` | 校验分块适合向量化 |
 | `parseDocument(...)` | 调用 Tika 解析文档 |
 | `toRawDocument(...)` | 从文档实体还原原始文档定位信息 |
-| `rollbackVectorDocuments(...)` | 向量写入失败时回滚已写入向量 |
+| `requireDocumentForUpdate(...)` | 最终提交时锁定文档行，防止并发提交 |
 | `markFailed(...)` | 标记文档处理失败 |
 | `toResponse(...)` | 转换为入库响应 |
+
+### `IngestionTaskService.java`
+
+文档入库任务状态服务。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 创建任务 | 分块或重建向量投递前写入 `PENDING` 任务 |
+| 投递记录 | MQ 投递成功后记录 messageId，投递失败后记录错误 |
+| 消费状态 | 只有 `PENDING` / `RETRYING` 可以 CAS 抢占为 `RUNNING`，成功后标记 `COMPLETED` |
+| 失败记录 | 不可重试失败标记 `FAILED`，可重试失败累计 retryCount |
+| 死信前置 | retryCount 达到 `maxRetries` 时标记 `DEAD` |
+| 手动重试 | 通过事务消息重置失败任务为 `PENDING` 并重新投递 |
+
+### `IngestionTaskProducerService.java`
+
+文档入库任务事务消息发送服务。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 分块提交 | 发送 CHUNK 事务半消息，等待本地事务提交 |
+| 重建向量提交 | 发送 REBUILD_VECTORS 事务半消息，等待本地事务提交 |
+| 手动重试提交 | 发送 RETRY 事务半消息，等待本地事务重置失败任务 |
+| 事务标识 | 半消息携带 taskId、documentId、action、transactionType 和 requestId |
+
+### `IngestionTaskTransactionListener.java`
+
+RocketMQ 事务消息监听器。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 本地事务 | 半消息发送成功后执行文档状态 CAS 和任务表更新 |
+| 分块 CAS | `UPLOADED` / `COMPLETED` -> `PROCESSING` |
+| 重建 CAS | `COMPLETED` -> `PROCESSING` |
+| 重试 CAS | `FAILED` -> `PROCESSING`，并把任务重置为 `PENDING` |
+| Broker 回查 | 根据 taskId 和 sourceRequestId 判断事务消息是否应提交 |
+
+### `IngestionTaskAdminService.java`
+
+管理后台入库任务服务。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 失败任务列表 | 查询 `FAILED` 和 `DEAD` 状态任务并转换后台响应 |
+| 手动重试 | 校验任务和文档状态后发送 RocketMQ 事务消息 |
+| 删除任务 | 删除 `FAILED` 或 `DEAD` 状态任务记录 |
+| 失败兜底 | 重试投递失败时回写任务和文档失败原因 |
 
 文档状态：
 
 | 状态 | 功能 |
 | --- | --- |
+| `UPLOADING` | 原始文件正在上传到 RustFS，不能分块 |
 | `UPLOADED` | 原始文件已保存，等待分块 |
 | `PROCESSING` | MQ 消费处理中 |
 | `COMPLETED` | 解析、分块、向量化完成 |
@@ -819,6 +919,9 @@ RocketMQ 文档入库任务消费者。
 | 消费 REBUILD_VECTORS | 调用 `DocumentIngestionService.rebuildDocumentVectors(...)` |
 | 绑定 requestId | 将消息中的 `sourceRequestId` 放入 MDC |
 | 消费并发限制 | 使用 Redis 信号量限制全局 ingestion 消费并发 |
+| 任务状态记录 | 根据 `taskId` 更新 `ingestion_task` 的运行、完成、失败、重试和 DEAD 状态 |
+| 重试控制 | 可重试失败抛异常交给 RocketMQ 重试，不可重试失败正常 ACK |
+| 死信控制 | 消费者最大重试次数和 `ingestion_task.maxRetries` 对齐，DEAD 任务继续抛异常等待 Broker 投递 DLQ |
 | MQ 日志 | 记录消费开始、完成、失败、并发限制和不可用日志 |
 
 核心方法：
@@ -827,6 +930,7 @@ RocketMQ 文档入库任务消费者。
 | --- | --- |
 | `onMessage(IngestionTaskMessage message)` | RocketMQ 消息入口 |
 | `consumeWithIngestionPermit(...)` | 在 ingestion 许可保护下执行消费 |
+| `handleExecutionResult(...)` | 根据入库执行结果决定 ACK、重试或标记任务失败 |
 | `bindRequestId(...)` | 将源请求 requestId 绑定到 MDC |
 | `elapsedMillis(...)` | 计算消费耗时 |
 | `sanitizeLogValue(...)` | 清洗日志文本 |
@@ -841,6 +945,7 @@ RocketMQ 文档入库任务消息。
 | --- | --- |
 | CHUNK 消息 | 保存文档 ID 和分块参数 |
 | REBUILD_VECTORS 消息 | 通过 `rebuildVectors(...)` 创建重建向量消息 |
+| taskId 串联 | 关联 `ingestion_task.task_no`，用于后台失败任务展示和手动重试 |
 | requestId 串联 | 读取 MDC 中的 requestId 作为 `sourceRequestId` |
 | action 兜底 | `resolvedAction()` 默认回退为 `CHUNK` |
 
@@ -884,17 +989,19 @@ RocketMQ 文档入库任务消息。
 
 ```text
 上传文件 / 提交 URL
+-> DocumentIngestionService 创建 knowledge_document，status = UPLOADING
 -> DocumentSourceReader 保存原始文件到 RustFS
--> DocumentIngestionService 创建 knowledge_document，status = UPLOADED
--> KnowledgeAdminService 投递 CHUNK 消息
+-> knowledge_document.status = UPLOADED
+-> 管理员点击分块后发送 RocketMQ CHUNK 事务半消息
+-> 本地事务 CAS：knowledge_document.status -> PROCESSING，创建 ingestion_task
 -> DocumentIngestionTaskConsumer 获取 ingestion Redis 信号量
 -> DocumentIngestionService.processDocument
 -> TikaDocumentParser 解析
 -> DocumentTextCleaner 清洗
 -> RecursiveDocumentChunkSplitter 分块
 -> DocumentChunkOptimizer 优化
--> VectorStore.add 写入 knowledge_chunk_vector
--> knowledge_chunk 写入分块元数据
+-> 事务外调用 EmbeddingModel 生成向量
+-> 短事务内写入 knowledge_chunk_vector 和 knowledge_chunk
 -> knowledge_document.status = COMPLETED / FAILED
 ```
 
@@ -964,6 +1071,7 @@ knowledge/
 | 知识库管理 | 创建、查询、更新、删除知识库 |
 | 文档管理 | 查询、删除文档，删除时清理分块、向量和原始对象 |
 | 分块管理 | 查询、编辑、删除、启用、禁用分块 |
+| 忙碌保护 | `UPLOADING` / `PROCESSING` 文档禁止删除和修改分块 |
 | MQ 投递 | 投递 CHUNK 和 REBUILD_VECTORS 任务 |
 | 向量清理 | 删除文档或分块时同步删除 pgvector 中的向量 |
 | 响应转换 | 将实体转换为后台响应 DTO |
@@ -1020,9 +1128,9 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 
 | 配置 | 功能 |
 | --- | --- |
-| `management.endpoints.enabled-by-default=false` | 默认禁用所有 actuator endpoint |
-| `management.endpoint.health.enabled=true` | 只显式启用健康检查 |
-| `management.endpoint.info.enabled=true` | 只显式启用基础信息 |
+| `management.endpoints.access.default=none` | 默认禁止访问所有 actuator endpoint |
+| `management.endpoint.health.access=read-only` | 只读开放健康检查 |
+| `management.endpoint.info.access=read-only` | 只读开放基础信息 |
 | `management.endpoints.web.exposure.include=health,info` | Web 入口只暴露 `health` 和 `info` |
 | `management.endpoint.health.show-details=never` | 健康检查不展示组件详情 |
 | `management.endpoint.env.show-values=never` | 即使以后启用 env，也不展示配置值 |
@@ -1068,8 +1176,10 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | 分块 | `ChunkingOptions`、`ChunkingStrategy`、`RecursiveDocumentChunkSplitter` |
 | 分块优化 | `DocumentChunkOptimizer` |
 | RocketMQ 入库任务 | `IngestionTaskMessage`、`DocumentIngestionTaskConsumer`、`KnowledgeAdminService` |
+| 入库任务状态记录 | `IngestionTask`、`IngestionTaskMapper`、`IngestionTaskService` |
+| 失败任务后台管理 | `IngestionTaskAdminController`、`IngestionTaskAdminService` |
 | 向量写入和重建 | `DocumentIngestionService`、`RagVectorStoreConfig` |
 | 知识库管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
 | 文档和分块管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
-| 数据库迁移 | `resources/db/migration/V1__init_schema.sql` |
+| 数据库迁移 | `resources/db/migration/V1__init_schema.sql`、`resources/db/migration/V2__create_ingestion_task.sql` |
 | Actuator 安全收口 | `application.yml` |

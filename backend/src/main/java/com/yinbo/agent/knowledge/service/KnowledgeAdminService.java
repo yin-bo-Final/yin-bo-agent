@@ -5,12 +5,14 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yinbo.agent.auth.entity.AuthUser;
 import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.config.RagProperties;
-import com.yinbo.agent.ingestion.model.ChunkingOptions;
 import com.yinbo.agent.ingestion.entity.KnowledgeChunk;
 import com.yinbo.agent.ingestion.entity.KnowledgeDocument;
 import com.yinbo.agent.ingestion.mapper.KnowledgeChunkMapper;
 import com.yinbo.agent.ingestion.mapper.KnowledgeDocumentMapper;
-import com.yinbo.agent.ingestion.queue.IngestionTaskMessage;
+import com.yinbo.agent.ingestion.model.ChunkingOptions;
+import com.yinbo.agent.ingestion.service.IngestionTaskProducerService;
+import com.yinbo.agent.ingestion.service.IngestionTaskService;
+import com.yinbo.agent.ingestion.vector.PgVectorRepository;
 import com.yinbo.agent.knowledge.dto.ChunkEnabledRequest;
 import com.yinbo.agent.knowledge.dto.CreateKnowledgeBaseRequest;
 import com.yinbo.agent.knowledge.dto.KnowledgeBaseResponse;
@@ -28,10 +30,6 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
-import org.apache.rocketmq.client.producer.SendResult;
-import org.springframework.ai.vectorstore.VectorStore;
-import org.apache.rocketmq.spring.core.RocketMQTemplate;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -47,6 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class KnowledgeAdminService {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeAdminService.class);
+    private static final String STATUS_UPLOADING = "UPLOADING";
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_FAILED = "FAILED";
 
@@ -54,10 +53,11 @@ public class KnowledgeAdminService {
     private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
     private final KnowledgeChunkMapper knowledgeChunkMapper;
-    private final ObjectProvider<VectorStore> vectorStoreProvider;
-    private final RocketMQTemplate rocketMQTemplate;
+    private final PgVectorRepository pgVectorRepository;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectStorageService objectStorageService;
+    private final IngestionTaskService ingestionTaskService;
+    private final IngestionTaskProducerService ingestionTaskProducerService;
 
     // 注入知识库、文档、分块、向量和 MQ 相关依赖。
     public KnowledgeAdminService(
@@ -65,19 +65,21 @@ public class KnowledgeAdminService {
             KnowledgeBaseMapper knowledgeBaseMapper,
             KnowledgeDocumentMapper knowledgeDocumentMapper,
             KnowledgeChunkMapper knowledgeChunkMapper,
-            ObjectProvider<VectorStore> vectorStoreProvider,
-            RocketMQTemplate rocketMQTemplate,
+            PgVectorRepository pgVectorRepository,
             JdbcTemplate jdbcTemplate,
-            ObjectStorageService objectStorageService
+            ObjectStorageService objectStorageService,
+            IngestionTaskService ingestionTaskService,
+            IngestionTaskProducerService ingestionTaskProducerService
     ) {
         this.ragProperties = ragProperties;
         this.knowledgeBaseMapper = knowledgeBaseMapper;
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
         this.knowledgeChunkMapper = knowledgeChunkMapper;
-        this.vectorStoreProvider = vectorStoreProvider;
-        this.rocketMQTemplate = rocketMQTemplate;
+        this.pgVectorRepository = pgVectorRepository;
         this.jdbcTemplate = jdbcTemplate;
         this.objectStorageService = objectStorageService;
+        this.ingestionTaskService = ingestionTaskService;
+        this.ingestionTaskProducerService = ingestionTaskProducerService;
     }
 
     // 查询知识库概览统计。
@@ -196,6 +198,7 @@ public class KnowledgeAdminService {
                         .eq(KnowledgeDocument::getKnowledgeBaseId, knowledgeBase.getId())
                         .orderByDesc(KnowledgeDocument::getUpdatedAt))
                 .stream()
+                .filter(document -> !ingestionTaskService.hasDeadTaskForDocument(document.getId()))
                 .map(this::toDocumentResponse)
                 .toList();
     }
@@ -220,8 +223,12 @@ public class KnowledgeAdminService {
     public KnowledgeDocumentResponse rechunkDocument(String documentId, RechunkDocumentRequest request) {
         KnowledgeDocument document = requireDocument(documentId);
         requireKnowledgeBaseById(document.getKnowledgeBaseId());
-        if (STATUS_PROCESSING.equals(document.getStatus())) {
+        if (isBusyDocument(document)) {
             throw new BusinessException(HttpStatus.CONFLICT, "文档正在处理中，请稍后再试");
+        }
+        ingestionTaskService.requireDocumentNotDead(document.getId());
+        if (STATUS_FAILED.equals(document.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "文档处理失败，请到失败任务页重试或删除文档");
         }
         ChunkingOptions options = ChunkingOptions.from(
                 ragProperties,
@@ -234,111 +241,56 @@ public class KnowledgeAdminService {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "文档缺少原始文件或可重新分块的文本内容");
         }
 
-        document.setStatus(STATUS_PROCESSING);
-        document.setErrorMessage(null);
-        document.setChunkStrategy(options.strategy().name());
-        document.setChunkSize(options.chunkSize());
-        document.setChunkOverlap(options.chunkOverlap());
-        document.setMaxChunks(options.maxChunks());
-        knowledgeDocumentMapper.updateById(document);
-
-        IngestionTaskMessage message = IngestionTaskMessage.chunk(
+        String taskId = ingestionTaskProducerService.sendChunkTransaction(document.getDocumentNo(), options);
+        log.info(
+                "event=knowledge_document_chunk_submitted documentId={} taskId={} strategy={} chunkSize={} chunkOverlap={} maxChunks={}",
                 document.getDocumentNo(),
+                taskId,
                 options.strategy().name(),
                 options.chunkSize(),
                 options.chunkOverlap(),
                 options.maxChunks()
         );
-        try {
-            SendResult sendResult = rocketMQTemplate.syncSend(ragProperties.ingestionTopic(), message);
-            log.info(
-                    "event=mq_send topic={} action={} documentId={} sourceRequestId={} messageId={} sendStatus={} strategy={} chunkSize={} chunkOverlap={} maxChunks={}",
-                    ragProperties.ingestionTopic(),
-                    message.resolvedAction(),
-                    message.documentId(),
-                    message.resolvedRequestId(),
-                    sendResult.getMsgId(),
-                    sendResult.getSendStatus(),
-                    options.strategy().name(),
-                    options.chunkSize(),
-                    options.chunkOverlap(),
-                    options.maxChunks()
-            );
-        } catch (RuntimeException exception) {
-            document.setStatus(STATUS_FAILED);
-            document.setErrorMessage(truncate("分块任务投递失败，请检查 RocketMQ：" + conciseMessage(exception), 1000));
-            knowledgeDocumentMapper.updateById(document);
-            log.error(
-                    "event=mq_send_failed topic={} action={} documentId={} sourceRequestId={} type={} message={}",
-                    ragProperties.ingestionTopic(),
-                    message.resolvedAction(),
-                    message.documentId(),
-                    message.resolvedRequestId(),
-                    exception.getClass().getSimpleName(),
-                    sanitizeLogValue(exception.getMessage()),
-                    exception
-            );
-            throw new BusinessException(HttpStatus.BAD_GATEWAY, "分块任务投递失败，请检查 RocketMQ");
-        }
-        return toDocumentResponse(document);
+        return documentDetail(documentId);
     }
 
     // 投递文档向量重建任务。
     public KnowledgeDocumentResponse rebuildDocumentVectors(String documentId) {
         KnowledgeDocument document = requireDocument(documentId);
         requireKnowledgeBaseById(document.getKnowledgeBaseId());
-        if (STATUS_PROCESSING.equals(document.getStatus())) {
+        if (isBusyDocument(document)) {
             throw new BusinessException(HttpStatus.CONFLICT, "文档正在处理中，请稍后再试");
+        }
+        ingestionTaskService.requireDocumentNotDead(document.getId());
+        if (STATUS_FAILED.equals(document.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "文档处理失败，请到失败任务页重试或删除文档");
         }
         if (listChunkEntities(document.getId()).isEmpty()) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "文档没有可重建的分块");
         }
 
-        document.setStatus(STATUS_PROCESSING);
-        document.setErrorMessage(null);
-        knowledgeDocumentMapper.updateById(document);
-
-        IngestionTaskMessage message = IngestionTaskMessage.rebuildVectors(document.getDocumentNo());
-        try {
-            SendResult sendResult = rocketMQTemplate.syncSend(ragProperties.ingestionTopic(), message);
-            log.info(
-                    "event=mq_send topic={} action={} documentId={} sourceRequestId={} messageId={} sendStatus={}",
-                    ragProperties.ingestionTopic(),
-                    message.resolvedAction(),
-                    message.documentId(),
-                    message.resolvedRequestId(),
-                    sendResult.getMsgId(),
-                    sendResult.getSendStatus()
-            );
-        } catch (RuntimeException exception) {
-            document.setStatus(STATUS_FAILED);
-            document.setErrorMessage(truncate("重建向量任务投递失败，请检查 RocketMQ：" + conciseMessage(exception), 1000));
-            knowledgeDocumentMapper.updateById(document);
-            log.error(
-                    "event=mq_send_failed topic={} action={} documentId={} sourceRequestId={} type={} message={}",
-                    ragProperties.ingestionTopic(),
-                    message.resolvedAction(),
-                    message.documentId(),
-                    message.resolvedRequestId(),
-                    exception.getClass().getSimpleName(),
-                    sanitizeLogValue(exception.getMessage()),
-                    exception
-            );
-            throw new BusinessException(HttpStatus.BAD_GATEWAY, "重建向量任务投递失败，请检查 RocketMQ");
-        }
-        return toDocumentResponse(document);
+        String taskId = ingestionTaskProducerService.sendRebuildVectorsTransaction(document.getDocumentNo());
+        log.info(
+                "event=knowledge_document_vector_rebuild_submitted documentId={} taskId={}",
+                document.getDocumentNo(),
+                taskId
+        );
+        return documentDetail(documentId);
     }
 
     @Transactional
     // 删除文档及其分块。
     public void deleteDocument(String documentId) {
-        deleteDocumentByEntity(requireDocument(documentId));
+        KnowledgeDocument document = requireDocument(documentId);
+        requireDocumentNotBusy(document);
+        deleteDocumentByEntity(document);
     }
 
     @Transactional
     // 更新单个分块启用状态。
     public KnowledgeChunkResponse updateChunkEnabled(String chunkId, ChunkEnabledRequest request) {
         KnowledgeChunk chunk = requireChunk(chunkId);
+        requireMutableDocument(chunk.getDocumentId());
         chunk.setEnabled(request != null && request.enabledValue());
         knowledgeChunkMapper.updateById(chunk);
         return toChunkResponse(chunk);
@@ -348,6 +300,7 @@ public class KnowledgeAdminService {
     // 更新单个分块内容。
     public KnowledgeChunkResponse updateChunk(String chunkId, UpdateChunkRequest request) {
         KnowledgeChunk chunk = requireChunk(chunkId);
+        requireMutableDocument(chunk.getDocumentId());
         String content = request.content().trim();
         chunk.setContent(content);
         chunk.setCharCount(content.length());
@@ -360,6 +313,7 @@ public class KnowledgeAdminService {
     // 批量更新文档下所有分块的启用状态。
     public List<KnowledgeChunkResponse> updateDocumentChunksEnabled(String documentId, ChunkEnabledRequest request) {
         KnowledgeDocument document = requireDocument(documentId);
+        requireDocumentNotBusy(document);
         boolean enabled = request != null && request.enabledValue();
         knowledgeChunkMapper.update(null, new LambdaUpdateWrapper<KnowledgeChunk>()
                 .eq(KnowledgeChunk::getDocumentId, document.getId())
@@ -371,10 +325,8 @@ public class KnowledgeAdminService {
     // 删除单个分块。
     public void deleteChunk(String chunkId) {
         KnowledgeChunk chunk = requireChunk(chunkId);
-        VectorStore vectorStore = vectorStoreProvider.getIfAvailable();
-        if (vectorStore != null && chunk.getVectorDocumentId() != null && !chunk.getVectorDocumentId().isBlank()) {
-            vectorStore.delete(List.of(chunk.getVectorDocumentId()));
-        }
+        requireMutableDocument(chunk.getDocumentId());
+        pgVectorRepository.deleteByIds(vectorDocumentIds(List.of(chunk)));
         knowledgeChunkMapper.deleteById(chunk.getId());
         updateDocumentChunkCount(chunk.getDocumentId());
     }
@@ -410,6 +362,16 @@ public class KnowledgeAdminService {
         return chunk;
     }
 
+    // 根据主键获取可修改分块的文档。
+    private KnowledgeDocument requireMutableDocument(Long documentId) {
+        KnowledgeDocument document = knowledgeDocumentMapper.selectById(documentId);
+        if (document == null) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "文档不存在");
+        }
+        requireDocumentNotBusy(document);
+        return document;
+    }
+
     private List<KnowledgeChunk> listChunkEntities(Long documentId) {
         return knowledgeChunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunk>()
                 .eq(KnowledgeChunk::getDocumentId, documentId)
@@ -417,11 +379,9 @@ public class KnowledgeAdminService {
     }
 
     private void deleteDocumentByEntity(KnowledgeDocument document) {
-        VectorStore vectorStore = vectorStoreProvider.getIfAvailable();
+        requireDocumentNotBusy(document);
         List<KnowledgeChunk> chunks = listChunkEntities(document.getId());
-        if (vectorStore != null) {
-            deleteVectorDocuments(vectorStore, chunks);
-        }
+        pgVectorRepository.deleteByIds(vectorDocumentIds(chunks));
         knowledgeChunkMapper.delete(new LambdaQueryWrapper<KnowledgeChunk>()
                 .eq(KnowledgeChunk::getDocumentId, document.getId()));
         knowledgeDocumentMapper.deleteById(document.getId());
@@ -430,19 +390,8 @@ public class KnowledgeAdminService {
                 "event=knowledge_document_deleted documentId={} chunkCount={} vectorDeleteRequested={}",
                 document.getDocumentNo(),
                 chunks.size(),
-                vectorStore != null
+                !chunks.isEmpty()
         );
-    }
-
-    private void deleteVectorDocuments(VectorStore vectorStore, List<KnowledgeChunk> chunks) {
-        deleteVectorDocumentsByIds(vectorStore, vectorDocumentIds(chunks));
-    }
-
-    private void deleteVectorDocumentsByIds(VectorStore vectorStore, List<String> vectorIds) {
-        if (vectorStore == null || vectorIds == null || vectorIds.isEmpty()) {
-            return;
-        }
-        vectorStore.delete(vectorIds);
     }
 
     private List<String> vectorDocumentIds(List<KnowledgeChunk> chunks) {
@@ -477,6 +426,19 @@ public class KnowledgeAdminService {
         return (document.getStorageObjectKey() != null && !document.getStorageObjectKey().isBlank())
                 || (document.getTextContent() != null && !document.getTextContent().isBlank())
                 || !listChunkEntities(document.getId()).isEmpty();
+    }
+
+    // 判断文档是否处于上传或处理中的忙碌状态。
+    private boolean isBusyDocument(KnowledgeDocument document) {
+        return document != null
+                && (STATUS_UPLOADING.equals(document.getStatus()) || STATUS_PROCESSING.equals(document.getStatus()));
+    }
+
+    // 忙碌文档不允许删除或修改分块，避免和异步入库事务互相覆盖。
+    private void requireDocumentNotBusy(KnowledgeDocument document) {
+        if (isBusyDocument(document)) {
+            throw new BusinessException(HttpStatus.CONFLICT, "文档正在处理中，请稍后再试");
+        }
     }
 
     private void updateDocumentChunkCount(Long documentId) {
@@ -562,21 +524,6 @@ public class KnowledgeAdminService {
             return 0;
         }
         return Math.max(1, (int) Math.ceil(content.length() / 2.0));
-    }
-
-    private String truncate(String value, int maxLength) {
-        if (value == null || value.length() <= maxLength) {
-            return value;
-        }
-        return value.substring(0, maxLength);
-    }
-
-    private String conciseMessage(RuntimeException exception) {
-        String message = exception.getMessage();
-        if (message == null || message.isBlank()) {
-            return "服务未返回具体原因";
-        }
-        return truncate(message.replaceAll("\\s+", " ").trim(), 180);
     }
 
     private String sanitizeLogValue(String value) {

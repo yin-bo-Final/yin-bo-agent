@@ -86,16 +86,18 @@ DELETE /api/conversations/{conversationId}
 
 ## `pages/AdminPage.vue`
 
-后台管理页，目前包含 Dashboard 和知识库管理。
+后台管理页，目前包含 Dashboard、知识库管理和失败任务管理。
 
 - 后台侧边栏和折叠状态
 - Dashboard 指标
 - 知识库列表、新建、编辑、删除
 - 文档列表、上传、URL 录入、分块、重新分块、重建向量、详情、删除
 - 分块列表、查看、编辑、删除、启用、禁用、批量操作
+- 失败任务列表、失败原因查看、重试次数展示和手动重试
+- 失败任务支持删除，便于清理后台噪声数据
 - 自定义弹窗、下拉栏、tooltip
-- 根据 `/admin/knowledge/...` 解析内部视图
-- 文档处于 `PROCESSING` 时轮询刷新
+- 根据 `/admin/knowledge/...` 和 `/admin/tasks/failed` 解析内部视图
+- 文档处于 `UPLOADING` 或 `PROCESSING` 时轮询刷新
 
 后台路由：
 
@@ -104,6 +106,7 @@ DELETE /api/conversations/{conversationId}
 /admin/knowledge
 /admin/knowledge/{knowledgeBaseId}
 /admin/knowledge/{knowledgeBaseId}/docs/{documentId}
+/admin/tasks/failed
 ```
 
 后台主要接口：
@@ -123,6 +126,9 @@ GET    /api/admin/knowledge/documents/{documentId}/chunks
 PATCH  /api/admin/knowledge/chunks/{chunkId}
 PATCH  /api/admin/knowledge/chunks/{chunkId}/enabled
 DELETE /api/admin/knowledge/chunks/{chunkId}
+GET    /api/admin/ingestion/tasks/failed
+POST   /api/admin/ingestion/tasks/{taskId}/retry
+DELETE /api/admin/ingestion/tasks/{taskId}
 ```
 
 ## `api/`
@@ -131,7 +137,7 @@ DELETE /api/admin/knowledge/chunks/{chunkId}
 | --- | --- |
 | `authApi.js` | 注册、登录、当前用户、退出、注销 |
 | `chatApi.js` | 模型列表、聊天、流式聊天、会话管理 |
-| `adminApi.js` | Dashboard、知识库、文档、分块管理 |
+| `adminApi.js` | Dashboard、知识库、文档上传、分块、失败任务管理 |
 | `http.js` | 统一解析响应和错误，429 会触发全局错误弹窗 |
 
 所有需要登录态的请求都带 `credentials: 'include'`。

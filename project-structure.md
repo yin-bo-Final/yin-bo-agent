@@ -64,7 +64,7 @@ ConversationPage
 ```text
 上传文件 / 提交 URL
 -> RustFS 保存原始文件
--> knowledge_document.status = UPLOADED
+-> knowledge_document.status = UPLOADING -> UPLOADED
 -> 管理员点击分块
 -> RocketMQ 投递 CHUNK 任务
 -> Tika 解析纯文本
@@ -96,6 +96,7 @@ ConversationPage
 | `knowledge_document`     | `ingestion` / `knowledge` | 文档元数据、RustFS 对象信息、状态、耗时       |
 | `knowledge_chunk`        | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数、向量 ID     |
 | `knowledge_chunk_vector` | Spring AI PGVector        | 向量存储表                         |
+| `ingestion_task`         | `ingestion`               | 分块 / 重建向量任务状态、重试次数和失败原因       |
 
 数据库结构由 Flyway 接管，迁移脚本位于 `backend/src/main/resources/db/migration`。不要恢复旧的 `schema.sql`。
 
@@ -118,6 +119,9 @@ ConversationPage
 - 数据库结构变更必须新增 Flyway 迁移脚本。
 - 原始文件进入 RustFS，数据库保存对象定位信息。
 - 向量在 pgvector，由 `vectorDocumentId` 关联业务分块。
+- 上传完成后保持 `UPLOADED`，管理员点击分块才投递 RocketMQ 并进入 `PROCESSING`。
 - RocketMQ 当前负责分块和重建向量异步化，消费者通过 Redis 信号量限制全系统处理并发。
+- 入库任务状态记录在 `ingestion_task`，后台通过 `/admin/tasks/failed` 查看失败任务并手动重试。
+- 任务重试耗尽后标记 `DEAD`，忙碌文档禁止删除和修改分块，减少异步处理期间的数据覆盖。
 - 前端暂时没有 Vue Router，使用路径解析和 `window.history` 维护页面状态。
 - 新增后台 UI 要复用现有按钮、表格、弹窗、下拉栏和 tooltip 风格。

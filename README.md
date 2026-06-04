@@ -2,7 +2,7 @@
 
 这是一个围绕 Java 后端、Spring AI、Agent、RAG、MCP 和工程化实践持续演进的前后端分离项目。当前核心目标不是做一个单纯的聊天页面，而是把“会话、用户权限、知识库、文档入库流水线、向量检索、工具调用”这些 Agent/RAG 系统必备能力逐步落到真实工程里。
 
-当前主线已经进入知识库和 ingestion 阶段：管理员上传文档后，后端先把原始文件保存到 RustFS，对外立即返回 `UPLOADED`；管理员再点击“分块”或“重新分块”，后端通过 RocketMQ 异步消费任务，完成 Tika 解析、文本清洗、分块、向量化，并把向量写入 PostgreSQL pgvector。
+当前主线已经进入知识库和 ingestion 阶段：管理员上传文档后，后端先创建 `UPLOADING` 文档记录，再把原始文件保存到 RustFS，上传完成后变为 `UPLOADED`；管理员再点击“分块”或“重新分块”，后端通过 RocketMQ 异步消费任务，完成 Tika 解析、文本清洗、分块、向量化，并把向量写入 PostgreSQL pgvector。
 
 ## 技术栈
 
@@ -40,17 +40,17 @@ RAG 文档入库链路：
 ```text
 上传文件 / 提交 URL
 -> RustFS 保存原始文件
--> knowledge_document.status = UPLOADED
+-> knowledge_document.status = UPLOADING -> UPLOADED
 -> 管理员点击分块
--> RocketMQ 投递 CHUNK 任务
+-> RocketMQ 发送 CHUNK 事务半消息
+-> 本地事务 CAS 把文档改为 PROCESSING，并创建 ingestion_task
 -> Consumer 读取 RustFS 原始文件
 -> Tika 解析纯文本
 -> 文本清洗
 -> AUTO / RECURSIVE / NONE 分块
 -> 分块优化和长度校验
--> Embedding 向量化
--> pgvector 保存向量
--> knowledge_chunk 保存分块元数据
+-> 事务外生成 Embedding
+-> 短事务内写入 pgvector、knowledge_chunk 并更新文档状态
 -> knowledge_document.status = COMPLETED / FAILED
 ```
 
@@ -58,10 +58,11 @@ RAG 文档入库链路：
 
 ```text
 管理员点击重建向量
--> RocketMQ 投递 REBUILD_VECTORS 任务
+-> RocketMQ 发送 REBUILD_VECTORS 事务半消息
+-> 本地事务 CAS 把文档改为 PROCESSING，并创建 ingestion_task
 -> Consumer 读取已有 knowledge_chunk
--> 重新生成向量并更新 vectorDocumentId
--> 事务成功后清理旧向量
+-> 事务外重新生成向量
+-> 短事务内写入新向量、更新 vectorDocumentId 并删除旧向量
 -> 文档状态回到 COMPLETED / FAILED
 ```
 
@@ -93,6 +94,7 @@ RAG 文档入库链路：
 - 知识库支持新建、编辑、删除
 - 文档支持上传、URL 录入、分块、重新分块、重建向量、详情、删除
 - 分块支持查看、编辑、删除、启用、禁用、批量启用、批量禁用
+- 失败入库任务支持查看失败原因、重试次数和手动重试
 - 后台导航栏支持折叠，整体样式遵循项目自己的灰色工程风格
 
 后台路由：
@@ -102,20 +104,24 @@ RAG 文档入库链路：
 /admin/knowledge
 /admin/knowledge/{knowledgeBaseId}
 /admin/knowledge/{knowledgeBaseId}/docs/{documentId}
+/admin/tasks/failed
 ```
 
 ### Ingestion 流水线
 
-- 上传阶段只负责 RustFS 落盘和文档元数据保存
+- 上传阶段只负责 RustFS 落盘和文档元数据保存，文件上传中状态为 `UPLOADING`
 - 上传阶段先由 gateway 通过 Redis 信号量限制全系统同时上传任务数，service 层保留兜底信号量
 - 分块和向量化通过 RocketMQ 异步执行
 - RocketMQ 消费者通过 Redis 信号量限制全系统同时处理的分块 / 向量化任务数
-- 支持状态：`UPLOADED`、`PROCESSING`、`COMPLETED`、`FAILED`
+- 支持状态：`UPLOADING`、`UPLOADED`、`PROCESSING`、`COMPLETED`、`FAILED`
 - 支持分块策略：`AUTO`、`RECURSIVE`、`NONE`
 - 自动策略会根据文本长度调整切块参数
 - 分块过大时返回业务错误，避免把模型上下文错误裸露给前端
 - 文档详情记录文本提取、分块、向量化、其他耗时和总耗时
 - 原始文件在 RustFS，分块元数据在 `knowledge_chunk`，向量在 `knowledge_chunk_vector`
+- 分块和向量重建任务会写入 `ingestion_task`，用于后台展示失败任务和手动重试
+- 消费者最大重试次数和任务表 `maxRetries` 对齐，耗尽后进入 `DEAD` 并等待 RocketMQ 死信队列处理
+- `UPLOADING` / `PROCESSING` 文档禁止删除和修改分块，避免和异步入库事务互相覆盖
 
 ## 项目结构
 
@@ -348,6 +354,9 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 | `PATCH` | `/api/admin/knowledge/chunks/{chunkId}` | 修改分块内容 |
 | `PATCH` | `/api/admin/knowledge/chunks/{chunkId}/enabled` | 启用或禁用分块 |
 | `DELETE` | `/api/admin/knowledge/chunks/{chunkId}` | 删除分块 |
+| `GET` | `/api/admin/ingestion/tasks/failed` | 查询失败入库任务 |
+| `POST` | `/api/admin/ingestion/tasks/{taskId}/retry` | 手动重试失败入库任务 |
+| `DELETE` | `/api/admin/ingestion/tasks/{taskId}` | 删除失败入库任务 |
 
 ## 数据表
 
@@ -364,6 +373,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 | `knowledge_document` | 文档元数据、RustFS 对象信息、状态、耗时 |
 | `knowledge_chunk` | 分块内容、启用状态、token 数、字符数、向量文档 ID |
 | `knowledge_chunk_vector` | Spring AI PGVector Store 管理的向量表 |
+| `ingestion_task` | 文档分块 / 重建向量任务状态、重试次数、失败原因和 MQ messageId |
 
 ## 开发约定
 
@@ -381,13 +391,13 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 - 上传文件大小默认限制为单文件 `200MB`；gateway 会先拦截超过 `200MB` 的上传请求，service multipart 和前端 Nginx 单请求默认上限为 `220MB`。
 - 原始文件只进 RustFS，不把大文件二进制塞进 PostgreSQL。
 - 分块文本改动后必须重建向量，否则 pgvector 中仍是旧文本语义。
-- RocketMQ 当前负责异步分块和异步重建向量；消费者拿不到 Redis 信号量时抛异常交给 RocketMQ 重试，后续可以补死信队列和失败任务管理页。
+- RocketMQ 当前负责异步分块和异步重建向量；消费者拿不到 Redis 信号量或遇到可重试失败时抛异常交给 RocketMQ 重试，耗尽后进入失败任务后台和死信处理。
 - 前端后台 UI 继续沿用当前灰色工程风格，改样式前先看 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
 ## 下一步
 
 1. 增加 RAG 检索接口：pgvector 召回 + Qwen3 Reranker 重排。
 2. 给知识库和分块检索补权限过滤。
-3. 给 RocketMQ ingestion 增加重试次数、死信队列和失败任务管理页。
+3. 给 ingestion 核心链路补单元测试和 RocketMQ 集成测试。
 4. 将后台页面组件化，拆出知识库表格、文档表格、分块表格和通用弹窗。
-5. 给 ingestion 核心链路补单元测试和集成测试。
+5. 增加 chunk/vector 一致性巡检和修复工具。

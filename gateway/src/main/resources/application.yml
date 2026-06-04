@@ -139,19 +139,20 @@ spring:
 
 management:
   endpoints:
-    enabled-by-default: false
+    access:
+      default: none
     web:
       exposure:
         include: health,info
   endpoint:
     health:
-      enabled: true
+      access: read-only
       show-details: never
       show-components: never
     info:
-      enabled: true
+      access: read-only
     gateway:
-      enabled: false
+      access: none
     env:
       show-values: never
     configprops:

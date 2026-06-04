@@ -121,6 +121,29 @@ export async function rebuildDocumentVectors(documentId) {
   return parseResponse(response, '向量重建失败');
 }
 
+export async function fetchFailedIngestionTasks() {
+  const response = await fetch(`${API_BASE_URL}/admin/ingestion/tasks/failed`, {
+    credentials: 'include'
+  });
+  return parseResponse(response, '失败任务列表加载失败');
+}
+
+export async function retryIngestionTask(taskId) {
+  const response = await fetch(`${API_BASE_URL}/admin/ingestion/tasks/${taskId}/retry`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  return parseResponse(response, '失败任务重试失败');
+}
+
+export async function deleteIngestionTask(taskId) {
+  const response = await fetch(`${API_BASE_URL}/admin/ingestion/tasks/${taskId}`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  return parseResponse(response, '失败任务删除失败');
+}
+
 export async function deleteKnowledgeDocument(documentId) {
   const response = await fetch(`${API_BASE_URL}/admin/knowledge/documents/${documentId}`, {
     method: 'DELETE',

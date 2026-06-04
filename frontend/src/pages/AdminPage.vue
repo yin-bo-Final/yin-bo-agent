@@ -3,10 +3,12 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import {
   createKnowledgeBase,
   deleteChunk,
+  deleteIngestionTask,
   deleteKnowledgeBase,
   deleteKnowledgeDocument,
   fetchAdminDashboard,
   fetchDocumentChunks,
+  fetchFailedIngestionTasks,
   fetchKnowledgeBase,
   fetchKnowledgeBases,
   fetchKnowledgeDocument,
@@ -15,6 +17,7 @@ import {
   ingestKnowledgeUrl,
   rebuildDocumentVectors,
   rechunkKnowledgeDocument,
+  retryIngestionTask,
   updateChunk,
   updateChunkEnabled,
   updateDocumentChunksEnabled,
@@ -36,12 +39,15 @@ const dashboard = ref(null);
 const overview = ref(null);
 const knowledgeBases = ref([]);
 const documents = ref([]);
+const uploadingDocuments = ref([]);
 const chunks = ref([]);
+const failedTasks = ref([]);
 const selectedKnowledgeBase = ref(null);
 const selectedDocument = ref(null);
 const selectedChunkIds = ref(new Set());
 const isLoadingDashboard = ref(false);
 const isLoadingKnowledge = ref(false);
+const isLoadingTasks = ref(false);
 const isCreatingKnowledgeBase = ref(false);
 const isIngesting = ref(false);
 const isRechunking = ref(false);
@@ -50,6 +56,8 @@ const isDeletingKnowledgeBase = ref(false);
 const isDeletingDocument = ref(false);
 const isDeletingChunk = ref(false);
 const isUpdatingChunk = ref(false);
+const retryingTaskId = ref('');
+const deletingTaskId = ref('');
 const isRefreshing = ref(false);
 const isAdminSidebarCollapsed = ref(false);
 const adminError = ref('');
@@ -58,7 +66,9 @@ const ingestionFormError = ref('');
 const rechunkFormError = ref('');
 const baseKeyword = ref('');
 const documentKeyword = ref('');
+const taskKeyword = ref('');
 const documentStatusFilter = ref('ALL');
+const taskStatusFilter = ref('ALL');
 const chunkStatusFilter = ref('ALL');
 const isCreateModalOpen = ref(false);
 const isEditModalOpen = ref(false);
@@ -78,10 +88,16 @@ const deleteChunkDialog = ref({
   chunk: null
 });
 const deleteChunkError = ref('');
+const deleteTaskDialog = ref({
+  open: false,
+  task: null
+});
+const deleteTaskError = ref('');
 const isIngestionModalOpen = ref(false);
 const isRechunkModalOpen = ref(false);
 const detailDocument = ref(null);
 const detailChunk = ref(null);
+const detailTask = ref(null);
 const viewingChunk = ref(null);
 const editingChunk = ref(null);
 const editChunkForm = ref({
@@ -107,6 +123,13 @@ const editKnowledgeBase = ref(null);
 const editForm = ref({
   name: ''
 });
+const floatingTooltip = ref({
+  visible: false,
+  text: '',
+  left: 0,
+  top: 0,
+  placement: 'top'
+});
 let knowledgePollTimer = null;
 
 const activeModule = computed(() => route.value.module);
@@ -114,6 +137,9 @@ const currentView = computed(() => route.value.view);
 const currentHeader = computed(() => {
   if (activeModule.value === 'dashboard') {
     return { label: '系统指标', title: 'DashBoard', icon: 'dashboard' };
+  }
+  if (activeModule.value === 'tasks') {
+    return { label: '入库任务', title: '失败任务', icon: 'tasks' };
   }
   if (currentView.value === 'documents') {
     return { label: '文档资产', title: '文档管理', icon: 'documents' };
@@ -126,6 +152,7 @@ const currentHeader = computed(() => {
 const selectedKnowledgeBaseId = computed(() => route.value.knowledgeBaseId || '');
 const selectedDocumentId = computed(() => route.value.documentId || '');
 const isSelectedDocumentProcessing = computed(() => selectedDocument.value?.status === 'PROCESSING');
+const canMutateSelectedChunks = computed(() => selectedDocument.value && !isBusyDocumentStatus(selectedDocument.value.status));
 const canCreateKnowledgeBase = computed(() => {
   return createForm.value.name.trim() && createForm.value.embeddingModel.trim() && createForm.value.collectionName.trim();
 });
@@ -147,14 +174,27 @@ function showOverflowTooltip(event, value) {
   const isOverflowing = content.scrollWidth > content.clientWidth + 1 || content.scrollHeight > content.clientHeight + 1;
 
   if (text && isOverflowing) {
-    target.dataset.tooltip = text;
+    const rect = target.getBoundingClientRect();
+    const maxWidth = Math.min(420, window.innerWidth * 0.6);
+    const left = Math.min(Math.max(12, rect.left), Math.max(12, window.innerWidth - maxWidth - 12));
+    const hasTopSpace = rect.top > 96;
+    floatingTooltip.value = {
+      visible: true,
+      text,
+      left,
+      top: hasTopSpace ? rect.top - 10 : rect.bottom + 10,
+      placement: hasTopSpace ? 'top' : 'bottom'
+    };
   } else {
-    delete target.dataset.tooltip;
+    clearOverflowTooltip(event);
   }
 }
 
 function clearOverflowTooltip(event) {
-  delete event.currentTarget.dataset.tooltip;
+  if (event?.currentTarget) {
+    delete event.currentTarget.dataset.tooltip;
+  }
+  floatingTooltip.value.visible = false;
 }
 
 function statusFilterText(value) {
@@ -193,9 +233,23 @@ const filteredKnowledgeBases = computed(() => {
       .some((value) => value.toLowerCase().includes(keyword));
   });
 });
+const deadTaskDocumentIds = computed(() => new Set(
+  failedTasks.value
+    .filter((task) => task.status === 'DEAD' && task.documentId)
+    .map((task) => task.documentId)
+));
+const visibleDocuments = computed(() => {
+  const knownIds = new Set(documents.value.map((document) => document.documentId));
+  return [
+    ...uploadingDocuments.value.filter((document) => (
+      document.knowledgeBaseId === selectedKnowledgeBaseId.value && !knownIds.has(document.documentId)
+    )),
+    ...documents.value.filter((document) => !deadTaskDocumentIds.value.has(document.documentId))
+  ];
+});
 const filteredDocuments = computed(() => {
   const keyword = documentKeyword.value.trim().toLowerCase();
-  return documents.value.filter((doc) => {
+  return visibleDocuments.value.filter((doc) => {
     const keywordMatched = !keyword || [doc.fileName, doc.sourceType, doc.contentType]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(keyword));
@@ -211,6 +265,23 @@ const filteredChunks = computed(() => {
     return chunks.value.filter((chunk) => !chunk.enabled);
   }
   return chunks.value;
+});
+const filteredFailedTasks = computed(() => {
+  const keyword = taskKeyword.value.trim().toLowerCase();
+  return failedTasks.value.filter((task) => {
+    const keywordMatched = !keyword || [
+      task.taskId,
+      task.documentId,
+      task.fileName,
+      task.lastError,
+      task.mqMessageId,
+      task.sourceRequestId
+    ]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword));
+    const statusMatched = taskStatusFilter.value === 'ALL' || task.status === taskStatusFilter.value;
+    return keywordMatched && statusMatched;
+  }).slice().sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0));
 });
 const averageResponseStatus = computed(() => {
   const value = dashboard.value?.averageResponseTimeMs;
@@ -229,7 +300,7 @@ const averageResponseStatus = computed(() => {
 onMounted(async () => {
   window.addEventListener('popstate', handleRouteChange);
   knowledgePollTimer = window.setInterval(pollProcessingDocuments, 3000);
-  await Promise.all([loadDashboard(), loadKnowledge()]);
+  await Promise.all([loadDashboard(), loadKnowledge(), loadFailedTasks()]);
 });
 
 onUnmounted(() => {
@@ -243,6 +314,9 @@ function parseAdminRoute() {
   const segments = window.location.pathname.split('/').filter(Boolean);
   if (segments[0] !== 'admin') {
     return { module: 'dashboard', view: 'dashboard' };
+  }
+  if (segments[1] === 'tasks') {
+    return { module: 'tasks', view: 'failed-tasks' };
   }
   if (segments[1] !== 'knowledge') {
     return { module: 'dashboard', view: 'dashboard' };
@@ -270,6 +344,9 @@ async function handleRouteChange() {
   adminError.value = '';
   if (activeModule.value === 'knowledge') {
     await hydrateKnowledgeRoute();
+  }
+  if (activeModule.value === 'tasks') {
+    await loadFailedTasks();
   }
 }
 
@@ -308,6 +385,18 @@ async function loadKnowledge() {
     handleAdminError(error);
   } finally {
     isLoadingKnowledge.value = false;
+  }
+}
+
+async function loadFailedTasks() {
+  isLoadingTasks.value = true;
+  try {
+    const response = await fetchFailedIngestionTasks();
+    failedTasks.value = Array.isArray(response) ? response : [];
+  } catch (error) {
+    handleAdminError(error);
+  } finally {
+    isLoadingTasks.value = false;
   }
 }
 
@@ -350,6 +439,10 @@ async function refreshCurrentView() {
       await loadDashboard();
       return;
     }
+    if (activeModule.value === 'tasks') {
+      await loadFailedTasks();
+      return;
+    }
     await loadKnowledge();
   } finally {
     window.setTimeout(() => {
@@ -361,7 +454,7 @@ async function refreshCurrentView() {
 async function pollProcessingDocuments() {
   if (
     activeModule.value !== 'knowledge'
-    || !documents.value.some((document) => document.status === 'PROCESSING')
+    || !visibleDocuments.value.some((document) => isBusyDocumentStatus(document.status))
     || isLoadingKnowledge.value
     || isRefreshing.value
   ) {
@@ -484,10 +577,21 @@ async function openDocuments(base) {
 function openIngestionModal() {
   adminError.value = '';
   ingestionFormError.value = '';
+  resetIngestionForm();
+  isIngestionModalOpen.value = true;
+}
+
+function closeIngestionModal() {
+  ingestionFormError.value = '';
+  isIngesting.value = false;
+  isIngestionModalOpen.value = false;
+  resetIngestionForm();
+}
+
+function resetIngestionForm() {
   selectedFile.value = null;
   urlForm.value = { url: '', fileName: '' };
   ingestionMode.value = 'upload';
-  isIngestionModalOpen.value = true;
 }
 
 function handleFileChange(event) {
@@ -503,9 +607,9 @@ async function submitIngestion() {
   ingestionFormError.value = '';
   try {
     if (ingestionMode.value === 'upload') {
-      await uploadKnowledgeDocument(selectedKnowledgeBaseId.value, {
-        file: selectedFile.value
-      });
+      submitUploadInBackground(selectedKnowledgeBaseId.value, selectedFile.value);
+      closeIngestionModal();
+      return;
     } else {
       await ingestKnowledgeUrl(selectedKnowledgeBaseId.value, {
         url: urlForm.value.url.trim(),
@@ -526,12 +630,65 @@ async function submitIngestion() {
   }
 }
 
+function submitUploadInBackground(knowledgeBaseId, file) {
+  const optimisticDocument = createUploadingDocument(knowledgeBaseId, file);
+  uploadingDocuments.value = [optimisticDocument, ...uploadingDocuments.value];
+  uploadKnowledgeDocument(knowledgeBaseId, {
+    file
+  })
+    .then(async () => {
+      uploadingDocuments.value = uploadingDocuments.value.filter((document) => document.documentId !== optimisticDocument.documentId);
+      await loadKnowledge();
+    })
+    .catch((error) => {
+      uploadingDocuments.value = uploadingDocuments.value.filter((document) => document.documentId !== optimisticDocument.documentId);
+      if (isSessionError(error)) {
+        emit('session-expired');
+        return;
+      }
+      adminError.value = error.message || '文件上传失败';
+      loadKnowledge();
+    });
+}
+
+function createUploadingDocument(knowledgeBaseId, file) {
+  const now = new Date().toISOString();
+  return {
+    documentId: `uploading-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    knowledgeBaseId,
+    fileName: file?.name || 'uploaded-document',
+    sourceType: 'UPLOAD',
+    sourceUrl: null,
+    contentType: file?.type || '',
+    originalSizeBytes: file?.size || 0,
+    status: 'UPLOADING',
+    textCharCount: 0,
+    chunkCount: 0,
+    chunkStrategy: 'RECURSIVE',
+    chunkSize: 1000,
+    chunkOverlap: 150,
+    maxChunks: 200,
+    textExtractedAt: null,
+    parseDurationMs: 0,
+    chunkDurationMs: 0,
+    embeddingDurationMs: 0,
+    otherDurationMs: 0,
+    totalDurationMs: 0,
+    createdAt: now,
+    updatedAt: now,
+    errorMessage: null
+  };
+}
+
 async function openDocumentChunks(document) {
+  if (!canOpenDocumentChunks(document)) {
+    return;
+  }
   await navigateTo(`/admin/knowledge/${selectedKnowledgeBaseId.value}/docs/${document.documentId}`);
 }
 
 function openRechunkModal(targetDocument) {
-  if (targetDocument?.status === 'PROCESSING') {
+  if (!canRechunkDocument(targetDocument)) {
     return;
   }
   adminError.value = '';
@@ -579,6 +736,9 @@ async function submitRechunk() {
 }
 
 function removeDocument(document) {
+  if (isBusyDocumentStatus(document?.status)) {
+    return;
+  }
   adminError.value = '';
   deleteDocumentError.value = '';
   deleteDocumentDialog.value = {
@@ -641,8 +801,80 @@ async function rebuildVectors() {
   }
 }
 
+async function retryFailedTask(task) {
+  if (!task?.taskId || retryingTaskId.value || deletingTaskId.value) {
+    return;
+  }
+  retryingTaskId.value = task.taskId;
+  adminError.value = '';
+  try {
+    await retryIngestionTask(task.taskId);
+    await loadFailedTasks();
+    window.setTimeout(() => {
+      if (activeModule.value === 'tasks') {
+        loadFailedTasks();
+      }
+    }, 1200);
+    if (activeModule.value === 'knowledge') {
+      await loadKnowledge();
+    }
+  } catch (error) {
+    handleAdminError(error);
+  } finally {
+    retryingTaskId.value = '';
+  }
+}
+
+function deleteFailedTask(task) {
+  if (!task?.taskId || deletingTaskId.value || retryingTaskId.value) {
+    return;
+  }
+  adminError.value = '';
+  deleteTaskError.value = '';
+  deleteTaskDialog.value = {
+    open: true,
+    task
+  };
+}
+
+function closeDeleteTaskDialog() {
+  if (deletingTaskId.value) {
+    return;
+  }
+  deleteTaskDialog.value = {
+    open: false,
+    task: null
+  };
+  deleteTaskError.value = '';
+}
+
+async function confirmDeleteTask() {
+  const target = deleteTaskDialog.value.task;
+  if (!target?.taskId || deletingTaskId.value) {
+    return;
+  }
+  deletingTaskId.value = target.taskId;
+  deleteTaskError.value = '';
+  try {
+    await deleteIngestionTask(target.taskId);
+    deleteTaskDialog.value = {
+      open: false,
+      task: null
+    };
+    await loadFailedTasks();
+  } catch (error) {
+    if (isSessionError(error)) {
+      emit('session-expired');
+      return;
+    }
+    deleteTaskError.value = error.message || '失败任务删除失败';
+  } finally {
+    deletingTaskId.value = '';
+  }
+}
+
 async function setAllChunksEnabled(enabled) {
-  if (!selectedDocumentId.value) {
+  if (!selectedDocumentId.value || !canMutateSelectedChunks.value) {
     return;
   }
   try {
@@ -656,7 +888,7 @@ async function setAllChunksEnabled(enabled) {
 
 async function setSelectedChunksEnabled(enabled) {
   const ids = Array.from(selectedChunkIds.value);
-  if (ids.length === 0) {
+  if (ids.length === 0 || !canMutateSelectedChunks.value) {
     return;
   }
   try {
@@ -670,6 +902,9 @@ async function setSelectedChunksEnabled(enabled) {
 }
 
 async function toggleChunk(chunk) {
+  if (!canMutateSelectedChunks.value) {
+    return;
+  }
   try {
     const updated = await updateChunkEnabled(chunk.chunkId, !chunk.enabled);
     chunks.value = chunks.value.map((item) => item.chunkId === updated.chunkId ? updated : item);
@@ -679,6 +914,9 @@ async function toggleChunk(chunk) {
 }
 
 function removeChunk(chunk) {
+  if (!canMutateSelectedChunks.value) {
+    return;
+  }
   adminError.value = '';
   deleteChunkError.value = '';
   deleteChunkDialog.value = {
@@ -700,7 +938,7 @@ function closeDeleteChunkDialog() {
 
 async function confirmDeleteChunk() {
   const target = deleteChunkDialog.value.chunk;
-  if (!target?.chunkId || isDeletingChunk.value) {
+  if (!target?.chunkId || isDeletingChunk.value || !canMutateSelectedChunks.value) {
     return;
   }
   isDeletingChunk.value = true;
@@ -725,6 +963,9 @@ async function confirmDeleteChunk() {
 }
 
 function openEditChunkModal(chunk) {
+  if (!canMutateSelectedChunks.value) {
+    return;
+  }
   editingChunk.value = chunk;
   editChunkForm.value = {
     content: chunk.content || ''
@@ -744,7 +985,7 @@ function closeEditChunkModal() {
 }
 
 async function submitEditChunk() {
-  if (!editingChunk.value?.chunkId || isUpdatingChunk.value) {
+  if (!editingChunk.value?.chunkId || isUpdatingChunk.value || !canMutateSelectedChunks.value) {
     return;
   }
   if (!editChunkForm.value.content.trim()) {
@@ -876,6 +1117,81 @@ function sourceText(document) {
   return document.sourceType === 'URL' ? 'URL' : 'Local File';
 }
 
+function taskActionText(action) {
+  if (action === 'REBUILD_VECTORS') {
+    return '重建向量';
+  }
+  return '分块';
+}
+
+function taskStatusText(status) {
+  if (status === 'DEAD') {
+    return 'dead';
+  }
+  if (status === 'FAILED') {
+    return 'failed';
+  }
+  if (status === 'RETRYING') {
+    return 'retrying';
+  }
+  if (status === 'COMPLETED') {
+    return 'success';
+  }
+  if (status === 'RUNNING') {
+    return 'running';
+  }
+  return 'pending';
+}
+
+function taskStatusClass(status) {
+  if (status === 'DEAD' || status === 'FAILED') {
+    return 'danger';
+  }
+  if (status === 'COMPLETED') {
+    return 'success';
+  }
+  if (status === 'RETRYING' || status === 'RUNNING') {
+    return 'pending';
+  }
+  return 'muted';
+}
+
+function taskOptionsText(task) {
+  if (task.action === 'REBUILD_VECTORS') {
+    return '沿用当前分块';
+  }
+  if (task.strategy === 'RECURSIVE') {
+    return `${task.strategy.toLowerCase()} / ${task.chunkSize}-${task.chunkOverlap} / ${task.maxChunks}`;
+  }
+  return task.strategy ? task.strategy.toLowerCase() : '-';
+}
+
+function canRetryTask(task) {
+  return task?.status === 'FAILED';
+}
+
+function taskDetailRows(task) {
+  if (!task) {
+    return [];
+  }
+  return [
+    ['任务编号', task.taskId],
+    ['文档编号', task.documentId],
+    ['文档状态', task.documentStatus],
+    ['动作', taskActionText(task.action)],
+    ['状态', taskStatusText(task.status)],
+    ['分块参数', taskOptionsText(task)],
+    ['重试次数', `${task.retryCount} / ${task.maxRetries}`],
+    ['最近失败', formatDate(task.lastFailedAt || task.updatedAt)],
+    ['开始时间', task.lastStartedAt ? formatDate(task.lastStartedAt) : '-'],
+    ['创建时间', formatDate(task.createdAt)],
+    ['更新时间', formatDate(task.updatedAt)],
+    ['MQ MessageId', task.mqMessageId || '-'],
+    ['Source RequestId', task.sourceRequestId || '-'],
+    ['错误原因', task.lastError || '-']
+  ];
+}
+
 function typeText(document) {
   const type = document.contentType || document.fileName?.split('.').pop() || document.sourceType;
   return String(type).replace('application/', '').replace('text/', '');
@@ -891,6 +1207,9 @@ function statusClass(status) {
   if (status === 'UPLOADED') {
     return 'muted';
   }
+  if (status === 'UPLOADING') {
+    return 'pending';
+  }
   return 'pending';
 }
 
@@ -904,10 +1223,44 @@ function statusText(status) {
   if (status === 'UPLOADED') {
     return 'uploaded';
   }
+  if (status === 'UPLOADING') {
+    return 'uploading';
+  }
   return 'processing';
 }
 
+function isBusyDocumentStatus(status) {
+  return status === 'UPLOADING' || status === 'PROCESSING';
+}
+
+function isFailedDocumentStatus(status) {
+  return status === 'FAILED';
+}
+
+function shouldShowDocumentChunkAction(document) {
+  return !isFailedDocumentStatus(document?.status);
+}
+
+function canRechunkDocument(document) {
+  return document
+    && shouldShowDocumentChunkAction(document)
+    && !isBusyDocumentStatus(document.status);
+}
+
+function canOpenDocumentChunks(document) {
+  return document
+    && !isFailedDocumentStatus(document.status)
+    && document.status !== 'UPLOADING';
+}
+
+function canViewDocumentChunks(document) {
+  return canOpenDocumentChunks(document) && Number(document.chunkCount || 0) > 0;
+}
+
 function documentChunkActionLabel(document) {
+  if (document.status === 'UPLOADING') {
+    return '上传中...';
+  }
   if (document.status === 'PROCESSING') {
     return '处理中...';
   }
@@ -940,6 +1293,15 @@ function documentChunkActionLabel(document) {
           <path d="M5 5.5A2.5 2.5 0 0 0 2.5 3H2v16h.5A2.5 2.5 0 0 1 5 21.5" />
           <path d="M9 8h7" />
           <path d="M9 12h6" />
+        </svg>
+      </button>
+      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'tasks' }" data-tooltip="失败任务" @click="navigateTo('/admin/tasks/failed')">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 5h16" />
+          <path d="M4 12h10" />
+          <path d="M4 19h7" />
+          <path d="M17 15l4 4" />
+          <path d="M21 15l-4 4" />
         </svg>
       </button>
       <button class="admin-rail-button admin-rail-bottom" type="button" data-tooltip="返回会话" @click="emit('back-to-chat')">
@@ -991,6 +1353,16 @@ function documentChunkActionLabel(document) {
           </svg>
           <span>知识库管理</span>
         </button>
+        <button type="button" :class="{ active: activeModule === 'tasks' }" @click="navigateTo('/admin/tasks/failed')">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 5h16" />
+            <path d="M4 12h10" />
+            <path d="M4 19h7" />
+            <path d="M17 15l4 4" />
+            <path d="M21 15l-4 4" />
+          </svg>
+          <span>失败任务</span>
+        </button>
       </nav>
 
       <button class="admin-back-button" type="button" @click="emit('back-to-chat')">
@@ -1024,6 +1396,13 @@ function documentChunkActionLabel(document) {
                 <path d="M4 12h10" />
                 <path d="M4 17h16" />
                 <path d="M17 10l3 2-3 2" />
+              </svg>
+              <svg v-else-if="currentHeader.icon === 'tasks'" viewBox="0 0 24 24">
+                <path d="M4 5h16" />
+                <path d="M4 12h10" />
+                <path d="M4 19h7" />
+                <path d="M17 15l4 4" />
+                <path d="M21 15l-4 4" />
               </svg>
               <svg v-else viewBox="0 0 24 24">
                 <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
@@ -1086,6 +1465,92 @@ function documentChunkActionLabel(document) {
             <small>RAG 检索链路完善后统计</small>
           </article>
         </div>
+      </section>
+
+      <section v-else-if="activeModule === 'tasks'" class="admin-section kc-content">
+        <div class="kc-metric-grid knowledge-metrics">
+          <article class="kc-metric-card icon-card danger">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5h16" />
+                <path d="M4 12h10" />
+                <path d="M4 19h7" />
+                <path d="M17 15l4 4" />
+                <path d="M21 15l-4 4" />
+              </svg>
+            </span>
+            <span>失败任务</span>
+            <strong>{{ isLoadingTasks ? '...' : metricText(failedTasks.length, '0') }}</strong>
+          </article>
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 6v6l4 2" />
+                <circle cx="12" cy="12" r="9" />
+              </svg>
+            </span>
+            <span>死信任务</span>
+            <strong>{{ failedTasks.filter((task) => task.status === 'DEAD').length }}</strong>
+          </article>
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 6v5h-5" />
+                <path d="M4 18v-5h5" />
+                <path d="M19 11a7 7 0 0 0-12.2-4.2L4 9" />
+                <path d="M5 13a7 7 0 0 0 12.2 4.2L20 15" />
+              </svg>
+            </span>
+            <span>可手动重试</span>
+            <strong>{{ failedTasks.filter((task) => task.status === 'FAILED').length }}</strong>
+          </article>
+        </div>
+
+        <section class="kc-table-card">
+          <div class="kc-card-toolbar">
+            <div>
+              <strong>失败任务列表</strong>
+              <small>共 {{ filteredFailedTasks.length }} 条</small>
+            </div>
+            <div class="kc-toolbar-actions">
+              <input v-model="taskKeyword" type="search" placeholder="搜索文档、任务或错误原因" />
+              <select v-model="taskStatusFilter">
+                <option value="ALL">全部状态</option>
+                <option value="FAILED">failed</option>
+                <option value="DEAD">dead</option>
+              </select>
+            </div>
+          </div>
+          <div class="kc-table-head task-grid">
+            <span>文档</span>
+            <span>动作</span>
+            <span>状态</span>
+            <span>重试</span>
+            <span>最近失败</span>
+            <span>操作</span>
+          </div>
+          <div class="kc-table-body">
+            <div v-for="task in filteredFailedTasks" :key="task.taskId" class="kc-table-row task-grid">
+              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, task.fileName)" @mouseleave="clearOverflowTooltip">
+                <span class="kc-tooltip-content">{{ task.fileName }}</span>
+              </span>
+              <span>{{ taskActionText(task.action) }}</span>
+              <span class="kc-status" :class="taskStatusClass(task.status)">{{ taskStatusText(task.status) }}</span>
+              <span>{{ task.retryCount }} / {{ task.maxRetries }}</span>
+              <span>{{ formatDate(task.lastFailedAt || task.updatedAt) }}</span>
+              <span class="kc-row-actions compact task-actions">
+                <button type="button" @click="detailTask = task">详情</button>
+                <button v-if="canRetryTask(task)" type="button" :disabled="retryingTaskId === task.taskId || deletingTaskId === task.taskId" @click="retryFailedTask(task)">
+                  {{ retryingTaskId === task.taskId ? '投递中' : '重试' }}
+                </button>
+                <button type="button" class="danger" :disabled="retryingTaskId === task.taskId || deletingTaskId === task.taskId" @click="deleteFailedTask(task)">
+                  {{ deletingTaskId === task.taskId ? '删除中' : '删除' }}
+                </button>
+              </span>
+            </div>
+          </div>
+          <p v-if="!isLoadingTasks && filteredFailedTasks.length === 0" class="kc-empty">当前没有失败入库任务。</p>
+        </section>
       </section>
 
       <section v-else class="admin-section kc-content">
@@ -1210,6 +1675,7 @@ function documentChunkActionLabel(document) {
                 <input v-model="documentKeyword" type="search" placeholder="搜索文档名称" />
                 <select v-model="documentStatusFilter">
                   <option value="ALL">全部状态</option>
+                  <option value="UPLOADING">uploading</option>
                   <option value="UPLOADED">uploaded</option>
                   <option value="COMPLETED">success</option>
                   <option value="PROCESSING">processing</option>
@@ -1231,6 +1697,7 @@ function documentChunkActionLabel(document) {
                 <button
                   type="button"
                   class="kc-link-cell kc-cell-tooltip"
+                  :disabled="!canOpenDocumentChunks(doc)"
                   @mouseenter="showOverflowTooltip($event, doc.fileName)"
                   @mouseleave="clearOverflowTooltip"
                   @click="openDocumentChunks(doc)"
@@ -1255,9 +1722,10 @@ function documentChunkActionLabel(document) {
                 </span>
                 <span class="kc-row-actions document-actions">
                   <button
+                    v-if="shouldShowDocumentChunkAction(doc)"
                     type="button"
                     :aria-label="documentChunkActionLabel(doc)"
-                    :disabled="doc.status === 'PROCESSING'"
+                    :disabled="!canRechunkDocument(doc)"
                     @click.stop="openRechunkModal(doc)"
                   >
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-9 9" /><path d="M3 12a9 9 0 0 1 9-9" /><path d="M21 3v6h-6" /><path d="M3 21v-6h6" /></svg>
@@ -1267,11 +1735,11 @@ function documentChunkActionLabel(document) {
                     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8h.01" /><path d="M11 12h1v4h1" /></svg>
                     <span>详情</span>
                   </button>
-                  <button type="button" aria-label="查看分块" :disabled="doc.chunkCount <= 0" @click="openDocumentChunks(doc)">
+                  <button v-if="!isFailedDocumentStatus(doc.status)" type="button" aria-label="查看分块" :disabled="!canViewDocumentChunks(doc)" @click="openDocumentChunks(doc)">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z" /><path d="M8 8h8" /><path d="M8 12h8" /><path d="M8 16h5" /></svg>
                     <span>查看分块</span>
                   </button>
-                  <button type="button" class="danger" aria-label="删除文档" @click="removeDocument(doc)">
+                  <button type="button" class="danger" aria-label="删除文档" :disabled="isBusyDocumentStatus(doc.status)" @click="removeDocument(doc)">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /></svg>
                     <span>删除</span>
                   </button>
@@ -1314,10 +1782,10 @@ function documentChunkActionLabel(document) {
                     <button type="button" :class="{ active: chunkStatusFilter === 'DISABLED' }" @click="setChunkStatus('DISABLED')">禁用</button>
                   </div>
                 </div>
-                <button type="button" class="kc-ghost-button" :disabled="selectedChunkIds.size === 0" @click="setSelectedChunksEnabled(true)">批量启用</button>
-                <button type="button" class="kc-ghost-button" :disabled="selectedChunkIds.size === 0" @click="setSelectedChunksEnabled(false)">批量禁用</button>
-                <button type="button" class="kc-ghost-button" @click="setAllChunksEnabled(true)">全量启用</button>
-                <button type="button" class="kc-ghost-button" @click="setAllChunksEnabled(false)">全量禁用</button>
+                <button type="button" class="kc-ghost-button" :disabled="selectedChunkIds.size === 0 || !canMutateSelectedChunks" @click="setSelectedChunksEnabled(true)">批量启用</button>
+                <button type="button" class="kc-ghost-button" :disabled="selectedChunkIds.size === 0 || !canMutateSelectedChunks" @click="setSelectedChunksEnabled(false)">批量禁用</button>
+                <button type="button" class="kc-ghost-button" :disabled="!canMutateSelectedChunks" @click="setAllChunksEnabled(true)">全量启用</button>
+                <button type="button" class="kc-ghost-button" :disabled="!canMutateSelectedChunks" @click="setAllChunksEnabled(false)">全量禁用</button>
               </div>
             </div>
             <div class="kc-table-head chunk-grid">
@@ -1336,9 +1804,9 @@ function documentChunkActionLabel(document) {
                 <span class="kc-row-actions compact">
                   <button type="button" @click="detailChunk = chunk">详情</button>
                   <button type="button" @click="viewingChunk = chunk">查看</button>
-                  <button type="button" @click="openEditChunkModal(chunk)">修改</button>
-                  <button type="button" @click="toggleChunk(chunk)">{{ chunk.enabled ? '禁用' : '启用' }}</button>
-                  <button type="button" class="danger" @click="removeChunk(chunk)">删除</button>
+                  <button type="button" :disabled="!canMutateSelectedChunks" @click="openEditChunkModal(chunk)">修改</button>
+                  <button type="button" :disabled="!canMutateSelectedChunks" @click="toggleChunk(chunk)">{{ chunk.enabled ? '禁用' : '启用' }}</button>
+                  <button type="button" class="danger" :disabled="!canMutateSelectedChunks" @click="removeChunk(chunk)">删除</button>
                 </span>
               </div>
             </div>
@@ -1633,6 +2101,90 @@ function documentChunkActionLabel(document) {
       </Transition>
     </Teleport>
 
+    <Teleport to="body">
+      <Transition name="delete-dialog">
+        <div
+          v-if="deleteTaskDialog.open"
+          class="delete-dialog-backdrop"
+          @click.self="closeDeleteTaskDialog"
+        >
+          <section
+            class="delete-dialog-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="task-delete-dialog-title"
+            aria-describedby="task-delete-dialog-description"
+          >
+            <button
+              type="button"
+              class="delete-dialog-close"
+              aria-label="关闭删除确认"
+              :disabled="Boolean(deletingTaskId)"
+              @click="closeDeleteTaskDialog"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6l12 12" />
+                <path d="M18 6L6 18" />
+              </svg>
+            </button>
+
+            <div class="delete-dialog-hero" aria-hidden="true">
+              <span class="delete-dialog-icon">
+                <svg viewBox="0 0 24 24">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4h8v2" />
+                  <path d="M19 6l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                  <path d="M10 11v6" />
+                  <path d="M14 11v6" />
+                </svg>
+              </span>
+            </div>
+
+            <div class="delete-dialog-copy">
+              <p class="delete-dialog-eyebrow">危险操作</p>
+              <h2 id="task-delete-dialog-title">删除这个失败任务？</h2>
+              <p id="task-delete-dialog-description">
+                这里只删除失败任务记录，不会删除原始文档和文档状态。
+              </p>
+            </div>
+
+            <div class="delete-dialog-target">
+              <span>将被删除</span>
+              <strong>{{ deleteTaskDialog.task?.fileName || '这个失败任务' }}</strong>
+            </div>
+
+            <p class="delete-dialog-warning">
+              删除后后台失败任务列表不再展示这条记录，文档仍可在文档管理中查看。
+            </p>
+
+            <p v-if="deleteTaskError" class="delete-dialog-error">
+              {{ deleteTaskError }}
+            </p>
+
+            <div class="delete-dialog-actions">
+              <button
+                type="button"
+                class="delete-dialog-secondary"
+                :disabled="Boolean(deletingTaskId)"
+                autofocus
+                @click="closeDeleteTaskDialog"
+              >
+                先留着
+              </button>
+              <button
+                type="button"
+                class="delete-dialog-danger"
+                :disabled="Boolean(deletingTaskId)"
+                @click="confirmDeleteTask"
+              >
+                {{ deletingTaskId ? '删除中...' : '删除任务' }}
+              </button>
+            </div>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
+
     <div v-if="isEditModalOpen" class="kc-modal-backdrop" @click.self="isEditModalOpen = false">
       <section class="kc-modal">
         <header>
@@ -1680,14 +2232,35 @@ function documentChunkActionLabel(document) {
       </section>
     </div>
 
-    <div v-if="isIngestionModalOpen" class="kc-modal-backdrop" @click.self="isIngestionModalOpen = false">
+    <div v-if="detailTask" class="kc-modal-backdrop" @click.self="detailTask = null">
+      <section class="kc-modal wide">
+        <header>
+          <div>
+            <h2>失败任务详情</h2>
+            <p>{{ detailTask.fileName }}</p>
+          </div>
+          <button type="button" class="kc-icon-button" aria-label="关闭" @click="detailTask = null">×</button>
+        </header>
+        <div class="kc-detail-grid task-detail-grid">
+          <template v-for="row in taskDetailRows(detailTask)" :key="row[0]">
+            <span>{{ row[0] }}</span>
+            <strong class="kc-detail-value">{{ row[1] }}</strong>
+          </template>
+        </div>
+        <footer>
+          <button type="button" class="kc-ghost-button" @click="detailTask = null">关闭</button>
+        </footer>
+      </section>
+    </div>
+
+    <div v-if="isIngestionModalOpen" class="kc-modal-backdrop" @click.self="closeIngestionModal">
       <section class="kc-modal wide">
         <header>
           <div>
             <h2>上传文档</h2>
             <p>{{ selectedKnowledgeBase?.name }}</p>
           </div>
-          <button type="button" class="kc-icon-button" aria-label="关闭" @click="isIngestionModalOpen = false">×</button>
+          <button type="button" class="kc-icon-button" aria-label="关闭" @click="closeIngestionModal">×</button>
         </header>
         <form class="kc-form grid" @submit.prevent="submitIngestion">
           <p v-if="ingestionFormError" class="kc-form-error full">{{ ingestionFormError }}</p>
@@ -1728,7 +2301,7 @@ function documentChunkActionLabel(document) {
             </label>
           </template>
           <footer>
-            <button type="button" class="kc-ghost-button" @click="isIngestionModalOpen = false">取消</button>
+            <button type="button" class="kc-ghost-button" @click="closeIngestionModal">取消</button>
             <button type="submit" class="kc-primary-button" :disabled="!canIngest">
               {{ isIngesting ? '上传中...' : '上传到 RustFS' }}
             </button>
@@ -1905,5 +2478,15 @@ function documentChunkActionLabel(document) {
         </footer>
       </section>
     </div>
+    <Teleport to="body">
+      <div
+        v-if="floatingTooltip.visible"
+        class="kc-floating-tooltip"
+        :class="floatingTooltip.placement"
+        :style="{ left: `${floatingTooltip.left}px`, top: `${floatingTooltip.top}px` }"
+      >
+        {{ floatingTooltip.text }}
+      </div>
+    </Teleport>
   </main>
 </template>

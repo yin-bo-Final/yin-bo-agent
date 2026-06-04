@@ -65,12 +65,14 @@ public class ResourceConcurrencyGlobalFilter implements GlobalFilter, Ordered {
                 .flatMap(permit -> Mono.usingWhen(
                         Mono.just(permit),
                         ignored -> chain.filter(exchange)
-                                .doFinally(signalType -> logCompleted(exchange, resourceLimit, startedAt, signalType)),
+                                .doFinally(signalType -> logCompleted(exchange, resourceLimit, startedAt, signalType))
+                                .thenReturn(Boolean.TRUE),
                         redisSemaphoreService::release,
                         (ignored, throwable) -> redisSemaphoreService.release(permit),
                         redisSemaphoreService::release
                 ))
-                .switchIfEmpty(Mono.defer(() -> writeLimitedResponse(exchange, resourceLimit)))
+                .switchIfEmpty(Mono.defer(() -> writeLimitedResponse(exchange, resourceLimit).thenReturn(Boolean.FALSE)))
+                .then()
                 .onErrorResume(
                         ResourceConcurrencyUnavailableException.class,
                         exception -> writeUnavailableResponse(exchange, resourceLimit, exception.getCause())

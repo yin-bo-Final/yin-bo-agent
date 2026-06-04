@@ -43,6 +43,9 @@ public class GatewayErrorResponseWriter {
             HttpStatus status,
             String message
     ) {
+        if (response.isCommitted()) {
+            return Mono.empty();
+        }
         ServerHttpRequest request = exchange.getRequest();
         String requestId = requestId(request);
         byte[] body = serializeBody(Map.of(

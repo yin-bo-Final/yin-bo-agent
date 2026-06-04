@@ -5,6 +5,7 @@ import org.slf4j.MDC;
 // 文档入库 RocketMQ 任务消息。
 public record IngestionTaskMessage(
         String action,
+        String taskId,
         String documentId,
         String strategy,
         Integer chunkSize,
@@ -26,6 +27,7 @@ public record IngestionTaskMessage(
     ) {
         return new IngestionTaskMessage(
                 ACTION_CHUNK,
+                null,
                 documentId,
                 strategy,
                 chunkSize,
@@ -39,6 +41,7 @@ public record IngestionTaskMessage(
     public static IngestionTaskMessage rebuildVectors(String documentId) {
         return new IngestionTaskMessage(
                 ACTION_REBUILD_VECTORS,
+                null,
                 documentId,
                 null,
                 null,
