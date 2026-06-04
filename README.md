@@ -13,8 +13,8 @@
 | Web    | Spring Web、Validation、Actuator                                     |
 | 数据库    | PostgreSQL、pgvector、Flyway、MyBatis-Plus、Spring JDBC                |
 | 登录态    | Session、Spring Session Data Redis、Redis、BCrypt                     |
-| AI     | Spring AI 1.1.6、OpenAI Compatible ChatModel、EmbeddingModel         |
-| RAG    | Apache Tika、Spring AI PGVector Store、Qwen3 Embedding / Reranker 配置 |
+| AI     | 独立 ai-infra 服务、ai-api 契约、OpenAI 兼容 HTTP 调用、模型路由、熔断和故障转移 |
+| RAG    | Apache Tika、pgvector、Qwen3 Embedding / Reranker 配置 |
 | 异步     | RocketMQ Spring Boot Starter                                       |
 | 文件存储   | RustFS，使用 MinIO Java SDK 访问 S3 兼容接口                                |
 | 前端     | Vue 3、Vite、marked、DOMPurify                                        |
@@ -31,7 +31,7 @@ Vue 3 前端
       -> Redis 保存 Session 登录态、gateway 上传并发信号量和 service 兜底信号量
       -> RustFS 保存上传原始文件
       -> RocketMQ 承载异步 ingestion 任务
-      -> Spring AI 调用聊天模型和 Embedding 模型
+      -> HTTP 调用 ai-infra 路由 Chat / Embedding / Rerank 模型
       -> Apache Tika 解析 PDF / Word / Markdown / TXT
 ```
 
@@ -80,7 +80,8 @@ RAG 文档入库链路：
 
 ### AI 对话
 
-- 前端模型选择
+- 前端 Chat 模型选择
+- Chat / Embedding / Rerank 模型由 ai-infra 的 `app.ai` 配置驱动，支持供应商、候选模型、优先级、熔断和故障转移
 - 普通响应和 SSE 流式响应
 - 会话列表、搜索、置顶、取消置顶、删除
 - 刷新后通过 `/c/{conversationId}` 恢复会话
@@ -127,6 +128,13 @@ RAG 文档入库链路：
 
 ```text
 SpringAI-Program/
+├─ ai-api/                          # backend 和 ai-infra 共享的 HTTP 契约
+│  └─ src/main/java/com/yinbo/ai/api/
+├─ ai-infra/                        # 独立 AI 基础设施服务
+│  ├─ pom.xml
+│  └─ src/main/
+│     ├─ java/com/yinbo/ai/infra/   # 模型路由、熔断和供应商客户端
+│     └─ resources/application.yml
 ├─ backend/                         # Spring Boot 后端模块
 │  ├─ pom.xml
 │  └─ src/main/
@@ -135,8 +143,9 @@ SpringAI-Program/
 │     │  ├─ auth/                   # 登录、注册、Session、角色
 │     │  ├─ chat/                   # 聊天、会话、消息统计
 │     │  ├─ common/                 # 业务异常和统一错误响应
-│     │  ├─ config/                 # Web、RAG、PGVector、对象存储配置
+│     │  ├─ config/                 # Web、RAG、ai-infra、对象存储配置
 │     │  ├─ ingestion/              # 文档 ETL 和 RocketMQ 消费
+│     │  ├─ infra/                  # ai-infra 等远程基础设施客户端
 │     │  ├─ knowledge/              # 知识库后台管理
 │     │  ├─ storage/                # RustFS / S3 对象存储封装
 │     │  └─ YinboAgentServiceApplication.java
@@ -171,6 +180,7 @@ SpringAI-Program/
 ├─ codex.md                         # 给 AI / Codex 阅读的协作规则和提示词
 ├─ docs/
 │  ├─ gateway-structure.md          # 网关模块边界和路由
+│  ├─ ai-infra-structure.md         # AI 基础设施服务和 HTTP 契约
 │  ├─ backend-structure.md          # 后端模块边界
 │  ├─ frontend-structure.md         # 前端模块边界
 │  └─ frontend-style-guide.md       # 前端样式约定
@@ -179,11 +189,17 @@ SpringAI-Program/
 └─ pom.xml                          # Maven 聚合工程
 ```
 
-整体结构导航见 [project-structure.md](project-structure.md)。AI / Codex 协作规则见 [codex.md](codex.md)。网关模块说明见 [docs/gateway-structure.md](docs/gateway-structure.md)，后端模块说明见 [docs/backend-structure.md](docs/backend-structure.md)，前端模块说明见 [docs/frontend-structure.md](docs/frontend-structure.md)。前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
+整体结构导航见 [project-structure.md](project-structure.md)。
+AI / Codex 协作规则见 [codex.md](codex.md)。
+网关模块说明见 [docs/gateway-structure.md](docs/gateway-structure.md)，
+AI 基础设施说明见 [docs/ai-infra-structure.md](docs/ai-infra-structure.md)，
+后端模块说明见 [docs/backend-structure.md](docs/backend-structure.md)，
+前端模块说明见 [docs/frontend-structure.md](docs/frontend-structure.md)。
+前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
 ## 本地配置
 
-`backend/src/main/resources/application.yml` 和 `gateway/src/main/resources/application.yml` 都会加载根目录或模块上级目录的 `local-secrets.yml`：
+`ai-infra`、`backend` 和 `gateway` 的 `application.yml` 都会加载根目录或模块上级目录的 `local-secrets.yml`：
 
 ```yml
 spring:
@@ -211,7 +227,8 @@ POSTGRES_URL: jdbc:postgresql://localhost:5432/yinbo_agent
 REDIS_HOST: localhost
 REDIS_PORT: 6379
 OPENAI_BASE_URL: https://api.siliconflow.cn
-OPENAI_CHAT_MODEL: deepseek-ai/DeepSeek-V4-Flash
+AI_CHAT_DEFAULT_MODEL: deepseek-ai/DeepSeek-V4-Flash
+AI_EMBEDDING_DEFAULT_MODEL: qwen-emb-8b
 OPENAI_EMBEDDING_MODEL: Qwen/Qwen3-Embedding-8B
 RAG_EMBEDDING_DIMENSIONS: 1024
 RAG_VECTOR_INDEX_TYPE: HNSW
@@ -220,6 +237,9 @@ ROCKETMQ_NAME_SERVER: localhost:9876
 RUSTFS_ENDPOINT: http://localhost:9000
 RUSTFS_BUCKET: yinbo-agent-documents
 YINBO_AGENT_SERVICE_URI: http://localhost:8080
+YINBO_AI_INFRA_URI: http://localhost:8082
+AI_INFRA_REQUEST_TIMEOUT: 5m
+GATEWAY_INTERNAL_TOKEN: replace-with-a-dev-internal-token
 APP_SLOW_REQUEST_THRESHOLD_MS: 3000
 UPLOAD_GATEWAY_MAX_CONCURRENCY: 10
 UPLOAD_GATEWAY_CONCURRENCY_LEASE_TTL: 10m
@@ -258,6 +278,19 @@ PostgreSQL 需要安装 pgvector 扩展。应用启动时由 Flyway 执行 `CREA
 
 ## 启动方式
 
+### AI 基础设施服务
+
+```powershell
+cd ai-infra
+mvn spring-boot:run
+```
+
+AI 基础设施服务默认地址：
+
+```text
+http://localhost:8082
+```
+
 ### 后端业务服务
 
 ```powershell
@@ -270,7 +303,9 @@ mvn spring-boot:run
 ```powershell
 $env:JAVA_HOME="C:\Users\35575\.jdks\ms-17.0.17"
 $env:Path="$env:JAVA_HOME\bin;$env:Path"
-cd backend
+cd ai-infra
+mvn spring-boot:run
+cd ../backend
 mvn spring-boot:run
 ```
 
@@ -293,7 +328,7 @@ mvn spring-boot:run
 http://localhost:8081
 ```
 
-网关默认把 `/api/**` 转发到 `YINBO_AGENT_SERVICE_URI`，本地默认是 `http://localhost:8080`。
+网关默认把 `/api/**` 转发到 `YINBO_AGENT_SERVICE_URI`，本地默认是 `http://localhost:8080`；`/internal/ai/**` 转发到 `YINBO_AI_INFRA_URI`，本地默认是 `http://localhost:8082`，并要求请求携带匹配 `GATEWAY_INTERNAL_TOKEN` 的 `X-Internal-Token`。backend 自身默认通过 `YINBO_AI_INFRA_URI` 直接调用 ai-infra。
 
 ### 前端
 
@@ -372,7 +407,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 | `knowledge_base` | 知识库、Embedding 模型、collection |
 | `knowledge_document` | 文档元数据、RustFS 对象信息、状态、耗时 |
 | `knowledge_chunk` | 分块内容、启用状态、token 数、字符数、向量文档 ID |
-| `knowledge_chunk_vector` | Spring AI PGVector Store 管理的向量表 |
+| `knowledge_chunk_vector` | pgvector 向量表，由 ingestion 事务直接写入 |
 | `ingestion_task` | 文档分块 / 重建向量任务状态、重试次数、失败原因和 MQ messageId |
 
 ## 开发约定
@@ -386,6 +421,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 - 日志按“日期 + 大小”滚动：单文件最大 `20MB`，保留 `14` 天，总日志体积上限 `1GB`，历史文件会压缩为 `.gz`。
 - Actuator 默认只启用并暴露 `health` 和 `info`，不暴露 gateway 路由、env、configprops 等内部信息。
 - 关键业务日志使用 `event=...`：登录注册、知识库变更、文档上传、AI 调用、RocketMQ 投递消费、ingestion 完成或失败都会有明确事件。
+- 模型调用不要散落在业务 Service 中，backend 只通过 `AiInfraClient` 调 ai-infra；HTTP 契约放在 `ai-api`，模型供应商实现只放在 `ai-infra`。
 - 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本。
 - 上传文件大小默认限制为单文件 `200MB`；gateway 会先拦截超过 `200MB` 的上传请求，service multipart 和前端 Nginx 单请求默认上限为 `220MB`。

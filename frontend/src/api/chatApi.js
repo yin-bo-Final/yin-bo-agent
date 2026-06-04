@@ -62,6 +62,8 @@ export async function streamChatMessage(payload, handlers = {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
+  let completed = false;
+  let streamError = '';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -72,13 +74,32 @@ export async function streamChatMessage(payload, handlers = {}) {
     buffer += decoder.decode(value, { stream: true });
     const events = buffer.split(/\r?\n\r?\n/);
     buffer = events.pop() || '';
-    events.forEach((rawEvent) => handleSseEvent(rawEvent, handlers));
+    events.forEach((rawEvent) => {
+      const event = handleSseEvent(rawEvent, handlers);
+      if (event?.type === 'done') {
+        completed = true;
+      }
+      if (event?.type === 'error') {
+        streamError = event.error || '流式响应失败了，请稍后重试。';
+      }
+    });
   }
 
   buffer += decoder.decode();
   if (buffer.trim()) {
-    handleSseEvent(buffer, handlers);
+    const event = handleSseEvent(buffer, handlers);
+    if (event?.type === 'done') {
+      completed = true;
+    }
+    if (event?.type === 'error') {
+      streamError = event.error || '流式响应失败了，请稍后重试。';
+    }
   }
+
+  return {
+    completed,
+    error: streamError
+  };
 }
 
 function handleSseEvent(rawEvent, handlers) {
@@ -88,31 +109,33 @@ function handleSseEvent(rawEvent, handlers) {
     .map((line) => line.slice(5).trimStart());
 
   if (dataLines.length === 0) {
-    return;
+    return null;
   }
 
   let event;
   try {
     event = JSON.parse(dataLines.join('\n'));
   } catch (_error) {
-    return;
+    return null;
   }
 
   if (event.type === 'start') {
     handlers.onStart?.(event);
-    return;
+    return event;
   }
   if (event.type === 'delta') {
     handlers.onDelta?.(event);
-    return;
+    return event;
   }
   if (event.type === 'done') {
     handlers.onDone?.(event);
-    return;
+    return event;
   }
   if (event.type === 'error') {
     handlers.onError?.(event);
+    return event;
   }
+  return event;
 }
 
 export async function fetchConversations() {

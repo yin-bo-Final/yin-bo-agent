@@ -7,6 +7,7 @@
 | 文档                                                           | 用途                                    |
 | ------------------------------------------------------------ | ------------------------------------- |
 | [docs/gateway-structure.md](docs/gateway-structure.md)       | 网关模块、路由转发、真实 IP、限流、并发控制和统一错误响应          |
+| [docs/ai-infra-structure.md](docs/ai-infra-structure.md)     | AI 基础设施服务、模型路由、供应商客户端和 HTTP 契约       |
 | [docs/backend-structure.md](docs/backend-structure.md)       | 后端包结构、RAG ingestion、Flyway、数据表和常见改动入口 |
 | [docs/frontend-structure.md](docs/frontend-structure.md)     | 前端页面结构、API 封装、后台管理 UI 和路由状态           |
 | [docs/frontend-style-guide.md](docs/frontend-style-guide.md) | 前端视觉风格、按钮、弹窗、下拉栏、tooltip 等样式约定        |
@@ -16,6 +17,8 @@
 
 ```text
 SpringAI-Program/
+├─ ai-api/                          # AI 基础设施 HTTP 契约 DTO
+├─ ai-infra/                        # 独立 AI 基础设施服务
 ├─ backend/                         # Spring Boot 后端
 ├─ gateway/                         # Spring Cloud Gateway 网关
 ├─ frontend/                        # Vue 3 前端
@@ -24,11 +27,11 @@ SpringAI-Program/
 ├─ project-structure.md             # 项目结构总览和文档导航
 ├─ local-secrets.example.yml        # 本地私密配置模板
 ├─ local-secrets.yml                # 本地私密配置，不提交
-├─ pom.xml                          # Maven 聚合工程，目前聚合 backend 和 gateway
+├─ pom.xml                          # Maven 聚合工程，目前聚合 ai-api、ai-infra、backend 和 gateway
 └─ README.md                        # 项目入口文档
 ```
 
-当前工程采用“前端单页 + 独立网关 + 后端模块化包 + 中间件外置”的结构。`gateway` 是统一入口，`backend` 是业务服务。后端目前按业务边界拆包，等功能继续变大后，再考虑继续拆出更多 Maven 模块或服务，例如 `auth`、`chat`、`rag`、`knowledge`、`ingestion`、`mcp`。
+当前工程采用“前端单页 + 独立网关 + backend 业务服务 + ai-infra 模型基础设施服务 + 中间件外置”的结构。`gateway` 是统一入口，`backend` 负责业务和数据事务，`ai-infra` 负责模型供应商、路由、熔断和故障转移，`ai-api` 保存二者之间的 HTTP 契约。
 
 ## 系统分层
 
@@ -41,7 +44,8 @@ Vue 3 前端
       -> Redis 保存 Session 登录态、gateway 上传并发信号量和 service 兜底信号量
       -> RustFS 保存上传原始文件
       -> RocketMQ 承载异步 ingestion 任务
-      -> Spring AI 调用聊天模型和 Embedding 模型
+      -> HTTP 调用 ai-infra
+        -> 路由 Chat / Embedding / Rerank 模型
       -> Apache Tika 解析 PDF / Word / Markdown / TXT
 ```
 
@@ -55,7 +59,9 @@ ConversationPage
 -> LoginInterceptor
 -> ChatController
 -> ChatService
--> Spring AI ChatModel
+-> AiInfraClient
+-> ai-infra /internal/ai/chat 或 /internal/ai/chat/stream
+-> ModelSelector / ModelRoutingExecutor / 供应商 ChatClient
 -> 保存消息、响应耗时和 token
 ```
 
@@ -69,7 +75,7 @@ ConversationPage
 -> RocketMQ 投递 CHUNK 任务
 -> Tika 解析纯文本
 -> 文本清洗和分块
--> Embedding 向量化
+-> AiInfraClient 调用 ai-infra /internal/ai/embeddings
 -> pgvector 保存向量
 -> knowledge_chunk 保存分块元数据
 -> knowledge_document.status = COMPLETED / FAILED
@@ -95,7 +101,7 @@ ConversationPage
 | `knowledge_base`         | `knowledge`               | 知识库名称、collection、Embedding 模型 |
 | `knowledge_document`     | `ingestion` / `knowledge` | 文档元数据、RustFS 对象信息、状态、耗时       |
 | `knowledge_chunk`        | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数、向量 ID     |
-| `knowledge_chunk_vector` | Spring AI PGVector        | 向量存储表                         |
+| `knowledge_chunk_vector` | `ingestion`              | pgvector 向量存储表                 |
 | `ingestion_task`         | `ingestion`               | 分块 / 重建向量任务状态、重试次数和失败原因       |
 
 数据库结构由 Flyway 接管，迁移脚本位于 `backend/src/main/resources/db/migration`。不要恢复旧的 `schema.sql`。
@@ -105,6 +111,7 @@ ConversationPage
 | 任务 | 先读 |
 | --- | --- |
 | 网关路由、统一入口、真实 IP、限流、鉴权前置 | [docs/gateway-structure.md](docs/gateway-structure.md) |
+| 模型路由、供应商接入、AI HTTP 契约 | [docs/ai-infra-structure.md](docs/ai-infra-structure.md) |
 | 后端接口、数据库、RAG、RocketMQ、RustFS | [docs/backend-structure.md](docs/backend-structure.md) |
 | 前端页面、后台管理、会话 UI | [docs/frontend-structure.md](docs/frontend-structure.md) |
 | 只改样式 | [docs/frontend-style-guide.md](docs/frontend-style-guide.md) |
@@ -112,13 +119,15 @@ ConversationPage
 
 ## 工程约定
 
-- 网关包名根路径是 `com.yinbo.gateway`，后端业务服务包名根路径是 `com.yinbo.agent`。
+- 网关包名根路径是 `com.yinbo.gateway`，后端业务服务包名根路径是 `com.yinbo.agent`，AI 基础设施服务包名根路径是 `com.yinbo.ai.infra`。
 - 前端 `/api` 请求默认先进入 gateway，再由 gateway 转发到后端业务服务。
+- backend 通过 `AiInfraClient` 远程调用 ai-infra，HTTP 契约放在 `ai-api`，不要让 backend 反向依赖 ai-infra 实现类。
 - 后台接口路径统一放在 `/api/admin/**`。
 - 业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本。
 - 原始文件进入 RustFS，数据库保存对象定位信息。
 - 向量在 pgvector，由 `vectorDocumentId` 关联业务分块。
+- 模型调用统一走独立 `ai-infra` 服务，Chat / Embedding / Rerank 供应商配置只放在 ai-infra。
 - 上传完成后保持 `UPLOADED`，管理员点击分块才投递 RocketMQ 并进入 `PROCESSING`。
 - RocketMQ 当前负责分块和重建向量异步化，消费者通过 Redis 信号量限制全系统处理并发。
 - 入库任务状态记录在 `ingestion_task`，后台通过 `/admin/tasks/failed` 查看失败任务并手动重试。

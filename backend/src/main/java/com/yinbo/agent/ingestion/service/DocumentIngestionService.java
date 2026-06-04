@@ -2,6 +2,7 @@ package com.yinbo.agent.ingestion.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yinbo.agent.auth.entity.AuthUser;
+import com.yinbo.ai.api.embedding.EmbeddingService;
 import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.common.service.RedisSemaphoreService;
 import com.yinbo.agent.config.ConcurrencyLimitProperties;
@@ -37,7 +38,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Supplier;
-import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,7 +60,7 @@ public class DocumentIngestionService {
     private final RagProperties ragProperties;
     private final ConcurrencyLimitProperties concurrencyLimitProperties;
     private final RedisSemaphoreService redisSemaphoreService;
-    private final EmbeddingModel embeddingModel;
+    private final EmbeddingService embeddingService;
     private final PgVectorRepository pgVectorRepository;
     private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
@@ -78,7 +78,7 @@ public class DocumentIngestionService {
             RagProperties ragProperties,
             ConcurrencyLimitProperties concurrencyLimitProperties,
             RedisSemaphoreService redisSemaphoreService,
-            EmbeddingModel embeddingModel,
+            EmbeddingService embeddingService,
             PgVectorRepository pgVectorRepository,
             KnowledgeBaseMapper knowledgeBaseMapper,
             KnowledgeDocumentMapper knowledgeDocumentMapper,
@@ -94,7 +94,7 @@ public class DocumentIngestionService {
         this.ragProperties = ragProperties;
         this.concurrencyLimitProperties = concurrencyLimitProperties;
         this.redisSemaphoreService = redisSemaphoreService;
-        this.embeddingModel = embeddingModel;
+        this.embeddingService = embeddingService;
         this.pgVectorRepository = pgVectorRepository;
         this.knowledgeBaseMapper = knowledgeBaseMapper;
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
@@ -607,7 +607,7 @@ public class DocumentIngestionService {
             return List.of();
         }
         try {
-            List<float[]> embeddings = embeddingModel.embed(texts);
+            List<float[]> embeddings = embeddingService.embedBatch(texts, ragProperties.embeddingModel());
             if (embeddings.size() != texts.size()) {
                 throw new BusinessException(HttpStatus.BAD_GATEWAY, "Embedding 返回数量和分块数量不一致");
             }

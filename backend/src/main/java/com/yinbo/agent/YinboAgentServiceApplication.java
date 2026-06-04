@@ -1,6 +1,6 @@
 package com.yinbo.agent;
 
-import com.yinbo.agent.config.AiModelProperties;
+import com.yinbo.agent.config.AiInfraProperties;
 import com.yinbo.agent.config.AuthProperties;
 import com.yinbo.agent.config.ConcurrencyLimitProperties;
 import com.yinbo.agent.config.ObjectStorageProperties;
@@ -12,7 +12,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 
 @SpringBootApplication
 @EnableConfigurationProperties({
-        AiModelProperties.class,
+        AiInfraProperties.class,
         AuthProperties.class,
         ConcurrencyLimitProperties.class,
         ObjectStorageProperties.class,

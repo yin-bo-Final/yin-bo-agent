@@ -292,7 +292,7 @@ onMounted(async () => {
       selectedModelId.value = matchedModel?.id || models.value[0]?.id || fallbackModels[0].id;
     }
   } catch (error) {
-    loadError.value = '后端未启动时会使用前端内置模型列表。';
+    loadError.value = '模型服务暂不可用，当前会使用前端内置模型列表。';
   }
 });
 
@@ -363,7 +363,7 @@ async function submitMessage() {
       messages: requestMessages
     };
 
-    await streamChatMessage(payload, {
+    const streamResult = await streamChatMessage(payload, {
       signal: streamController.signal,
       onStart(event) {
         if (event.conversationId) {
@@ -386,6 +386,14 @@ async function submitMessage() {
         streamAnimator.replace(event.error || '流式响应失败了，请稍后重试。');
       }
     });
+    if (streamResult?.error) {
+      conversationError.value = streamResult.error;
+    }
+    if (streamResult && streamResult.completed === false && !streamResult.error) {
+      const interruptedMessage = '流式响应中断了，请重新发起对话。';
+      streamAnimator.replace(interruptedMessage);
+      conversationError.value = interruptedMessage;
+    }
     await streamAnimator.finish();
     finishThinkDuration(assistantMessage);
     assistantMessage.isStreaming = false;

@@ -55,6 +55,7 @@ PostgreSQL、Redis、RocketMQ、RustFS 都部署在 WSL 里的 Docker 中，并�
 常用地址：
 Gateway: localhost:8081
 后端业务服务: localhost:8080
+AI 基础设施服务: localhost:8082
 PostgreSQL: localhost:5432
 Redis: localhost:6379
 RocketMQ NameServer: localhost:9876
@@ -71,8 +72,6 @@ RustFS、RocketMQ、数据库、Redis、模型 API Key 都优先从 local-secret
 ## 开发和命令习惯
 
 ```text
-不使用 rg 命令，搜索文件和文本时使用 PowerShell 的 Get-ChildItem / Select-String。
-
 前端：
 不要每次小改动都运行 npm run build 或 npm run dev。
 只有在用户要求、改动风险较高、或确实需要浏览器验证时再运行。
@@ -80,6 +79,10 @@ RustFS、RocketMQ、数据库、Redis、模型 API Key 都优先从 local-secret
 后端：
 涉及 Java / Spring 配置 / 依赖 / Flyway 迁移时，可以运行：
 mvn -pl backend -am -DskipTests compile
+
+AI 基础设施：
+涉及模型路由、供应商客户端、Chat / Embedding / Rerank 契约时，可以运行：
+mvn -pl ai-infra -am -DskipTests compile
 
 网关：
 涉及 gateway / Spring Cloud Gateway / 路由配置时，可以运行：
@@ -166,6 +169,8 @@ server:
 - 涉及错误响应、限流、并发、链路追踪、日志时，可以给出必要示例，但不要把常见排查、服务命名、启动方式写进结构文档，除非用户明确要求。
 - 文档内容要贴近当前代码，不要写未来规划当成已经实现的功能。
 - 更新 docs 目录下的模块文档后，如果文档导航、目录结构、启动方式、模块职责或对外入口发生变化，必须同步检查并按需更新根目录 README.md 和 project-structure.md。
+- backend 不直接接模型供应商；模型路由、供应商客户端、熔断和故障转移放在 ai-infra，backend 通过 AiInfraClient 远程调用。
+- backend 和 ai-infra 的共享契约放在 ai-api；不要让 ai-api 依赖 backend 实体或 ai-infra 实现类。
 
 更新 gateway 文档时，优先使用 docs/gateway-structure.md 的结构：
 1. 模块定位。

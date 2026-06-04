@@ -50,6 +50,8 @@
     </dependencyManagement>
 
     <modules>
+        <module>ai-api</module>
+        <module>ai-infra</module>
         <module>backend</module>
         <module>gateway</module>
     </modules>

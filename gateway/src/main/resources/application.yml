@@ -131,6 +131,11 @@ spring:
                     redis-rate-limiter.requestedTokens: 60
             # 功能：通用业务路由。
             # 说明：没有命中特殊限流路由的 /api/** 请求都会转发到后端 service。
+            - id: yinbo-ai-infra-internal
+              order: 90
+              uri: ${YINBO_AI_INFRA_URI:http://localhost:8082}
+              predicates:
+                - Path=/internal/ai/**
             - id: yinbo-agent-service-api
               order: 100
               uri: ${YINBO_AGENT_SERVICE_URI:http://localhost:8080}
@@ -179,6 +184,8 @@ app:
   # 说明：只有直接来源 IP 命中这些网段时，才会读取 X-Forwarded-For / X-Real-IP。
   gateway:
     trusted-proxies: ${GATEWAY_TRUSTED_PROXIES:127.0.0.1/32,::1/128,172.16.0.0/12}
+    internal:
+      token: ${GATEWAY_INTERNAL_TOKEN:}
     request-size:
       upload-max-size: ${UPLOAD_GATEWAY_MAX_BODY_SIZE:200MB}
   # 功能：配置 gateway 层并发限流。

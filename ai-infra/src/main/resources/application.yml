@@ -1,0 +1,143 @@
+server:
+  port: 8082
+
+spring:
+  config:
+    import: optional:file:./local-secrets.yml,optional:file:../local-secrets.yml
+  application:
+    name: yinbo-ai-infra
+
+management:
+  endpoints:
+    access:
+      default: none
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      access: read-only
+      show-details: never
+      show-components: never
+    info:
+      access: read-only
+    env:
+      show-values: never
+    configprops:
+      show-values: never
+
+logging:
+  file:
+    name: .logs/ai-infra.log
+  logback:
+    rollingpolicy:
+      file-name-pattern: .logs/ai-infra.%d{yyyy-MM-dd}.%i.log.gz
+      max-file-size: 20MB
+      max-history: 14
+      total-size-cap: 1GB
+      clean-history-on-start: false
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] app=${spring.application.name} requestId=%X{requestId:-} logger=%logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] app=${spring.application.name} requestId=%X{requestId:-} logger=%logger{36} - %msg%n"
+
+app:
+  ai:
+    providers:
+      siliconflow:
+        url: ${SILICONFLOW_BASE_URL:${OPENAI_BASE_URL:https://api.siliconflow.cn}}
+        api-key: ${SILICONFLOW_API_KEY:${OPENAI_API_KEY:}}
+        endpoints:
+          chat: /v1/chat/completions
+          embedding: /v1/embeddings
+      bailian:
+        url: ${BAILIAN_BASE_URL:https://dashscope.aliyuncs.com}
+        api-key: ${BAILIAN_API_KEY:}
+        endpoints:
+          chat: /compatible-mode/v1/chat/completions
+          rerank: /api/v1/services/rerank/text-rerank/text-rerank
+      ollama:
+        url: ${OLLAMA_BASE_URL:http://localhost:11434}
+        endpoints:
+          chat: /v1/chat/completions
+      noop:
+        url: noop://local
+        endpoints: {}
+    selection:
+      failure-threshold: ${AI_MODEL_FAILURE_THRESHOLD:2}
+      open-duration-ms: ${AI_MODEL_OPEN_DURATION_MS:30000}
+    stream:
+      message-chunk-size: ${AI_STREAM_MESSAGE_CHUNK_SIZE:1}
+    chat:
+      default-model: ${AI_CHAT_DEFAULT_MODEL:deepseek-ai/DeepSeek-V4-Flash}
+      deep-thinking-model: ${AI_CHAT_DEEP_THINKING_MODEL:}
+      candidates:
+        - id: deepseek-ai/DeepSeek-V4-Flash
+          name: DeepSeek V4 Flash
+          provider: siliconflow
+          model: deepseek-ai/DeepSeek-V4-Flash
+          priority: 0
+          enabled: true
+        - id: Pro/moonshotai/Kimi-K2.6
+          name: Kimi K2.6 Pro
+          provider: siliconflow
+          model: Pro/moonshotai/Kimi-K2.6
+          priority: 1
+          enabled: true
+        - id: Pro/zai-org/GLM-5.1
+          name: GLM 5.1 Pro
+          provider: siliconflow
+          model: Pro/zai-org/GLM-5.1
+          priority: 2
+          enabled: true
+        - id: Pro/MiniMaxAI/MiniMax-M2.5
+          name: MiniMax M2.5 Pro
+          provider: siliconflow
+          model: Pro/MiniMaxAI/MiniMax-M2.5
+          priority: 3
+          enabled: true
+        - id: Qwen/Qwen3.6-27B
+          name: Qwen3.6 27B
+          provider: siliconflow
+          model: Qwen/Qwen3.6-27B
+          priority: 4
+          enabled: true
+    embedding:
+      default-model: ${AI_EMBEDDING_DEFAULT_MODEL:qwen-emb-8b}
+      candidates:
+        - id: qwen-emb-8b
+          name: Qwen3 Embedding 8B
+          provider: siliconflow
+          model: ${OPENAI_EMBEDDING_MODEL:Qwen/Qwen3-Embedding-8B}
+          dimension: ${RAG_EMBEDDING_DIMENSIONS:1024}
+          priority: 0
+          enabled: true
+    rerank:
+      default-model: ${AI_RERANK_DEFAULT_MODEL:noop}
+      candidates:
+        - id: noop
+          name: Noop Reranker
+          provider: noop
+          model: noop
+          priority: 100
+          enabled: true
+    models:
+      - id: deepseek-ai/DeepSeek-V4-Flash
+        name: DeepSeek V4 Flash
+        provider: siliconflow
+        enabled: true
+      - id: Pro/moonshotai/Kimi-K2.6
+        name: Kimi K2.6 Pro
+        provider: siliconflow
+        enabled: true
+      - id: Pro/zai-org/GLM-5.1
+        name: GLM 5.1 Pro
+        provider: siliconflow
+        enabled: true
+      - id: Pro/MiniMaxAI/MiniMax-M2.5
+        name: MiniMax M2.5 Pro
+        provider: siliconflow
+        enabled: true
+      - id: Qwen/Qwen3.6-27B
+        name: Qwen3.6 27B
+        provider: siliconflow
+        enabled: true

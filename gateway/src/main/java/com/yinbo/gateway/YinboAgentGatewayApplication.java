@@ -2,6 +2,7 @@ package com.yinbo.gateway;
 
 import com.yinbo.gateway.config.ConcurrencyLimitProperties;
 import com.yinbo.gateway.config.GatewayRequestSizeProperties;
+import com.yinbo.gateway.config.InternalRouteProperties;
 import com.yinbo.gateway.ip.TrustedProxyProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -11,6 +12,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @EnableConfigurationProperties({
         ConcurrencyLimitProperties.class,
         GatewayRequestSizeProperties.class,
+        InternalRouteProperties.class,
         TrustedProxyProperties.class
 })
 // 网关服务启动入口。

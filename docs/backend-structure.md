@@ -14,6 +14,7 @@ backend/src/main/
 │  ├─ common/      # 统一异常、requestId、Redis 信号量
 │  ├─ config/      # Spring Bean 和配置属性
 │  ├─ ingestion/   # 文档上传、URL 入库、解析、分块、向量化
+│  ├─ infra/       # 远程基础设施客户端
 │  ├─ knowledge/   # 后台知识库、文档、分块管理
 │  └─ storage/     # RustFS / S3 对象存储封装
 └─ resources/
@@ -39,15 +40,14 @@ backend/src/main/
 | `spring.sql.init` | 关闭旧 SQL 初始化，数据库结构交给 Flyway |
 | `spring.flyway` | 配置 Flyway 迁移脚本位置、校验和禁止 clean |
 | `spring.servlet.multipart` | 配置 service 兜底上传大小，默认单文件 `200MB`、单请求 `220MB` |
-| `spring.ai.openai` | 配置 OpenAI 兼容接口、聊天模型和 Embedding 模型 |
 | `spring.ai.mcp.server` | 配置 MCP server 名称、版本和协议 |
 | `rocketmq` | 配置 RocketMQ name server 和 producer group |
 | `management` | 收口 Actuator，只启用和暴露 `health`、`info` |
 | `logging` | 配置 service 日志文件、日志格式和日志滚动策略 |
 | `app.logging` | 配置慢请求阈值 |
 | `app.concurrency` | 配置 service 上传兜底并发和 ingestion 消费并发 |
+| `app.ai-infra` | 配置 backend 远程调用 ai-infra 的 baseUrl 和超时时间 |
 | `app.ai.rag` | 配置 RAG 模型、向量表、分块参数、源文件大小和 MQ topic |
-| `app.ai.models` | 配置前端可选择的聊天模型列表 |
 | `app.auth` | 配置本地种子管理员账号 |
 | `app.storage` | 配置 RustFS / S3 对象存储连接 |
 
@@ -63,7 +63,7 @@ Flyway 初始迁移脚本。
 | 认证表 | 创建 `auth_user` |
 | 会话表 | 创建 `chat_conversation`、`chat_message` |
 | 知识库表 | 创建 `knowledge_base`、`knowledge_document`、`knowledge_chunk` |
-| 向量表 | 创建 `knowledge_chunk_vector`，供 Spring AI PGVector Store 使用 |
+| 向量表 | 创建 `knowledge_chunk_vector`，供 ingestion 直接写入 pgvector |
 | 索引 | 创建用户、会话、文档、分块和向量检索相关索引 |
 
 ### `db/migration/V2__create_ingestion_task.sql`
@@ -88,7 +88,7 @@ Flyway 入库任务迁移脚本。
 | `knowledge_base` | `knowledge` | 知识库编号、名称、Embedding 模型、collection 和状态 |
 | `knowledge_document` | `ingestion` / `knowledge` | 文档来源、对象存储信息、解析状态、分块参数和耗时 |
 | `knowledge_chunk` | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数和向量文档 ID |
-| `knowledge_chunk_vector` | Spring AI PGVector | 向量内容、metadata、embedding 和 HNSW 索引 |
+| `knowledge_chunk_vector` | `ingestion` | 向量内容、metadata、embedding 和 HNSW 索引 |
 | `ingestion_task` | `ingestion` | 分块 / 重建向量任务状态、重试次数、失败原因和 MQ messageId |
 
 ## 根包
@@ -102,7 +102,7 @@ Flyway 入库任务迁移脚本。
 | 功能 | 说明 |
 | --- | --- |
 | 启动 Spring Boot | 调用 `SpringApplication.run(...)` 启动 service |
-| 加载配置属性 | 启用 `AiModelProperties`、`AuthProperties`、`ConcurrencyLimitProperties`、`ObjectStorageProperties`、`RagProperties` |
+| 加载配置属性 | 启用 `AiInfraProperties`、`AuthProperties`、`ConcurrencyLimitProperties`、`ObjectStorageProperties`、`RagProperties` |
 | 扫描 Mapper | 扫描 `auth`、`chat`、`ingestion`、`knowledge` 模块的 MyBatis Mapper |
 
 核心方法：
@@ -396,7 +396,7 @@ AI 对话和会话管理接口。
 
 | 方法 | 功能 |
 | --- | --- |
-| `models()` | 返回 `AiModelProperties.models()` |
+| `models()` | 通过 `AiInfraClient` 查询 ai-infra 暴露的模型列表 |
 | `chat(...)` | 校验登录用户并调用普通对话 |
 | `streamChat(...)` | 校验登录用户并创建 SSE 对话 |
 | `conversations(...)` | 查询当前用户会话列表 |
@@ -413,11 +413,11 @@ AI 对话核心业务服务。
 
 | 功能 | 说明 |
 | --- | --- |
-| 普通对话 | 调用 Spring AI `ChatModel` 获取完整响应 |
+| 普通对话 | 通过 `AiInfraClient` 远程调用 ai-infra 获取完整响应 |
 | 流式对话 | 使用 `SseEmitter` 推送 `start`、`delta`、`done`、`error` 事件 |
 | 会话管理 | 创建、查询、置顶、取消置顶、删除会话 |
 | 消息保存 | 保存 user / assistant 消息、模型、响应耗时和 token |
-| Prompt 构造 | 按历史消息构造 Spring AI `Prompt` |
+| 请求构造 | 按历史消息构造 ai-api 中的 `LLMRequest` |
 | 缓存 | 读取和失效 Redis 会话消息缓存 |
 | 兜底响应 | 模型调用失败时返回友好兜底内容并记录日志 |
 | 统计 | 估算 token、读取模型 usage、记录 `event=ai_chat_completed` |
@@ -434,10 +434,10 @@ AI 对话核心业务服务。
 | `unpinConversation(...)` | 取消置顶 |
 | `deleteConversation(...)` | 删除会话和消息 |
 | `doStreamChat(...)` | 执行流式模型调用和事件推送 |
-| `buildPrompt(...)` | 构造 Spring AI Prompt |
+| `buildLlmRequest(...)` | 构造 ai-infra 远程调用请求 |
 | `loadConversationMessages(...)` | 从缓存或数据库加载历史消息 |
 | `evictConversationMessagesAfterCommit(...)` | 事务提交后清理消息缓存 |
-| `usageFrom(...)` | 从 Spring AI 响应提取 token usage |
+| `usageFrom(...)` | 从 `LLMResponse` 提取 token usage |
 | `estimateTokenCount(String content)` | 估算 token 数 |
 | `buildConversationTitle(String content)` | 根据首条消息生成会话标题 |
 
@@ -578,14 +578,13 @@ Spring Bean 和配置属性模块。
 
 ```text
 config/
-├─ AiModelProperties.java
+├─ AiInfraProperties.java
 ├─ AuthProperties.java
 ├─ ConcurrencyLimitProperties.java
 ├─ MybatisPlusAutoFillConfig.java
 ├─ ObjectStorageProperties.java
 ├─ PasswordConfig.java
 ├─ RagProperties.java
-├─ RagVectorStoreConfig.java
 └─ WebConfig.java
 ```
 
@@ -593,7 +592,7 @@ config/
 
 | 文件 | 配置前缀 | 功能 |
 | --- | --- | --- |
-| `AiModelProperties.java` | `app.ai` | 保存前端可选模型列表，并通过 `findById(...)` 查找模型 |
+| `AiInfraProperties.java` | `app.ai-infra` | 保存 ai-infra baseUrl 和远程调用超时时间 |
 | `AuthProperties.java` | `app.auth` | 保存种子管理员用户名和密码 |
 | `ConcurrencyLimitProperties.java` | `app.concurrency` | 保存上传兜底并发和 ingestion 消费并发配置 |
 | `ObjectStorageProperties.java` | `app.storage` | 保存 RustFS / S3 provider、endpoint、accessKey、secretKey、bucket |
@@ -627,6 +626,15 @@ RAG 入库和向量检索配置。
 | `ingestionTopic` | RocketMQ topic | `rag-ingestion-task` |
 | `ingestionConsumerGroup` | RocketMQ consumer group | `yinbo-agent-ingestion-consumer` |
 
+### `AiInfraProperties.java`
+
+backend 调用 ai-infra 的远程配置。
+
+| 配置项 | 功能 | 默认值 |
+| --- | --- | --- |
+| `baseUrl` | ai-infra HTTP 地址 | `http://localhost:8082` |
+| `requestTimeout` | backend 调用 ai-infra 的超时时间 | `5m` |
+
 ### Bean 配置文件
 
 | 文件 | Bean / 方法 | 功能 |
@@ -634,10 +642,31 @@ RAG 入库和向量检索配置。
 | `PasswordConfig.java` | `passwordEncoder()` | 创建 BCrypt 密码编码器 |
 | `MybatisPlusAutoFillConfig.java` | `insertFill(...)` | 插入时自动填充 `createdAt` 和 `updatedAt` |
 | `MybatisPlusAutoFillConfig.java` | `updateFill(...)` | 更新时自动填充 `updatedAt` |
-| `RagVectorStoreConfig.java` | `knowledgeVectorStore(...)` | 创建 Spring AI PGVector `VectorStore` |
-| `RagVectorStoreConfig.java` | `parseIndexType(...)` | 解析 `HNSW`、`IVFFLAT`、`NONE` |
-| `RagVectorStoreConfig.java` | `validateIndexDimensions(...)` | 校验索引类型和向量维度兼容性 |
 | `WebConfig.java` | `addInterceptors(...)` | 注册登录拦截器保护 `/api/auth/me`、`/api/chat`、`/api/conversations/**`、`/api/ingestion/**`、`/api/admin/**` |
+
+## `infra` 模块
+
+backend 调用外部基础设施服务的客户端模块。
+
+```text
+infra/
+└─ ai/
+   └─ AiInfraClient.java
+```
+
+### `AiInfraClient.java`
+
+ai-infra 远程 HTTP 客户端，同时实现 ai-api 中的 `LLMService`、`EmbeddingService`、`RerankService`。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 模型列表 | 调用 `GET /internal/ai/models`，供 `/api/models` 返回前端模型下拉列表 |
+| 普通对话 | 调用 `POST /internal/ai/chat` |
+| 流式对话 | 调用 `POST /internal/ai/chat/stream`，解析 NDJSON 并转发 delta 给 SSE |
+| 向量化 | 调用 `POST /internal/ai/embeddings`，把 JSON 数组转回 `float[]` |
+| 重排序 | 调用 `POST /internal/ai/rerank` |
 
 ## `storage` 模块
 
@@ -1000,7 +1029,7 @@ RocketMQ 文档入库任务消息。
 -> DocumentTextCleaner 清洗
 -> RecursiveDocumentChunkSplitter 分块
 -> DocumentChunkOptimizer 优化
--> 事务外调用 EmbeddingModel 生成向量
+-> 事务外通过 AiInfraClient 调用 ai-infra 生成向量
 -> 短事务内写入 knowledge_chunk_vector 和 knowledge_chunk
 -> knowledge_document.status = COMPLETED / FAILED
 ```
@@ -1178,7 +1207,7 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | RocketMQ 入库任务 | `IngestionTaskMessage`、`DocumentIngestionTaskConsumer`、`KnowledgeAdminService` |
 | 入库任务状态记录 | `IngestionTask`、`IngestionTaskMapper`、`IngestionTaskService` |
 | 失败任务后台管理 | `IngestionTaskAdminController`、`IngestionTaskAdminService` |
-| 向量写入和重建 | `DocumentIngestionService`、`RagVectorStoreConfig` |
+| 向量写入和重建 | `DocumentIngestionService`、`PgVectorRepository`、`AiInfraClient` |
 | 知识库管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
 | 文档和分块管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
 | 数据库迁移 | `resources/db/migration/V1__init_schema.sql`、`resources/db/migration/V2__create_ingestion_task.sql` |

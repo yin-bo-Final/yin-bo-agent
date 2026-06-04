@@ -17,7 +17,12 @@ import com.yinbo.agent.chat.entity.ChatMessageEntity;
 import com.yinbo.agent.chat.mapper.ChatConversationMapper;
 import com.yinbo.agent.chat.mapper.ChatMessageMapper;
 import com.yinbo.agent.common.BusinessException;
-import com.yinbo.agent.config.AiModelProperties;
+import com.yinbo.agent.infra.ai.AiInfraClient;
+import com.yinbo.ai.api.chat.LLMMessage;
+import com.yinbo.ai.api.chat.LLMRequest;
+import com.yinbo.ai.api.chat.LLMResponse;
+import com.yinbo.ai.api.chat.LLMService;
+import com.yinbo.ai.api.model.ModelOption;
 import java.io.IOException;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -32,15 +37,6 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.metadata.Usage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.openai.OpenAiChatOptions;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -88,22 +84,22 @@ public class ChatService {
             "(?s)(?:^|\\R|\\s)(?:(?:\\*\\*)?最终回答(?:\\*\\*)?|(?:\\*\\*回答\\*\\*)|回答\\s*[:：])\\s*[:：]?\\s*"
     );
 
-    private final AiModelProperties aiModelProperties;
-    private final ObjectProvider<ChatModel> chatModelProvider;
+    private final AiInfraClient aiInfraClient;
+    private final LLMService llmService;
     private final ChatConversationMapper chatConversationMapper;
     private final ChatMessageMapper chatMessageMapper;
     private final ChatMessageCacheService chatMessageCacheService;
 
-    // 注入模型配置、模型客户端、会话消息 Mapper 和缓存服务。
+    // 注入 AI 基础设施客户端、LLM 服务、会话消息 Mapper 和缓存服务。
     public ChatService(
-            AiModelProperties aiModelProperties,
-            ObjectProvider<ChatModel> chatModelProvider,
+            AiInfraClient aiInfraClient,
+            LLMService llmService,
             ChatConversationMapper chatConversationMapper,
             ChatMessageMapper chatMessageMapper,
             ChatMessageCacheService chatMessageCacheService
     ) {
-        this.aiModelProperties = aiModelProperties;
-        this.chatModelProvider = chatModelProvider;
+        this.aiInfraClient = aiInfraClient;
+        this.llmService = llmService;
         this.chatConversationMapper = chatConversationMapper;
         this.chatMessageMapper = chatMessageMapper;
         this.chatMessageCacheService = chatMessageCacheService;
@@ -112,10 +108,9 @@ public class ChatService {
     @Transactional
     // 执行普通非流式 AI 对话。
     public ChatResponse chat(AuthUser authUser, ChatRequest request) {
-        AiModelProperties.ModelOption model = aiModelProperties.findById(request.modelId());
+        ModelOption model = aiInfraClient.resolveModel(request.modelId());
         ChatMessage latestUserMessage = latestUserMessageOf(request);
         ChatConversation conversation = resolveConversation(authUser, request, latestUserMessage, model.id());
-        ChatModel chatModel = chatModelProvider.getIfAvailable();
 
         List<CachedChatMessage> conversationMessages = loadConversationMessages(authUser.getId(), conversation.getId());
         ChatMessageEntity userMessage = persistMessage(
@@ -128,20 +123,10 @@ public class ChatService {
         conversationMessages = appendCachedMessage(conversationMessages, userMessage);
 
         String conversationId = conversation.getConversationNo();
-        ModelCallResult modelCallResult;
         long responseStartedAt = System.nanoTime();
-        if (chatModel == null) {
-            String content = fallbackResponseContent(latestUserMessage.content(), model);
-            long responseDurationMs = elapsedMillis(responseStartedAt);
-            modelCallResult = new ModelCallResult(
-                    content,
-                    responseDurationMs,
-                    null,
-                    estimateTokenCount(content),
-                    estimateTokenCount(latestUserMessage.content()) + estimateTokenCount(content)
-            );
-        } else try {
-            modelCallResult = callModel(chatModel, conversationMessages, request.modelId(), request.thinkModeEnabled(), responseStartedAt);
+        ModelCallResult modelCallResult;
+        try {
+            modelCallResult = callModel(conversationMessages, model.id(), request.thinkModeEnabled(), responseStartedAt);
         } catch (Exception exception) {
             log.warn(
                     "event=ai_call_failed mode=sync conversationId={} modelId={} type={} message={}",
@@ -154,6 +139,7 @@ public class ChatService {
             String content = modelFailureResponseContent(model, latestUserMessage.content());
             long responseDurationMs = elapsedMillis(responseStartedAt);
             modelCallResult = new ModelCallResult(
+                    model.id(),
                     content,
                     responseDurationMs,
                     null,
@@ -167,20 +153,20 @@ public class ChatService {
                 authUser.getId(),
                 "assistant",
                 modelCallResult.content(),
-                model.id(),
+                modelCallResult.modelId(),
                 modelCallResult.responseDurationMs(),
                 modelCallResult.promptTokens(),
                 modelCallResult.completionTokens(),
                 modelCallResult.totalTokens()
         );
         conversationMessages = appendCachedMessage(conversationMessages, assistantMessage);
-        touchConversation(conversation, model.id(), latestUserMessage.content(), assistantMessage.getCreatedAt());
+        touchConversation(conversation, modelCallResult.modelId(), latestUserMessage.content(), assistantMessage.getCreatedAt());
         putConversationMessagesAfterCommit(authUser.getId(), conversation.getId(), conversationMessages);
         log.info(
                 "event=ai_chat_completed mode=sync userId={} conversationId={} modelId={} costMs={} promptTokens={} completionTokens={} totalTokens={}",
                 authUser.getId(),
                 conversationId,
-                model.id(),
+                modelCallResult.modelId(),
                 modelCallResult.responseDurationMs(),
                 modelCallResult.promptTokens(),
                 modelCallResult.completionTokens(),
@@ -188,7 +174,7 @@ public class ChatService {
         );
         return new ChatResponse(
                 conversationId,
-                model.id(),
+                modelCallResult.modelId(),
                 "assistant",
                 modelCallResult.content(),
                 toInstant(assistantMessage.getCreatedAt()),
@@ -301,7 +287,7 @@ public class ChatService {
 
     // 执行流式对话主流程。
     private void doStreamChat(AuthUser authUser, ChatRequest request, SseEmitter emitter) {
-        AiModelProperties.ModelOption model = aiModelProperties.findById(request.modelId());
+        ModelOption model = aiInfraClient.resolveModel(request.modelId());
         ChatMessage latestUserMessage;
         ChatConversation conversation;
         String conversationId = null;
@@ -315,25 +301,15 @@ public class ChatService {
             putConversationMessagesAfterCommit(authUser.getId(), conversation.getId(), conversationMessages);
             sendStreamEvent(emitter, "start", ChatStreamEvent.start(conversationId, model.id()));
 
-            ChatModel chatModel = chatModelProvider.getIfAvailable();
-            if (chatModel == null) {
-                streamFallbackContent(emitter, conversation, authUser, model, latestUserMessage, conversationMessages);
-                return;
-            }
-
-                ModelCallResult modelCallResult;
-                long responseStartedAt = System.nanoTime();
-                try {
-                    StringBuilder contentBuilder = new StringBuilder();
-                    Prompt prompt = buildPrompt(conversationMessages, model.id(), request.thinkModeEnabled());
-                    TokenUsageAccumulator usageAccumulator = new TokenUsageAccumulator();
-                    chatModel.stream(prompt)
-                            .toIterable()
-                            .forEach(response -> {
-                                usageAccumulator.accept(usageFrom(response));
-                                String delta = responseContent(response);
-                                if (delta == null || delta.isEmpty()) {
-                                    return;
+            ModelCallResult modelCallResult;
+            long responseStartedAt = System.nanoTime();
+            StringBuilder contentBuilder = new StringBuilder();
+            try {
+                LLMResponse response = llmService.streamChat(
+                        buildLlmRequest(conversationMessages, model.id(), request.thinkModeEnabled()),
+                        delta -> {
+                            if (delta == null || delta.isEmpty()) {
+                                return;
                             }
                             contentBuilder.append(delta);
                             sendStreamEvent(emitter, "delta", ChatStreamEvent.delta(
@@ -341,36 +317,55 @@ public class ChatService {
                                     model.id(),
                                     delta
                             ));
-                        });
-                    String content = contentBuilder.toString();
-                    long responseDurationMs = elapsedMillis(responseStartedAt);
-                    modelCallResult = toModelCallResult(content, responseDurationMs, usageAccumulator.toTokenUsage(), latestUserMessage.content());
-                } catch (ClientDisconnectedException exception) {
-                    throw exception;
-                } catch (Exception exception) {
+                        }
+                );
+                String content = contentBuilder.isEmpty() ? response.content() : contentBuilder.toString();
+                long responseDurationMs = elapsedMillis(responseStartedAt);
+                modelCallResult = toModelCallResult(response.modelId(), content, responseDurationMs, usageFrom(response), latestUserMessage.content());
+            } catch (ClientDisconnectedException exception) {
+                throw exception;
+            } catch (Exception exception) {
+                if (!contentBuilder.isEmpty()) {
                     log.warn(
-                            "event=ai_call_failed mode=stream conversationId={} modelId={} type={} message={}",
+                            "event=ai_stream_interrupted_after_delta conversationId={} modelId={} type={} message={}",
                             conversationId,
                             model.id(),
                             exception.getClass().getSimpleName(),
                             sanitizeLogValue(exception.getMessage()),
                             exception
                     );
-                    String content = modelFailureResponseContent(model, latestUserMessage.content());
-                    sendChunkedContent(emitter, conversationId, model.id(), content);
-                    long responseDurationMs = elapsedMillis(responseStartedAt);
-                    modelCallResult = new ModelCallResult(
-                            content,
-                            responseDurationMs,
-                            null,
-                            estimateTokenCount(content),
-                            estimateTokenCount(latestUserMessage.content()) + estimateTokenCount(content)
-                    );
+                    try {
+                        sendStreamEvent(emitter, "error", ChatStreamEvent.error("流式响应中断了，请重新发起对话。"));
+                    } catch (ClientDisconnectedException ignored) {
+                        // 客户端已断开时不再写响应。
+                    }
+                    safeComplete(emitter);
+                    return;
                 }
+                log.warn(
+                        "event=ai_call_failed mode=stream conversationId={} modelId={} type={} message={}",
+                        conversationId,
+                        model.id(),
+                        exception.getClass().getSimpleName(),
+                        sanitizeLogValue(exception.getMessage()),
+                        exception
+                );
+                String content = modelFailureResponseContent(model, latestUserMessage.content());
+                sendChunkedContent(emitter, conversationId, model.id(), content);
+                long responseDurationMs = elapsedMillis(responseStartedAt);
+                modelCallResult = new ModelCallResult(
+                        model.id(),
+                        content,
+                        responseDurationMs,
+                        null,
+                        estimateTokenCount(content),
+                        estimateTokenCount(latestUserMessage.content()) + estimateTokenCount(content)
+                );
+            }
 
             if (modelCallResult.content().isBlank()) {
                 String content = "模型调用成功，但返回内容为空。";
-                sendStreamEvent(emitter, "delta", ChatStreamEvent.delta(conversationId, model.id(), content));
+                sendStreamEvent(emitter, "delta", ChatStreamEvent.delta(conversationId, modelCallResult.modelId(), content));
                 modelCallResult = modelCallResult.withContent(content);
             }
             ChatMessageEntity assistantMessage = persistMessage(
@@ -378,18 +373,18 @@ public class ChatService {
                     authUser.getId(),
                     "assistant",
                     modelCallResult.content(),
-                    model.id(),
+                    modelCallResult.modelId(),
                     modelCallResult.responseDurationMs(),
                     modelCallResult.promptTokens(),
                     modelCallResult.completionTokens(),
                     modelCallResult.totalTokens()
             );
             conversationMessages = appendCachedMessage(conversationMessages, assistantMessage);
-            touchConversation(conversation, model.id(), latestUserMessage.content(), assistantMessage.getCreatedAt());
+            touchConversation(conversation, modelCallResult.modelId(), latestUserMessage.content(), assistantMessage.getCreatedAt());
             putConversationMessagesAfterCommit(authUser.getId(), conversation.getId(), conversationMessages);
             sendStreamEvent(emitter, "done", ChatStreamEvent.done(
                     conversationId,
-                    model.id(),
+                    modelCallResult.modelId(),
                     toInstant(assistantMessage.getCreatedAt()),
                     modelCallResult.responseDurationMs(),
                     modelCallResult.totalTokens()
@@ -398,7 +393,7 @@ public class ChatService {
                     "event=ai_chat_completed mode=stream userId={} conversationId={} modelId={} costMs={} promptTokens={} completionTokens={} totalTokens={}",
                     authUser.getId(),
                     conversationId,
-                    model.id(),
+                    modelCallResult.modelId(),
                     modelCallResult.responseDurationMs(),
                     modelCallResult.promptTokens(),
                     modelCallResult.completionTokens(),
@@ -424,44 +419,6 @@ public class ChatService {
             }
             safeComplete(emitter);
         }
-    }
-
-    // 在模型客户端不可用时输出降级流式内容。
-    private void streamFallbackContent(
-            SseEmitter emitter,
-            ChatConversation conversation,
-            AuthUser authUser,
-            AiModelProperties.ModelOption model,
-            ChatMessage latestUserMessage,
-            List<CachedChatMessage> conversationMessages
-    ) {
-        String content = fallbackResponseContent(latestUserMessage.content(), model);
-        long responseDurationMs = 0L;
-        int completionTokens = estimateTokenCount(content);
-        int totalTokens = estimateTokenCount(latestUserMessage.content()) + completionTokens;
-        sendChunkedContent(emitter, conversation.getConversationNo(), model.id(), content);
-        ChatMessageEntity assistantMessage = persistMessage(
-                conversation.getId(),
-                authUser.getId(),
-                "assistant",
-                content,
-                model.id(),
-                responseDurationMs,
-                null,
-                completionTokens,
-                totalTokens
-        );
-        conversationMessages = appendCachedMessage(conversationMessages, assistantMessage);
-        touchConversation(conversation, model.id(), latestUserMessage.content(), assistantMessage.getCreatedAt());
-        putConversationMessagesAfterCommit(authUser.getId(), conversation.getId(), conversationMessages);
-        sendStreamEvent(emitter, "done", ChatStreamEvent.done(
-                conversation.getConversationNo(),
-                model.id(),
-                toInstant(assistantMessage.getCreatedAt()),
-                responseDurationMs,
-                totalTokens
-        ));
-        emitter.complete();
     }
 
     // 按小片段发送文本内容。
@@ -520,34 +477,27 @@ public class ChatService {
 
     // 调用同步模型接口。
     private ModelCallResult callModel(
-            ChatModel chatModel,
             List<CachedChatMessage> conversationMessages,
             String modelId,
             boolean thinkMode,
             long responseStartedAt
     ) {
-        Prompt prompt = buildPrompt(conversationMessages, modelId, thinkMode);
-        org.springframework.ai.chat.model.ChatResponse response = chatModel.call(prompt);
-        String text = responseContent(response);
+        LLMResponse response = llmService.chat(buildLlmRequest(conversationMessages, modelId, thinkMode));
+        String text = response.content();
         String content = text == null || text.isBlank() ? "模型调用成功，但返回内容为空。" : text;
         long responseDurationMs = elapsedMillis(responseStartedAt);
-        return toModelCallResult(content, responseDurationMs, usageFrom(response), latestUserContent(conversationMessages));
+        return toModelCallResult(response.modelId(), content, responseDurationMs, usageFrom(response), latestUserContent(conversationMessages));
     }
 
-    private Prompt buildPrompt(List<CachedChatMessage> conversationMessages, String modelId, boolean thinkMode) {
-        List<Message> promptMessages = new ArrayList<>();
-        promptMessages.add(new SystemMessage(systemPrompt(thinkMode)));
+    private LLMRequest buildLlmRequest(List<CachedChatMessage> conversationMessages, String modelId, boolean thinkMode) {
+        List<LLMMessage> promptMessages = new ArrayList<>();
+        promptMessages.add(new LLMMessage("system", systemPrompt(thinkMode)));
 
         conversationMessages.stream()
-                .map(message -> toSpringAiMessage(message, thinkMode))
+                .map(message -> toLlmMessage(message, thinkMode))
                 .forEach(promptMessages::add);
 
-        return new Prompt(
-                promptMessages,
-                OpenAiChatOptions.builder()
-                        .model(modelId)
-                        .build()
-        );
+        return new LLMRequest(modelId, thinkMode, promptMessages);
     }
 
     private List<CachedChatMessage> loadConversationMessages(Long userId, Long conversationId) {
@@ -602,23 +552,15 @@ public class ChatService {
         });
     }
 
-    private String responseContent(org.springframework.ai.chat.model.ChatResponse response) {
-        if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
-            return "";
-        }
-
-        return response.getResult().getOutput().getText();
-    }
-
     private String systemPrompt(boolean thinkMode) {
         return thinkMode ? DEFAULT_SYSTEM_PROMPT + THINK_MODE_PROMPT : DEFAULT_SYSTEM_PROMPT + NON_THINK_MODE_PROMPT;
     }
 
-    private Message toSpringAiMessage(CachedChatMessage message, boolean thinkMode) {
+    private LLMMessage toLlmMessage(CachedChatMessage message, boolean thinkMode) {
         String content = !thinkMode && "assistant".equalsIgnoreCase(message.role())
                 ? finalAnswerOnly(message.content())
                 : message.content();
-        return toSpringAiMessage(message.role(), content);
+        return new LLMMessage(normalizeRole(message.role()), content);
     }
 
     private ConversationMessageResponse toConversationMessageResponse(CachedChatMessage message) {
@@ -632,13 +574,10 @@ public class ChatService {
         );
     }
 
-    private Message toSpringAiMessage(String role, String content) {
+    private String normalizeRole(String role) {
         return switch (role.toLowerCase()) {
-            case "assistant" -> new AssistantMessage(content);
-            case "system" -> new SystemMessage(content);
-            case "user" -> new UserMessage(content);
-            case "tool" -> new AssistantMessage(content);
-            default -> new UserMessage(content);
+            case "assistant", "system", "user", "tool" -> role.toLowerCase();
+            default -> "user";
         };
     }
 
@@ -654,17 +593,7 @@ public class ChatService {
         return answer.isBlank() ? content : answer;
     }
 
-    private String fallbackResponseContent(String latestUserMessage, AiModelProperties.ModelOption model) {
-        return """
-                我已经收到你的消息：%s
-
-                当前选择模型：%s（%s）
-
-                当前没有检测到可用的模型客户端。请先在项目根目录配置 `local-secrets.yml`，填入硅基流动 API Key 和中间件密码，然后重新启动后端。
-                """.formatted(latestUserMessage, model.name(), model.id());
-    }
-
-    private String modelFailureResponseContent(AiModelProperties.ModelOption model, String latestUserMessage) {
+    private String modelFailureResponseContent(ModelOption model, String latestUserMessage) {
         return """
                 我已经收到你的消息：%s
 
@@ -747,7 +676,7 @@ public class ChatService {
         return messageEntity;
     }
 
-    private ModelCallResult toModelCallResult(String content, long responseDurationMs, TokenUsage tokenUsage, String latestUserContent) {
+    private ModelCallResult toModelCallResult(String modelId, String content, long responseDurationMs, TokenUsage tokenUsage, String latestUserContent) {
         Integer promptTokens = tokenUsage == null ? null : tokenUsage.promptTokens();
         Integer completionTokens = tokenUsage == null ? null : tokenUsage.completionTokens();
         Integer totalTokens = tokenUsage == null ? null : tokenUsage.totalTokens();
@@ -758,15 +687,15 @@ public class ChatService {
         if (totalTokens == null) {
             totalTokens = (promptTokens == null ? estimateTokenCount(latestUserContent) : promptTokens) + completionTokens;
         }
-        return new ModelCallResult(content, responseDurationMs, promptTokens, completionTokens, totalTokens);
+        return new ModelCallResult(modelId, content, responseDurationMs, promptTokens, completionTokens, totalTokens);
     }
 
-    private TokenUsage usageFrom(org.springframework.ai.chat.model.ChatResponse response) {
-        if (response == null || response.getMetadata() == null || response.getMetadata().getUsage() == null) {
+    private TokenUsage usageFrom(LLMResponse response) {
+        if (response == null || response.usage() == null) {
             return null;
         }
-        Usage usage = response.getMetadata().getUsage();
-        return new TokenUsage(usage.getPromptTokens(), usage.getCompletionTokens(), usage.getTotalTokens());
+        LLMResponse.TokenUsage usage = response.usage();
+        return new TokenUsage(usage.promptTokens(), usage.completionTokens(), usage.totalTokens());
     }
 
     private String latestUserContent(List<CachedChatMessage> conversationMessages) {
@@ -811,6 +740,7 @@ public class ChatService {
     }
 
     private record ModelCallResult(
+            String modelId,
             String content,
             Long responseDurationMs,
             Integer promptTokens,
@@ -819,40 +749,7 @@ public class ChatService {
     ) {
 
         private ModelCallResult withContent(String nextContent) {
-            return new ModelCallResult(nextContent, responseDurationMs, promptTokens, completionTokens, totalTokens);
-        }
-    }
-
-    private static class TokenUsageAccumulator {
-
-        private Integer promptTokens;
-        private Integer completionTokens;
-        private Integer totalTokens;
-
-        void accept(TokenUsage usage) {
-            if (usage == null) {
-                return;
-            }
-            promptTokens = max(promptTokens, usage.promptTokens());
-            completionTokens = max(completionTokens, usage.completionTokens());
-            totalTokens = max(totalTokens, usage.totalTokens());
-        }
-
-        TokenUsage toTokenUsage() {
-            if (promptTokens == null && completionTokens == null && totalTokens == null) {
-                return null;
-            }
-            return new TokenUsage(promptTokens, completionTokens, totalTokens);
-        }
-
-        private Integer max(Integer current, Integer next) {
-            if (next == null) {
-                return current;
-            }
-            if (current == null) {
-                return next;
-            }
-            return Math.max(current, next);
+            return new ModelCallResult(modelId, nextContent, responseDurationMs, promptTokens, completionTokens, totalTokens);
         }
     }
 

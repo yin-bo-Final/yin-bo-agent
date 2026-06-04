@@ -30,11 +30,12 @@ gateway/src/main/
 | `spring.data.redis` | 配置 Redis 连接，供 RedisRateLimiter、Session 用户识别、Redis 信号量使用 |
 | `spring.cloud.gateway.server.webflux.globalcors` | 统一处理 `/api/**` 的 CORS |
 | `spring.cloud.gateway.server.webflux.default-filters` | 去重 CORS 响应头，避免多层代理产生重复头 |
-| `spring.cloud.gateway.server.webflux.routes` | 配置 `/api/**` 到后端 service 的路由转发，并给高成本接口挂频率限流 |
+| `spring.cloud.gateway.server.webflux.routes` | 配置 `/api/**` 到后端 service、`/internal/ai/**` 到 ai-infra 的路由转发，并给高成本接口挂频率限流 |
 | `management` | 收口 Actuator，只启用和暴露 `health`、`info` |
 | `logging` | 配置 gateway 日志文件、日志格式和日志滚动策略 |
 | `app.logging` | 配置慢请求阈值 |
 | `app.gateway.trusted-proxies` | 配置允许读取 `X-Forwarded-For` / `X-Real-IP` 的可信代理网段 |
+| `app.gateway.internal.token` | 保护 `/internal/**` 内部路由，需要请求携带匹配的 `X-Internal-Token` |
 | `app.gateway.request-size` | 配置上传请求体大小限制，默认 `200MB` |
 | `app.concurrency` | 配置上传、URL 入库、AI 对话的并发信号量限制 |
 | `app.session.redis.namespace` | 配置 gateway 读取 Spring Session 时使用的 Redis namespace |
@@ -48,6 +49,7 @@ gateway/src/main/
 | `ai-stream-ip-rate-limit`     | 流式 AI 对话频率限流                   |
 | `ai-chat-ip-rate-limit`       | 普通 AI 对话频率限流                   |
 | `auth-ip-rate-limit`          | 登录和注册接口频率限流                    |
+| `yinbo-ai-infra-internal`     | 转发 `/internal/ai/**` 请求到 ai-infra，受 `X-Internal-Token` 保护 |
 | `yinbo-agent-service-api`     | 兜底转发所有 `/api/**` 请求到后端 service |
 
 ## `concurrent` 模块
@@ -126,6 +128,18 @@ Gateway 请求体大小限制配置属性，对应 `app.gateway.request-size`。
 | --- | --- |
 | `GatewayRequestSizeProperties` | 保存上传请求体大小限制配置 |
 | `uploadMaxSize` | 控制 gateway 允许转发的上传请求体上限 |
+
+### `InternalRouteProperties.java`
+
+内部路由访问控制配置属性，对应 `app.gateway.internal`。
+
+主要功能：
+
+| 配置项 | 功能 | 默认值 |
+| --- | --- | --- |
+| `token` | `/internal/**` 请求必须携带的内部访问 token | 空 |
+
+`token` 为空时内部路由不会放行任何请求，避免本地或生产环境忘记配置后裸露 ai-infra。backend 默认直接通过 `YINBO_AI_INFRA_URI` 调用 ai-infra，不依赖这条 gateway 内部路由。
 
 ## `ip` 模块
 

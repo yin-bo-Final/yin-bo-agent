@@ -8,7 +8,8 @@ import com.yinbo.agent.chat.dto.ConversationDetailResponse;
 import com.yinbo.agent.chat.dto.ConversationSummaryResponse;
 import com.yinbo.agent.chat.dto.PinConversationRequest;
 import com.yinbo.agent.chat.service.ChatService;
-import com.yinbo.agent.config.AiModelProperties;
+import com.yinbo.agent.infra.ai.AiInfraClient;
+import com.yinbo.ai.api.model.ModelOption;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -29,20 +30,20 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class ChatController {
 
     private final ChatService chatService;
-    private final AiModelProperties aiModelProperties;
+    private final AiInfraClient aiInfraClient;
     private final AuthService authService;
 
-    // 注入对话服务、模型配置和认证服务。
-    public ChatController(ChatService chatService, AiModelProperties aiModelProperties, AuthService authService) {
+    // 注入对话服务、AI 基础设施客户端和认证服务。
+    public ChatController(ChatService chatService, AiInfraClient aiInfraClient, AuthService authService) {
         this.chatService = chatService;
-        this.aiModelProperties = aiModelProperties;
+        this.aiInfraClient = aiInfraClient;
         this.authService = authService;
     }
 
     @GetMapping("/models")
     // 查询前端可选择的 AI 模型列表。
-    public List<AiModelProperties.ModelOption> models() {
-        return aiModelProperties.models();
+    public List<ModelOption> models() {
+        return aiInfraClient.models();
     }
 
     @PostMapping("/chat")

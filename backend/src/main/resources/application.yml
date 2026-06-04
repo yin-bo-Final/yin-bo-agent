@@ -41,16 +41,6 @@ spring:
       max-file-size: ${INGESTION_MAX_FILE_SIZE:200MB}
       max-request-size: ${INGESTION_MAX_REQUEST_SIZE:220MB}
   ai:
-    openai:
-      base-url: ${OPENAI_BASE_URL:https://api.siliconflow.cn}
-      api-key: ${OPENAI_API_KEY:}
-      chat:
-        options:
-          model: ${OPENAI_CHAT_MODEL:deepseek-ai/DeepSeek-V4-Flash}
-      embedding:
-        options:
-          model: ${OPENAI_EMBEDDING_MODEL:Qwen/Qwen3-Embedding-8B}
-          dimensions: ${RAG_EMBEDDING_DIMENSIONS:1024}
     mcp:
       server:
         name: yinbo-agent-mcp
@@ -105,6 +95,9 @@ app:
     ingestion:
       max-permits: ${INGESTION_MAX_CONCURRENCY:5}
       lease-ttl: ${INGESTION_CONCURRENCY_LEASE_TTL:30m}
+  ai-infra:
+    base-url: ${YINBO_AI_INFRA_URI:http://localhost:8082}
+    request-timeout: ${AI_INFRA_REQUEST_TIMEOUT:5m}
   ai:
     rag:
       embedding-model: ${RAG_EMBEDDING_MODEL:Qwen/Qwen3-Embedding-8B}
@@ -119,27 +112,6 @@ app:
       max-source-bytes: ${RAG_MAX_SOURCE_BYTES:209715200}
       ingestion-topic: ${RAG_INGESTION_TOPIC:rag-ingestion-task}
       ingestion-consumer-group: ${RAG_INGESTION_CONSUMER_GROUP:yinbo-agent-ingestion-consumer}
-    models:
-      - id: deepseek-ai/DeepSeek-V4-Flash
-        name: DeepSeek V4 Flash
-        provider: siliconflow
-        enabled: true
-      - id: Pro/moonshotai/Kimi-K2.6
-        name: Kimi K2.6 Pro
-        provider: siliconflow
-        enabled: true
-      - id: Pro/zai-org/GLM-5.1
-        name: GLM 5.1 Pro
-        provider: siliconflow
-        enabled: true
-      - id: Pro/MiniMaxAI/MiniMax-M2.5
-        name: MiniMax M2.5 Pro
-        provider: siliconflow
-        enabled: true
-      - id: Qwen/Qwen3.6-27B
-        name: Qwen3.6 27B
-        provider: siliconflow
-        enabled: true
   auth:
     seed-admin-username: ${AUTH_SEED_ADMIN_USERNAME:}
     seed-admin-password: ${AUTH_SEED_ADMIN_PASSWORD:}
