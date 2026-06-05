@@ -66,9 +66,9 @@ spring:
                   args:
                     key-resolver: "#{@userOrIpKeyResolver}"
                     status-code: TOO_MANY_REQUESTS
-                    redis-rate-limiter.replenishRate: 5
-                    redis-rate-limiter.burstCapacity: 120
-                    redis-rate-limiter.requestedTokens: 60
+                    redis-rate-limiter.replenishRate: ${UPLOAD_GATEWAY_RATE_REPLENISH:20}
+                    redis-rate-limiter.burstCapacity: ${UPLOAD_GATEWAY_RATE_BURST:240}
+                    redis-rate-limiter.requestedTokens: ${UPLOAD_GATEWAY_RATE_REQUESTED:60}
             # 功能：URL 入库接口频率限流。
             # 说明：URL 入库会下载外部资源，频率限制比普通接口更保守。
             - id: url-ingestion-ip-rate-limit
@@ -81,9 +81,9 @@ spring:
                   args:
                     key-resolver: "#{@userOrIpKeyResolver}"
                     status-code: TOO_MANY_REQUESTS
-                    redis-rate-limiter.replenishRate: 3
-                    redis-rate-limiter.burstCapacity: 60
-                    redis-rate-limiter.requestedTokens: 60
+                    redis-rate-limiter.replenishRate: ${URL_INGESTION_GATEWAY_RATE_REPLENISH:12}
+                    redis-rate-limiter.burstCapacity: ${URL_INGESTION_GATEWAY_RATE_BURST:120}
+                    redis-rate-limiter.requestedTokens: ${URL_INGESTION_GATEWAY_RATE_REQUESTED:60}
             # 功能：流式 AI 对话频率限流。
             # 说明：SSE 连接持续时间更长，使用独立路由便于单独调整配额。
             - id: ai-stream-ip-rate-limit
@@ -96,9 +96,9 @@ spring:
                   args:
                     key-resolver: "#{@userOrIpKeyResolver}"
                     status-code: TOO_MANY_REQUESTS
-                    redis-rate-limiter.replenishRate: 10
-                    redis-rate-limiter.burstCapacity: 60
-                    redis-rate-limiter.requestedTokens: 60
+                    redis-rate-limiter.replenishRate: ${AI_STREAM_GATEWAY_RATE_REPLENISH:60}
+                    redis-rate-limiter.burstCapacity: ${AI_STREAM_GATEWAY_RATE_BURST:300}
+                    redis-rate-limiter.requestedTokens: ${AI_STREAM_GATEWAY_RATE_REQUESTED:60}
             # 功能：普通 AI 对话频率限流。
             # 说明：同步对话比流式请求更短，所以默认分钟配额更高。
             - id: ai-chat-ip-rate-limit
@@ -111,9 +111,9 @@ spring:
                   args:
                     key-resolver: "#{@userOrIpKeyResolver}"
                     status-code: TOO_MANY_REQUESTS
-                    redis-rate-limiter.replenishRate: 20
-                    redis-rate-limiter.burstCapacity: 120
-                    redis-rate-limiter.requestedTokens: 60
+                    redis-rate-limiter.replenishRate: ${AI_CHAT_GATEWAY_RATE_REPLENISH:60}
+                    redis-rate-limiter.burstCapacity: ${AI_CHAT_GATEWAY_RATE_BURST:300}
+                    redis-rate-limiter.requestedTokens: ${AI_CHAT_GATEWAY_RATE_REQUESTED:60}
             # 功能：登录和注册接口频率限流。
             # 说明：未登录场景没有 userId，通常会自动回退到 IP 维度。
             - id: auth-ip-rate-limit
@@ -126,9 +126,9 @@ spring:
                   args:
                     key-resolver: "#{@userOrIpKeyResolver}"
                     status-code: TOO_MANY_REQUESTS
-                    redis-rate-limiter.replenishRate: 10
-                    redis-rate-limiter.burstCapacity: 60
-                    redis-rate-limiter.requestedTokens: 60
+                    redis-rate-limiter.replenishRate: ${AUTH_GATEWAY_RATE_REPLENISH:30}
+                    redis-rate-limiter.burstCapacity: ${AUTH_GATEWAY_RATE_BURST:180}
+                    redis-rate-limiter.requestedTokens: ${AUTH_GATEWAY_RATE_REQUESTED:60}
             # 功能：通用业务路由。
             # 说明：没有命中特殊限流路由的 /api/** 请求都会转发到后端 service。
             - id: yinbo-ai-infra-internal

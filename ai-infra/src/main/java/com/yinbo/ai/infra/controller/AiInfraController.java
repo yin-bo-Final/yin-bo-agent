@@ -13,13 +13,16 @@ import com.yinbo.ai.api.rerank.RerankRequest;
 import com.yinbo.ai.api.rerank.RerankResponse;
 import com.yinbo.ai.api.rerank.RerankService;
 import com.yinbo.ai.infra.config.AiModelProperties;
+import com.yinbo.ai.infra.http.ModelClientStreamClosedException;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
-import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -31,6 +34,9 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 @RequestMapping("/internal/ai")
 // AI 基础设施 HTTP 接口。
 public class AiInfraController {
+
+    private static final Logger log = LoggerFactory.getLogger(AiInfraController.class);
+    private static final String MDC_REQUEST_ID_KEY = "requestId";
 
     private final AiModelProperties aiModelProperties;
     private final LLMService llmService;
@@ -70,15 +76,23 @@ public class AiInfraController {
     @PostMapping(value = "/chat/stream", produces = "application/x-ndjson")
     // 执行流式 Chat 调用，使用 NDJSON 把 delta 和 done 传给 backend。
     public StreamingResponseBody streamChat(@RequestBody LLMRequest request) {
+        String requestId = MDC.get(MDC_REQUEST_ID_KEY);
         return outputStream -> {
+            bindRequestId(requestId);
             BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
             try {
                 LLMResponse response = llmService.streamChat(request, delta -> writeChunk(writer, ChatStreamChunk.delta(delta)));
                 writeChunk(writer, ChatStreamChunk.done(response));
-            } catch (UncheckedIOException exception) {
-                throw exception;
+            } catch (ModelClientStreamClosedException exception) {
+                log.info("event=ai_stream_client_disconnected message={}", sanitizeLogValue(exception.getMessage()));
             } catch (RuntimeException exception) {
-                writeChunk(writer, ChatStreamChunk.error(sanitizeMessage(exception.getMessage())));
+                try {
+                    writeChunk(writer, ChatStreamChunk.error(sanitizeMessage(exception.getMessage())));
+                } catch (ModelClientStreamClosedException disconnected) {
+                    log.info("event=ai_stream_client_disconnected message={}", sanitizeLogValue(disconnected.getMessage()));
+                }
+            } finally {
+                clearRequestId(requestId);
             }
         };
     }
@@ -102,7 +116,7 @@ public class AiInfraController {
             writer.newLine();
             writer.flush();
         } catch (IOException exception) {
-            throw new UncheckedIOException(exception);
+            throw new ModelClientStreamClosedException("客户端已断开 ai-infra 流式连接", exception);
         }
     }
 
@@ -129,5 +143,27 @@ public class AiInfraController {
         }
         String sanitized = message.replaceAll("[\\r\\n\\t]", "_");
         return sanitized.length() <= 256 ? sanitized : sanitized.substring(0, 256);
+    }
+
+    private String sanitizeLogValue(String value) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        String sanitized = value.replaceAll("[\\r\\n\\t]", "_");
+        return sanitized.length() <= 256 ? sanitized : sanitized.substring(0, 256);
+    }
+
+    // 将 requestId 复制到流式响应异步线程。
+    private void bindRequestId(String requestId) {
+        if (requestId != null && !requestId.isBlank()) {
+            MDC.put(MDC_REQUEST_ID_KEY, requestId);
+        }
+    }
+
+    // 清理流式响应异步线程中的 requestId。
+    private void clearRequestId(String requestId) {
+        if (requestId != null && !requestId.isBlank()) {
+            MDC.remove(MDC_REQUEST_ID_KEY);
+        }
     }
 }

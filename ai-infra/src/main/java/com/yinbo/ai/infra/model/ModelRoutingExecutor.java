@@ -3,6 +3,7 @@ package com.yinbo.ai.infra.model;
 import com.yinbo.ai.infra.enums.ModelCapability;
 import com.yinbo.ai.infra.http.ModelClientCommittedException;
 import com.yinbo.ai.infra.http.ModelClientException;
+import com.yinbo.ai.infra.http.ModelClientStreamClosedException;
 import java.util.List;
 import java.util.function.Function;
 import org.slf4j.Logger;
@@ -46,6 +47,9 @@ public class ModelRoutingExecutor {
                 log.info("event=ai_model_call_succeeded capability={} targetId={} provider={}", capability, target.id(), target.providerId());
                 return result;
             } catch (RuntimeException exception) {
+                if (ModelClientStreamClosedException.causedBy(exception)) {
+                    throw exception;
+                }
                 lastException = exception;
                 modelHealthStore.markFailure(target.id());
                 if (exception instanceof ModelClientCommittedException) {

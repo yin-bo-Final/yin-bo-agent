@@ -85,7 +85,8 @@ SpringAI-Program/
 | `ModelRoutingExecutor.java` | 按候选顺序调用供应商客户端，失败后切换下一个候选 |
 | `ModelTarget.java` | 封装一次模型调用的候选模型、供应商和请求 URL |
 | `AiInfraController.java` | 暴露 `/internal/ai/**` HTTP 接口给 backend 或 gateway |
-| `RequestIdFilter.java` | 接收或生成 `X-Request-Id`，写入 MDC 和响应头 |
+| `ModelClientStreamClosedException.java` | 标识 backend 或客户端主动中断流式连接，不计入模型失败 |
+| `RequestIdFilter.java` | 接收或生成 `X-Request-Id`，写入 MDC、响应头和 `event=access` 访问日志 |
 
 ### 能力子系统
 
@@ -123,6 +124,8 @@ frontend /api/chat/stream
 -> ai-infra 返回 NDJSON delta / done
 -> backend 转成前端 SSE delta / done
 ```
+
+用户点击中断时，前端 SSE 会断开，backend 会关闭到 ai-infra 的流式 HTTP 连接。ai-infra 将这种情况记录为 `event=ai_stream_client_disconnected`，不会按模型调用失败处理，也不会触发模型熔断。
 
 ### 文档向量化
 

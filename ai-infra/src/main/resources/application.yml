@@ -41,6 +41,8 @@ logging:
     file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] app=${spring.application.name} requestId=%X{requestId:-} logger=%logger{36} - %msg%n"
 
 app:
+  logging:
+    slow-request-threshold-ms: ${APP_SLOW_REQUEST_THRESHOLD_MS:3000}
   ai:
     providers:
       siliconflow:

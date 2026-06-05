@@ -6,6 +6,7 @@ import com.yinbo.ai.api.chat.LLMService;
 import com.yinbo.ai.api.chat.StreamCallback;
 import com.yinbo.ai.infra.enums.ModelCapability;
 import com.yinbo.ai.infra.http.ModelClientCommittedException;
+import com.yinbo.ai.infra.http.ModelClientStreamClosedException;
 import com.yinbo.ai.infra.model.ModelRoutingExecutor;
 import com.yinbo.ai.infra.model.ModelSelector;
 import com.yinbo.ai.infra.model.ModelTarget;
@@ -62,6 +63,9 @@ public class RoutingLLMService implements LLMService {
                     try {
                         return client.streamChat(request, probeCallback, target);
                     } catch (RuntimeException exception) {
+                        if (ModelClientStreamClosedException.causedBy(exception)) {
+                            throw exception;
+                        }
                         if (probeCallback.committed()) {
                             throw new ModelClientCommittedException("模型流式输出已开始，不能切换候选模型", exception);
                         }

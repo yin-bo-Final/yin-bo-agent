@@ -52,6 +52,18 @@ gateway/src/main/
 | `yinbo-ai-infra-internal`     | 转发 `/internal/ai/**` 请求到 ai-infra，受 `X-Internal-Token` 保护 |
 | `yinbo-agent-service-api`     | 兜底转发所有 `/api/**` 请求到后端 service |
 
+频率限流参数统一从 `local-secrets.yml` 读取：
+
+| 路由 | 流入速度 | 桶容量 | 单次消耗 |
+| --- | --- | --- | --- |
+| 上传 | `UPLOAD_GATEWAY_RATE_REPLENISH=20` | `UPLOAD_GATEWAY_RATE_BURST=240` | `UPLOAD_GATEWAY_RATE_REQUESTED=60` |
+| URL 入库 | `URL_INGESTION_GATEWAY_RATE_REPLENISH=12` | `URL_INGESTION_GATEWAY_RATE_BURST=120` | `URL_INGESTION_GATEWAY_RATE_REQUESTED=60` |
+| 流式 AI 对话 | `AI_STREAM_GATEWAY_RATE_REPLENISH=60` | `AI_STREAM_GATEWAY_RATE_BURST=300` | `AI_STREAM_GATEWAY_RATE_REQUESTED=60` |
+| 普通 AI 对话 | `AI_CHAT_GATEWAY_RATE_REPLENISH=60` | `AI_CHAT_GATEWAY_RATE_BURST=300` | `AI_CHAT_GATEWAY_RATE_REQUESTED=60` |
+| 登录注册 | `AUTH_GATEWAY_RATE_REPLENISH=30` | `AUTH_GATEWAY_RATE_BURST=180` | `AUTH_GATEWAY_RATE_REQUESTED=60` |
+
+这些值分别对应 RedisRateLimiter 的 `replenishRate`、`burstCapacity`、`requestedTokens`。
+
 ## `concurrent` 模块
 
 ### `RedisSemaphoreService.java`
