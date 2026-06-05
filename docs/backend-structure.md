@@ -367,6 +367,33 @@ chat/
 ├─ entity/
 │  ├─ ChatConversation.java
 │  └─ ChatMessageEntity.java
+├─ flow/
+│  ├─ ConversationFlowExecutor.java
+│  ├─ clarification/
+│  │  └─ ClarificationService.java
+│  ├─ context/
+│  │  ├─ ChatExecutionContext.java
+│  │  └─ ChatIntentType.java
+│  ├─ intent/
+│  │  └─ IntentResolutionService.java
+│  ├─ lifecycle/
+│  │  └─ ConversationLifecycleService.java
+│  ├─ llm/
+│  │  └─ DirectChatService.java
+│  ├─ memory/
+│  │  └─ ConversationMemoryService.java
+│  ├─ message/
+│  │  ├─ AssistantResponseResult.java
+│  │  └─ ChatMessagePersistenceService.java
+│  ├─ prompt/
+│  │  └─ PromptAssemblyService.java
+│  ├─ query/
+│  │  └─ QueryRewriteService.java
+│  ├─ response/
+│  │  └─ ChatStreamResponseWriter.java
+│  └─ retrieval/
+│     ├─ RetrievalContext.java
+│     └─ RetrievalExecuteService.java
 ├─ mapper/
 │  ├─ ChatConversationMapper.java
 │  └─ ChatMessageMapper.java
@@ -407,39 +434,71 @@ AI 对话和会话管理接口。
 
 ### `ChatService.java`
 
-AI 对话核心业务服务。
+AI 对话入口和会话管理服务。
 
 主要功能：
 
 | 功能 | 说明 |
 | --- | --- |
-| 普通对话 | 通过 `AiInfraClient` 远程调用 ai-infra 获取完整响应 |
-| 流式对话 | 使用 `SseEmitter` 推送 `start`、`delta`、`done`、`error` 事件 |
-| 会话管理 | 创建、查询、置顶、取消置顶、删除会话 |
-| 消息保存 | 保存 user / assistant 消息、模型、响应耗时和 token |
-| 请求构造 | 按历史消息构造 ai-api 中的 `LLMRequest` |
-| 缓存 | 读取和失效 Redis 会话消息缓存 |
-| 兜底响应 | 模型调用失败时返回友好兜底内容并记录日志 |
-| 统计 | 估算 token、读取模型 usage、记录 `event=ai_chat_completed` |
+| 对话入口 | 普通对话和流式对话委托给 `ConversationFlowExecutor` |
+| 会话管理 | 查询、置顶、取消置顶、删除会话 |
+| 详情恢复 | 从 Redis 缓存或 PostgreSQL 加载历史消息 |
+| 缓存清理 | 删除会话后清理 Redis 会话消息缓存 |
 
 核心方法：
 
 | 方法 | 功能 |
 | --- | --- |
-| `chat(AuthUser authUser, ChatRequest request)` | 发起普通非流式 AI 对话 |
-| `streamChat(AuthUser authUser, ChatRequest request)` | 创建 SSE 流式 AI 对话 |
+| `chat(AuthUser authUser, ChatRequest request)` | 创建普通对话上下文并交给会话流水线执行 |
+| `streamChat(AuthUser authUser, ChatRequest request)` | 创建流式对话上下文并交给会话流水线执行 |
 | `listConversations(AuthUser authUser)` | 查询当前用户会话列表 |
 | `getConversationDetail(...)` | 查询会话详情和消息 |
 | `updateConversationPin(...)` | 更新置顶状态 |
 | `unpinConversation(...)` | 取消置顶 |
 | `deleteConversation(...)` | 删除会话和消息 |
-| `doStreamChat(...)` | 执行流式模型调用和事件推送 |
-| `buildLlmRequest(...)` | 构造 ai-infra 远程调用请求 |
 | `loadConversationMessages(...)` | 从缓存或数据库加载历史消息 |
 | `evictConversationMessagesAfterCommit(...)` | 事务提交后清理消息缓存 |
-| `usageFrom(...)` | 从 `LLMResponse` 提取 token usage |
-| `estimateTokenCount(String content)` | 估算 token 数 |
-| `buildConversationTitle(String content)` | 根据首条消息生成会话标题 |
+
+### `ConversationFlowExecutor.java`
+
+会话处理流水线执行器。
+
+当前阶段：
+
+| 阶段 | 方法 | 说明 |
+| --- | --- | --- |
+| 准备会话 | `ConversationLifecycleService.prepare(...)` | 解析模型、取最新用户消息、创建或恢复会话 |
+| 加载记忆 | `ConversationMemoryService.load(...)` | 从 Redis 缓存或 PostgreSQL 加载历史会话消息 |
+| 保存用户消息 | `ChatMessagePersistenceService.persistCurrentUserMessage(...)` | 保存本轮 user 消息并写入上下文记忆 |
+| 查询改写 | `QueryRewriteService.rewrite(...)` | 当前占位，默认使用原始问题 |
+| 意图识别 | `IntentResolutionService.resolve(...)` | 当前占位，默认 `DIRECT_CHAT` |
+| 歧义引导 | `ClarificationService.guidanceMessage(...)` | 当前占位，只有上下文显式标记歧义时才短路 |
+| 普通直聊 | `DirectChatService.generate(...)` / `stream(...)` | 不需要 RAG 或工具时直接调用 LLM |
+| 多通道检索 | `RetrievalExecuteService.retrieve(...)` | 当前占位，后续接知识库检索和 MCP 工具 |
+| 空检索兜底 | `RetrievalExecuteService.emptyRetrievalMessage(...)` | 检索为空时输出未检索到相关文档 |
+| Prompt 组装 | `PromptAssemblyService.buildDirectRequest(...)` / `buildGroundedRequest(...)` | 组装发给 ai-infra 的 `LLMRequest` |
+| assistant 落库 | `ChatMessagePersistenceService.completeAssistantMessage(...)` | 保存 assistant 消息、更新会话时间和刷新消息缓存 |
+| SSE 写出 | `ChatStreamResponseWriter` | 统一发送 `start`、`delta`、`done`、`error` 事件 |
+| RAG 响应 | `ConversationFlowExecutor.streamGroundedResponse(...)` / `generateGroundedResponse(...)` | 当前占位，后续组装检索 prompt 并输出 |
+
+辅助文件：
+
+| 文件 | 功能 |
+| --- | --- |
+| `flow/context/ChatExecutionContext.java` | 单次会话执行过程中跨阶段传递用户、请求、会话、记忆、意图和 SSE 信息 |
+| `flow/context/ChatIntentType.java` | 会话意图枚举，包含 `DIRECT_CHAT`、`KNOWLEDGE_RAG`、`TOOL_CALL`、`RAG_AND_TOOL`、`CLARIFICATION` |
+| `flow/lifecycle/ConversationLifecycleService.java` | 会话创建、恢复、模型解析和最近消息信息维护 |
+| `flow/memory/ConversationMemoryService.java` | 历史会话记忆加载阶段，统一处理 Redis 缓存读取和 PostgreSQL 回源 |
+| `flow/message/ChatMessagePersistenceService.java` | user/assistant 消息持久化、会话更新和缓存刷新 |
+| `flow/message/AssistantResponseResult.java` | assistant 响应内容、模型和 token 统计的统一结果 |
+| `flow/llm/DirectChatService.java` | 普通直聊和流式直聊模型调用 |
+| `flow/query/QueryRewriteService.java` | 查询改写和子问题拆分阶段 |
+| `flow/intent/IntentResolutionService.java` | 意图识别阶段 |
+| `flow/clarification/ClarificationService.java` | 歧义引导阶段 |
+| `flow/retrieval/RetrievalContext.java` | 多通道检索阶段的上下文结果，占位保存知识库片段和工具结果 |
+| `flow/retrieval/RetrievalExecuteService.java` | 知识库和工具检索执行阶段 |
+| `flow/prompt/PromptAssemblyService.java` | Prompt 和 `LLMRequest` 组装阶段 |
+| `flow/response/ChatStreamResponseWriter.java` | SSE 流式事件写出 |
 
 ### `ChatMessageCacheService.java`
 
@@ -1190,8 +1249,9 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | gateway 用户维度限流所需用户 ID | `AuthConstants.LOGIN_USER_ID_SESSION_KEY`、`SessionAuthService.createLoginSession(...)` |
 | 管理员权限校验 | `AdminGuard` |
 | 后台仪表盘 | `AdminDashboardController`、`AdminDashboardService` |
-| 普通 AI 对话 | `ChatController`、`ChatService.chat(...)` |
-| SSE 流式 AI 对话 | `ChatController`、`ChatService.streamChat(...)` |
+| 普通 AI 对话 | `ChatController`、`ChatService.chat(...)`、`ConversationFlowExecutor.executeSync(...)` |
+| SSE 流式 AI 对话 | `ChatController`、`ChatService.streamChat(...)`、`ConversationFlowExecutor.executeStream(...)` |
+| 会话处理流水线 | `ConversationFlowExecutor`、`ChatExecutionContext`、`ConversationLifecycleService`、`ConversationMemoryService`、`ChatMessagePersistenceService`、`DirectChatService`、`QueryRewriteService`、`IntentResolutionService`、`ClarificationService`、`RetrievalExecuteService`、`PromptAssemblyService`、`ChatStreamResponseWriter` |
 | 会话管理 | `ChatController`、`ChatService`、`ChatMessageCacheService` |
 | 统一业务异常 | `BusinessException`、`GlobalExceptionHandler`、`ApiErrorResponse` |
 | requestId 链路日志 | `RequestIdFilter` |

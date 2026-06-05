@@ -59,6 +59,8 @@ ConversationPage
 -> LoginInterceptor
 -> ChatController
 -> ChatService
+-> ConversationFlowExecutor 编排 chat/flow 子包阶段服务
+-> 生命周期、加载记忆、查询改写、意图识别、歧义引导、检索占位和响应输出
 -> AiInfraClient
 -> ai-infra /internal/ai/chat 或 /internal/ai/chat/stream
 -> ModelSelector / ModelRoutingExecutor / 供应商 ChatClient
@@ -122,6 +124,7 @@ ConversationPage
 - 网关包名根路径是 `com.yinbo.gateway`，后端业务服务包名根路径是 `com.yinbo.agent`，AI 基础设施服务包名根路径是 `com.yinbo.ai.infra`。
 - 前端 `/api` 请求默认先进入 gateway，再由 gateway 转发到后端业务服务。
 - backend 通过 `AiInfraClient` 远程调用 ai-infra，HTTP 契约放在 `ai-api`，不要让 backend 反向依赖 ai-infra 实现类。
+- 会话生成入口由 `ChatService` 接收，阶段化处理放在 `chat/flow`；`ConversationFlowExecutor` 只负责编排，生命周期、记忆、消息持久化、LLM 调用、查询改写、意图识别、歧义引导、RAG 检索和工具调用分别扩展对应子包服务。
 - 后台接口路径统一放在 `/api/admin/**`。
 - 业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本。

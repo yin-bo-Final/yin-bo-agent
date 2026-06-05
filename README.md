@@ -83,6 +83,7 @@ RAG 文档入库链路：
 - 前端 Chat 模型选择
 - Chat / Embedding / Rerank 模型由 ai-infra 的 `app.ai` 配置驱动，支持供应商、候选模型、优先级、熔断和故障转移
 - 普通响应和 SSE 流式响应
+- 会话生成已拆成 `ConversationFlowExecutor` 编排器和 `chat/flow` 分层阶段服务，当前保留直接 LLM 生成，查询改写、意图识别、歧义引导、RAG 检索和工具调用为后续扩展点
 - 会话列表、搜索、置顶、取消置顶、删除
 - 刷新后通过 `/c/{conversationId}` 恢复会话
 - assistant 消息记录响应耗时和 token 消耗
@@ -141,7 +142,7 @@ SpringAI-Program/
 │     ├─ java/com/yinbo/agent/
 │     │  ├─ admin/                  # 后台 Dashboard 和管理员校验
 │     │  ├─ auth/                   # 登录、注册、Session、角色
-│     │  ├─ chat/                   # 聊天、会话、消息统计
+│     │  ├─ chat/                   # 聊天、会话、消息统计和会话处理流水线
 │     │  ├─ common/                 # 业务异常和统一错误响应
 │     │  ├─ config/                 # Web、RAG、ai-infra、对象存储配置
 │     │  ├─ ingestion/              # 文档 ETL 和 RocketMQ 消费
@@ -437,6 +438,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 - Actuator 默认只启用并暴露 `health` 和 `info`，不暴露 gateway 路由、env、configprops 等内部信息。
 - 关键业务日志使用 `event=...`：登录注册、知识库变更、文档上传、AI 调用、RocketMQ 投递消费、ingestion 完成或失败都会有明确事件。
 - 模型调用不要散落在业务 Service 中，backend 只通过 `AiInfraClient` 调 ai-infra；HTTP 契约放在 `ai-api`，模型供应商实现只放在 `ai-infra`。
+- 会话编排不要继续堆进 `ChatService`，新增查询改写、意图识别、歧义引导、RAG 检索或工具调用时优先扩展 `chat/flow` 下对应子包服务，并通过 `ChatExecutionContext` 传递阶段结果。
 - 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本。
 - 上传文件大小默认限制为单文件 `200MB`；gateway 会先拦截超过 `200MB` 的上传请求，service multipart 和前端 Nginx 单请求默认上限为 `220MB`。
