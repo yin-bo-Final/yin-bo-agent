@@ -26,6 +26,8 @@ frontend/
    │  └─ http.js
    ├─ components/
    │  └─ GlobalErrorToasts.vue
+   ├─ utils/
+   │  └─ quietMotion.js
    └─ pages/
       ├─ AdminPage.vue
       ├─ AuthPage.vue
@@ -51,6 +53,7 @@ frontend/
 - 注册表单
 - 表单错误展示
 - 成功后通知 `App.vue`
+- 使用 `utils/quietMotion.js` 做轻量进入动效
 
 相关接口：
 
@@ -73,6 +76,7 @@ GET  /api/auth/me
 - 用户菜单
 - 管理员显示“后台管理”入口
 - 侧边栏展开和折叠
+- 使用 `utils/quietMotion.js` 做轻量进入动效
 
 主要接口：
 
@@ -99,6 +103,7 @@ DELETE /api/conversations/{conversationId}
 - 自定义弹窗、下拉栏、tooltip
 - 根据 `/admin/knowledge/...` 和 `/admin/tasks/failed` 解析内部视图
 - 文档处于 `UPLOADING` 或 `PROCESSING` 时轮询刷新
+- 使用 `utils/quietMotion.js` + GSAP ScrollTrigger 做后台内容进入 reveal
 
 后台路由：
 
@@ -145,6 +150,15 @@ DELETE /api/admin/ingestion/tasks/{taskId}
 
 请求错误处理要优先读取后端或 gateway 返回的 `message` 字段。后端业务失败通常由 `BusinessException` 统一返回；gateway 限流失败返回 `429` 时，`GlobalErrorToasts` 会展示居中的全局错误弹窗。
 
+## `utils/quietMotion.js`
+
+前端统一的轻量动效入口。
+
+- 依赖 `gsap` 和 `ScrollTrigger`
+- 默认对登录卡片、侧边栏、聊天顶部栏、composer、后台标题、指标卡、表格面板做进入 reveal
+- 动效只使用 `opacity` 和 `transform`
+- 不在业务组件里写复杂动画参数，后续要调节节奏优先改这个文件
+
 开发环境中，`vite.config.js` 会把 `/api` 代理到 gateway 默认地址 `http://localhost:8081`。部署时，`nginx/default.conf` 也把 `/api/` 转发给 `gateway:8081`，再由 gateway 转发到后端业务服务。Nginx 的 `client_max_body_size` 默认设置为 `220m`，避免 200MB 附近的上传在进入 gateway 前被 Nginx 默认 1MB 限制拦截。
 
 ## `styles.css`
@@ -155,6 +169,7 @@ DELETE /api/admin/ingestion/tasks/{taskId}
 
 ```text
 全局字体和背景
+Minimalist redesign token 覆盖层
 认证页
 聊天布局
 会话侧边栏和折叠 rail
@@ -170,7 +185,8 @@ DELETE /api/admin/ingestion/tasks/{taskId}
 
 ## UI 约定
 
-- 后台界面保持项目自己的灰色工程风格，不照搬外部截图。
+- 后台界面保持项目自己的简约工作台风格，不照搬外部截图。
+- 主题色固定 `#4C4F69`，字体固定 `Cascadia Mono`。
 - 按钮、弹窗、下拉栏、tooltip 优先复用现有类名和交互。
 - tooltip 只在必要场景使用，例如导航栏折叠后图标悬停，或表格内容被省略时展示完整内容。
 - 文档管理、知识库管理、分块管理都要保持统一的按钮高度、边框、hover 动效。

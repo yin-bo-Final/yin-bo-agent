@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import {
   createKnowledgeBase,
   deleteChunk,
@@ -24,6 +24,7 @@ import {
   updateKnowledgeBase,
   uploadKnowledgeDocument
 } from '../api/adminApi';
+import { createQuietReveal } from '../utils/quietMotion';
 
 const props = defineProps({
   currentUser: {
@@ -130,7 +131,9 @@ const floatingTooltip = ref({
   top: 0,
   placement: 'top'
 });
+const adminMain = ref(null);
 let knowledgePollTimer = null;
+let stopAdminMotion = null;
 
 const activeModule = computed(() => route.value.module);
 const currentView = computed(() => route.value.view);
@@ -301,14 +304,24 @@ onMounted(async () => {
   window.addEventListener('popstate', handleRouteChange);
   knowledgePollTimer = window.setInterval(pollProcessingDocuments, 3000);
   await Promise.all([loadDashboard(), loadKnowledge(), loadFailedTasks()]);
+  await runAdminReveal();
 });
 
 onUnmounted(() => {
   window.removeEventListener('popstate', handleRouteChange);
+  stopAdminMotion?.();
   if (knowledgePollTimer) {
     window.clearInterval(knowledgePollTimer);
   }
 });
+
+async function runAdminReveal() {
+  await nextTick();
+  stopAdminMotion?.();
+  stopAdminMotion = createQuietReveal(adminMain.value, {
+    scroller: adminMain.value
+  });
+}
 
 function parseAdminRoute() {
   const segments = window.location.pathname.split('/').filter(Boolean);
@@ -348,6 +361,7 @@ async function handleRouteChange() {
   if (activeModule.value === 'tasks') {
     await loadFailedTasks();
   }
+  await runAdminReveal();
 }
 
 async function navigateTo(path) {
@@ -1374,7 +1388,7 @@ function documentChunkActionLabel(document) {
       </button>
     </aside>
 
-    <section class="admin-main">
+    <section ref="adminMain" class="admin-main">
       <header class="admin-header">
         <div>
           <span>{{ currentHeader.label }}</span>

@@ -11,6 +11,7 @@ import {
   streamChatMessage,
   updateConversationPin
 } from '../api/chatApi';
+import { createQuietReveal } from '../utils/quietMotion';
 
 const props = defineProps({
   currentUser: {
@@ -87,8 +88,10 @@ const cancelForm = ref({
   password: ''
 });
 const messageList = ref(null);
+const pageRoot = ref(null);
 const searchInput = ref(null);
 const modelMenu = ref(null);
+const isConversationProgressOpen = ref(false);
 const shouldAutoScroll = ref(true);
 const activeMessageIndex = ref(0);
 const activeStreamController = ref(null);
@@ -101,6 +104,8 @@ const authPointer = ref({
 let pendingAuthPointer = { x: 0, y: 0 };
 let pointerAnimationFrame = 0;
 let progressAnimationFrame = 0;
+let progressCardCloseTimer = 0;
+let stopPageMotion = null;
 const renderedMessageCache = new WeakMap();
 
 const selectedModel = computed(() => {
@@ -174,9 +179,9 @@ const conversationProgressItems = computed(() => {
     index,
     position,
     percent: total === 1 ? 50 : (position / (total - 1)) * 100,
-    role: 'user',
-    label: '你',
-    meta: `用户消息 ${position + 1}/${total}`,
+    role: message.role,
+    label: message.role === 'user' ? '你' : 'AI',
+    meta: buildProgressMeta(message, position, total),
     snippet: buildProgressSnippet(message)
   }));
 });
@@ -192,51 +197,22 @@ const visibleConversationProgressItems = computed(() => {
   return conversationProgressItems.value;
 });
 const visibleConversationProgressTicks = computed(() => {
-  const ticks = buildProgressTickWindow(conversationProgressItems.value);
-  const startPercent = 8;
-  const endPercent = 92;
-  const rangePercent = endPercent - startPercent;
+  const ticks = conversationProgressItems.value;
+  const tickCount = ticks.length;
+  const preferredGapPercent = tickCount <= 1
+    ? 0
+    : Math.min(7, Math.max(2.8, 64 / (tickCount - 1)));
+  const totalSpan = Math.min(76, preferredGapPercent * Math.max(tickCount - 1, 0));
+  const gapPercent = tickCount <= 1 ? 0 : totalSpan / (tickCount - 1);
+  const startPercent = 50 - totalSpan / 2;
   return ticks.map((item, index) => ({
     ...item,
-    compactPercent: ticks.length === 1 ? 50 : startPercent + (index / (ticks.length - 1)) * rangePercent
+    compactPercent: tickCount === 1 ? 50 : startPercent + index * gapPercent
   }));
 });
 const hasConversationProgress = computed(() => {
-  return !isFreshConversation.value && conversationProgressItems.value.length > 1;
+  return !isFreshConversation.value && conversationProgressItems.value.length > 0;
 });
-
-function buildProgressWindow(items, maxVisible) {
-  if (items.length <= maxVisible) {
-    return items;
-  }
-
-  const activeIndex = Math.min(Math.max(activeMessageIndex.value, 0), items.length - 1);
-  const beforeCount = Math.floor((maxVisible - 1) / 2);
-  let startIndex = Math.max(0, activeIndex - beforeCount);
-  let endIndex = Math.min(items.length, startIndex + maxVisible);
-  startIndex = Math.max(0, endIndex - maxVisible);
-  return items.slice(startIndex, endIndex);
-}
-
-function buildProgressTickWindow(items) {
-  const maxVisible = 9;
-  const shiftSize = 5;
-  const triggerOffset = maxVisible - 1;
-  if (items.length <= maxVisible) {
-    return items;
-  }
-
-  const activeIndex = findClosestProgressPosition(items, activeMessageIndex.value);
-  const maxStartIndex = Math.max(0, items.length - maxVisible);
-  let startIndex = 0;
-
-  if (activeIndex >= triggerOffset) {
-    startIndex = Math.floor((activeIndex - triggerOffset) / shiftSize) * shiftSize + shiftSize;
-  }
-
-  startIndex = Math.min(Math.max(0, startIndex), maxStartIndex);
-  return items.slice(startIndex, startIndex + maxVisible);
-}
 
 function findClosestProgressPosition(items, messageIndex) {
   if (items.length === 0) {
@@ -294,12 +270,17 @@ onMounted(async () => {
   } catch (error) {
     loadError.value = '模型服务暂不可用，当前会使用前端内置模型列表。';
   }
+
+  await nextTick();
+  stopPageMotion = createQuietReveal(pageRoot.value);
 });
 
 onUnmounted(() => {
   window.removeEventListener('popstate', handlePopState);
   window.removeEventListener('keydown', handleGlobalKeydown);
   window.removeEventListener('pointerdown', handleWindowPointerDown);
+  clearProgressCardCloseTimer();
+  stopPageMotion?.();
   stopPointerFrame();
   stopProgressFrame();
 });
@@ -718,6 +699,30 @@ function buildProgressSnippet(message) {
     return '正在生成回复...';
   }
   return message.role === 'user' ? '空消息' : 'AI 回复';
+}
+
+function buildProgressMeta(message, position, total) {
+  return `用户消息 ${position + 1}/${total}`;
+}
+
+function openConversationProgressCard() {
+  clearProgressCardCloseTimer();
+  isConversationProgressOpen.value = true;
+}
+
+function queueConversationProgressCardClose() {
+  clearProgressCardCloseTimer();
+  progressCardCloseTimer = window.setTimeout(() => {
+    isConversationProgressOpen.value = false;
+    progressCardCloseTimer = 0;
+  }, 260);
+}
+
+function clearProgressCardCloseTimer() {
+  if (progressCardCloseTimer) {
+    window.clearTimeout(progressCardCloseTimer);
+    progressCardCloseTimer = 0;
+  }
 }
 
 function cleanProgressContent(message) {
@@ -1354,6 +1359,7 @@ function stopPointerFrame() {
 
 <template>
   <main
+    ref="pageRoot"
     class="experience-page"
     :style="authPageStyle"
     @pointermove="handleAuthPointerMove"
@@ -1683,7 +1689,16 @@ function stopPointerFrame() {
         </article>
       </div>
 
-      <nav v-if="hasConversationProgress" class="conversation-progress" aria-label="会话进度导航">
+      <nav
+        v-if="hasConversationProgress"
+        class="conversation-progress"
+        :class="{ open: isConversationProgressOpen }"
+        aria-label="用户消息进度导航"
+        @mouseenter="openConversationProgressCard"
+        @mouseleave="queueConversationProgressCardClose"
+        @focusin="openConversationProgressCard"
+        @focusout="queueConversationProgressCardClose"
+      >
         <div class="conversation-progress-hitbox" aria-hidden="true"></div>
         <TransitionGroup name="progress-tick" tag="div" class="conversation-progress-rail">
           <button
@@ -1697,7 +1712,11 @@ function stopPointerFrame() {
             @click="scrollToMessage(item.index)"
           ></button>
         </TransitionGroup>
-        <div class="conversation-progress-card">
+        <div
+          class="conversation-progress-card"
+          @mouseenter="openConversationProgressCard"
+          @mouseleave="queueConversationProgressCardClose"
+        >
           <button
             v-for="item in visibleConversationProgressItems"
             :key="`card-${item.id}`"
@@ -1771,10 +1790,21 @@ function stopPointerFrame() {
             </div>
           </Transition>
         </div>
-        <button type="submit" :class="{ interrupting: isSending }" :disabled="!canUseComposer">
-          {{ composerSubmitText }}
+        <button
+          class="composer-send-button"
+          type="submit"
+          :class="{ interrupting: isSending }"
+          :disabled="!canUseComposer"
+          :aria-label="composerSubmitText"
+        >
+          <span v-if="isSending">{{ composerSubmitText }}</span>
+          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 19V5" />
+            <path d="m5 12 7-7 7 7" />
+          </svg>
         </button>
       </form>
+      <p class="composer-disclaimer">AI 也可能会犯错。请核查重要信息。</p>
 
     </section>
   </section>
