@@ -1,5 +1,9 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+import { LineChart } from 'echarts/charts';
+import { GridComponent, TooltipComponent } from 'echarts/components';
+import * as echarts from 'echarts/core';
+import { CanvasRenderer } from 'echarts/renderers';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   createKnowledgeBase,
   deleteChunk,
@@ -25,6 +29,8 @@ import {
   uploadKnowledgeDocument
 } from '../api/adminApi';
 import { createQuietReveal } from '../utils/quietMotion';
+
+echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
 const props = defineProps({
   currentUser: {
@@ -71,6 +77,7 @@ const taskKeyword = ref('');
 const documentStatusFilter = ref('ALL');
 const taskStatusFilter = ref('ALL');
 const chunkStatusFilter = ref('ALL');
+const messageTrendRange = ref('day');
 const isCreateModalOpen = ref(false);
 const isEditModalOpen = ref(false);
 const detailKnowledgeBase = ref(null);
@@ -106,6 +113,8 @@ const editChunkForm = ref({
 });
 const editChunkError = ref('');
 const isChunkUpdateNoticeOpen = ref(false);
+const isTaskStatusMenuOpen = ref(false);
+const isDocumentStatusMenuOpen = ref(false);
 const isChunkStatusMenuOpen = ref(false);
 const createForm = ref({
   name: '',
@@ -132,8 +141,13 @@ const floatingTooltip = ref({
   placement: 'top'
 });
 const adminMain = ref(null);
+const dashboardTrendShell = ref(null);
+const dashboardTrendChart = ref(null);
+const dashboardTrendOverlay = ref(null);
 let knowledgePollTimer = null;
 let stopAdminMotion = null;
+let dashboardChart = null;
+let dashboardTrendAnimationFrame = 0;
 
 const activeModule = computed(() => route.value.module);
 const currentView = computed(() => route.value.view);
@@ -208,6 +222,63 @@ function statusFilterText(value) {
     return '禁用';
   }
   return '全部状态';
+}
+
+function documentStatusFilterText(value) {
+  if (value === 'UPLOADING') {
+    return 'uploading';
+  }
+  if (value === 'UPLOADED') {
+    return 'uploaded';
+  }
+  if (value === 'COMPLETED') {
+    return 'success';
+  }
+  if (value === 'PROCESSING') {
+    return 'processing';
+  }
+  if (value === 'FAILED') {
+    return 'failed';
+  }
+  return '全部状态';
+}
+
+function taskStatusFilterText(value) {
+  if (value === 'FAILED') {
+    return 'failed';
+  }
+  if (value === 'DEAD') {
+    return 'dead';
+  }
+  return '全部状态';
+}
+
+function toggleTaskStatusMenu() {
+  isTaskStatusMenuOpen.value = !isTaskStatusMenuOpen.value;
+  isDocumentStatusMenuOpen.value = false;
+  isChunkStatusMenuOpen.value = false;
+}
+
+function toggleDocumentStatusMenu() {
+  isDocumentStatusMenuOpen.value = !isDocumentStatusMenuOpen.value;
+  isTaskStatusMenuOpen.value = false;
+  isChunkStatusMenuOpen.value = false;
+}
+
+function toggleChunkStatusMenu() {
+  isChunkStatusMenuOpen.value = !isChunkStatusMenuOpen.value;
+  isTaskStatusMenuOpen.value = false;
+  isDocumentStatusMenuOpen.value = false;
+}
+
+function setTaskStatus(value) {
+  taskStatusFilter.value = value;
+  isTaskStatusMenuOpen.value = false;
+}
+
+function setDocumentStatus(value) {
+  documentStatusFilter.value = value;
+  isDocumentStatusMenuOpen.value = false;
 }
 
 function setChunkStatus(value) {
@@ -299,21 +370,34 @@ const averageResponseStatus = computed(() => {
   }
   return 'warn';
 });
+const messageTrendPoints = computed(() => {
+  const points = dashboard.value?.messageTrendPoints;
+  return Array.isArray(points) ? points : [];
+});
+const messageTrendTotal = computed(() => messageTrendPoints.value.reduce((total, point) => total + (point.messageCount || 0), 0));
 
 onMounted(async () => {
   window.addEventListener('popstate', handleRouteChange);
+  window.addEventListener('resize', resizeDashboardTrendChart);
   knowledgePollTimer = window.setInterval(pollProcessingDocuments, 3000);
   await Promise.all([loadDashboard(), loadKnowledge(), loadFailedTasks()]);
   await runAdminReveal();
+  await renderDashboardTrendChart();
 });
 
 onUnmounted(() => {
   window.removeEventListener('popstate', handleRouteChange);
+  window.removeEventListener('resize', resizeDashboardTrendChart);
   stopAdminMotion?.();
+  disposeDashboardTrendChart();
   if (knowledgePollTimer) {
     window.clearInterval(knowledgePollTimer);
   }
 });
+
+watch([messageTrendPoints, activeModule], async () => {
+  await renderDashboardTrendChart();
+}, { deep: true });
 
 async function runAdminReveal() {
   await nextTick();
@@ -362,6 +446,7 @@ async function handleRouteChange() {
     await loadFailedTasks();
   }
   await runAdminReveal();
+  await renderDashboardTrendChart();
 }
 
 async function navigateTo(path) {
@@ -374,12 +459,270 @@ async function navigateTo(path) {
 async function loadDashboard() {
   isLoadingDashboard.value = true;
   try {
-    dashboard.value = await fetchAdminDashboard();
+    dashboard.value = await fetchAdminDashboard({ messageRange: messageTrendRange.value });
   } catch (error) {
     handleAdminError(error);
   } finally {
     isLoadingDashboard.value = false;
+    await renderDashboardTrendChart();
   }
+}
+
+async function setMessageTrendRange(value) {
+  if (messageTrendRange.value === value || isLoadingDashboard.value) {
+    return;
+  }
+  messageTrendRange.value = value;
+  await loadDashboard();
+}
+
+async function renderDashboardTrendChart() {
+  await nextTick();
+  if (activeModule.value !== 'dashboard' || !dashboardTrendChart.value) {
+    disposeDashboardTrendChart();
+    return;
+  }
+  if (!dashboardChart) {
+    dashboardChart = echarts.init(dashboardTrendChart.value, null, { renderer: 'canvas' });
+  }
+
+  const points = messageTrendPoints.value;
+  const labels = points.map((point) => point.label || '-');
+  const messageCounts = points.map((point) => point.messageCount || 0);
+  const yAxisMax = Math.max(5, Math.ceil(Math.max(...messageCounts, 0) * 1.2));
+
+  dashboardChart.setOption({
+    backgroundColor: 'transparent',
+    animation: false,
+    color: ['#4C4F69'],
+    textStyle: {
+      fontFamily: '"Cascadia Mono", "Microsoft YaHei", Consolas, monospace',
+      color: '#303446'
+    },
+    tooltip: {
+      trigger: 'axis',
+      borderWidth: 1,
+      borderColor: 'rgba(76, 79, 105, 0.14)',
+      backgroundColor: 'rgba(255, 255, 255, 0.98)',
+      padding: [10, 12],
+      textStyle: {
+        color: '#303446',
+        fontFamily: '"Cascadia Mono", "Microsoft YaHei", Consolas, monospace',
+        fontSize: 12
+      },
+      axisPointer: {
+        type: 'line',
+        lineStyle: {
+          color: 'rgba(76, 79, 105, 0.22)',
+          width: 1
+        }
+      },
+      formatter(params) {
+        const index = params?.[0]?.dataIndex ?? 0;
+        const point = points[index] || {};
+        return [
+          `<strong>${point.label || ''}</strong>`,
+          `消息数: ${formatNumber(point.messageCount || 0)}`
+        ].join('<br/>');
+      }
+    },
+    legend: { show: false },
+    grid: {
+      top: 28,
+      right: 28,
+      bottom: 30,
+      left: 42,
+      containLabel: true
+    },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: labels,
+      axisTick: { show: false },
+      axisLine: {
+        lineStyle: { color: 'rgba(76, 79, 105, 0.12)' }
+      },
+      axisLabel: {
+        color: 'rgba(48, 52, 70, 0.52)',
+        fontSize: 12,
+        interval: 0
+      }
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: yAxisMax,
+      minInterval: 1,
+      splitLine: {
+        lineStyle: {
+          color: 'rgba(76, 79, 105, 0.12)',
+          type: 'dashed'
+        }
+      },
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        color: 'rgba(48, 52, 70, 0.52)',
+        fontSize: 12
+      }
+    },
+    series: [
+      createTrendSeries('消息数', messageCounts)
+    ]
+  }, true);
+  dashboardChart.resize();
+  renderDashboardTrendOverlay(labels, messageCounts);
+}
+
+async function renderDashboardTrendOverlay(labels, data) {
+  await nextTick();
+  if (!dashboardChart || !dashboardTrendShell.value || !dashboardTrendOverlay.value || !data.length) {
+    return;
+  }
+  window.cancelAnimationFrame(dashboardTrendAnimationFrame);
+  const shellRect = dashboardTrendShell.value.getBoundingClientRect();
+  const svg = dashboardTrendOverlay.value;
+  svg.setAttribute('viewBox', `0 0 ${shellRect.width} ${shellRect.height}`);
+  svg.innerHTML = '';
+
+  const pixelPoints = data.map((value, index) => {
+    const [x, y] = dashboardChart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [labels[index], value]);
+    return { x, y, value };
+  });
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', createSmoothPath(pixelPoints));
+  path.setAttribute('class', 'dashboard-trend-svg-line');
+  svg.appendChild(path);
+
+  const circles = pixelPoints.map((point) => {
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', point.x);
+    circle.setAttribute('cy', point.y);
+    circle.setAttribute('r', '0');
+    circle.setAttribute('class', 'dashboard-trend-svg-point');
+    svg.appendChild(circle);
+    return circle;
+  });
+
+  const pathLength = path.getTotalLength();
+  path.style.strokeDasharray = String(pathLength);
+  path.style.strokeDashoffset = String(pathLength);
+  const startedAt = window.performance.now();
+  const lineDuration = 1680;
+  const pointDuration = 180;
+  const pointRadius = 3.5;
+
+  function step(now) {
+    if (!dashboardTrendOverlay.value) {
+      return;
+    }
+    const elapsed = now - startedAt;
+    const lineProgress = easeInOutCubic(Math.min(1, elapsed / lineDuration));
+    path.style.strokeDashoffset = String(pathLength * (1 - lineProgress));
+    circles.forEach((circle, index) => {
+      const position = circles.length <= 1 ? 1 : index / (circles.length - 1);
+      const pointStart = position * Math.max(0, lineDuration - pointDuration);
+      const pointProgress = Math.max(0, Math.min(1, (elapsed - pointStart) / pointDuration));
+      circle.setAttribute('r', String(pointRadius * easeOutCubic(pointProgress)));
+    });
+
+    if (elapsed < lineDuration + pointDuration) {
+      dashboardTrendAnimationFrame = window.requestAnimationFrame(step);
+    }
+  }
+
+  dashboardTrendAnimationFrame = window.requestAnimationFrame(step);
+}
+
+function createSmoothPath(points) {
+  if (!points.length) {
+    return '';
+  }
+  if (points.length === 1) {
+    const point = points[0];
+    return `M ${point.x} ${point.y}`;
+  }
+  return points.reduce((path, point, index) => {
+    if (index === 0) {
+      return `M ${point.x} ${point.y}`;
+    }
+    const previous = points[index - 1];
+    const distance = point.x - previous.x;
+    const controlOne = {
+      x: previous.x + distance * 0.42,
+      y: previous.y
+    };
+    const controlTwo = {
+      x: point.x - distance * 0.42,
+      y: point.y
+    };
+    return `${path} C ${controlOne.x} ${controlOne.y}, ${controlTwo.x} ${controlTwo.y}, ${point.x} ${point.y}`;
+  }, '');
+}
+
+function easeOutCubic(value) {
+  return 1 - Math.pow(1 - value, 3);
+}
+
+function easeInOutCubic(value) {
+  if (value <= 0) {
+    return 0;
+  }
+  if (value >= 1) {
+    return 1;
+  }
+  return value < 0.5
+    ? 4 * value * value * value
+    : 1 - Math.pow(-2 * value + 2, 3) / 2;
+}
+
+function createTrendSeries(name, data) {
+  return {
+    name,
+    type: 'line',
+    data,
+    smooth: true,
+    showSymbol: true,
+    symbol: 'circle',
+    symbolSize: 10,
+    connectNulls: false,
+    lineStyle: {
+      width: 3,
+      color: '#4C4F69',
+      opacity: 0,
+      cap: 'round',
+      join: 'round'
+    },
+    itemStyle: {
+      color: '#ffffff',
+      opacity: 0,
+      borderWidth: 2,
+      borderColor: '#4C4F69'
+    },
+    emphasis: {
+      focus: 'series',
+      lineStyle: {
+        width: 3
+      }
+    }
+  };
+}
+
+function resizeDashboardTrendChart() {
+  dashboardChart?.resize();
+  if (dashboardChart) {
+    const points = messageTrendPoints.value;
+    renderDashboardTrendOverlay(points.map((point) => point.label || '-'), points.map((point) => point.messageCount || 0));
+  }
+}
+
+function disposeDashboardTrendChart() {
+  window.cancelAnimationFrame(dashboardTrendAnimationFrame);
+  if (dashboardTrendOverlay.value) {
+    dashboardTrendOverlay.value.innerHTML = '';
+  }
+  dashboardChart?.dispose();
+  dashboardChart = null;
 }
 
 async function loadKnowledge() {
@@ -1479,6 +1822,49 @@ function documentChunkActionLabel(document) {
             <small>RAG 检索链路完善后统计</small>
           </article>
         </div>
+
+        <article class="dashboard-trend-card">
+          <header class="dashboard-trend-header">
+            <div class="dashboard-trend-title">
+              <strong>数据曲线</strong>
+              <span aria-label="消息曲线说明">?</span>
+            </div>
+            <div
+              class="dashboard-trend-actions"
+              :class="{ 'is-month': messageTrendRange === 'month' }"
+              role="group"
+              aria-label="消息曲线范围"
+            >
+              <span class="dashboard-trend-indicator" aria-hidden="true"></span>
+              <button
+                type="button"
+                :class="{ active: messageTrendRange === 'day' }"
+                :disabled="isLoadingDashboard"
+                @click="setMessageTrendRange('day')"
+              >
+                24小时
+              </button>
+              <button
+                type="button"
+                :class="{ active: messageTrendRange === 'month' }"
+                :disabled="isLoadingDashboard"
+                @click="setMessageTrendRange('month')"
+              >
+                本月
+              </button>
+            </div>
+          </header>
+          <div class="dashboard-trend-summary" aria-label="消息统计">
+            <span><i></i>消息数：{{ metricText(messageTrendTotal, '0') }}</span>
+          </div>
+          <div v-if="messageTrendPoints.length" ref="dashboardTrendShell" class="dashboard-trend-chart" aria-label="消息数折线图">
+            <div ref="dashboardTrendChart" class="dashboard-trend-chart-canvas"></div>
+            <svg ref="dashboardTrendOverlay" class="dashboard-trend-overlay" aria-hidden="true"></svg>
+          </div>
+          <p v-else class="dashboard-trend-empty">
+            {{ isLoadingDashboard ? '趋势数据加载中...' : '暂无趋势数据' }}
+          </p>
+        </article>
       </section>
 
       <section v-else-if="activeModule === 'tasks'" class="admin-section kc-content">
@@ -1528,11 +1914,17 @@ function documentChunkActionLabel(document) {
             </div>
             <div class="kc-toolbar-actions">
               <input v-model="taskKeyword" type="search" placeholder="搜索文档、任务或错误原因" />
-              <select v-model="taskStatusFilter">
-                <option value="ALL">全部状态</option>
-                <option value="FAILED">failed</option>
-                <option value="DEAD">dead</option>
-              </select>
+              <div class="kc-select-menu" :class="{ open: isTaskStatusMenuOpen }">
+                <button type="button" class="kc-select-trigger" @click="toggleTaskStatusMenu">
+                  <span>{{ taskStatusFilterText(taskStatusFilter) }}</span>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+                </button>
+                <div v-if="isTaskStatusMenuOpen" class="kc-select-options">
+                  <button type="button" :class="{ active: taskStatusFilter === 'ALL' }" @click="setTaskStatus('ALL')">全部状态</button>
+                  <button type="button" :class="{ active: taskStatusFilter === 'FAILED' }" @click="setTaskStatus('FAILED')">failed</button>
+                  <button type="button" :class="{ active: taskStatusFilter === 'DEAD' }" @click="setTaskStatus('DEAD')">dead</button>
+                </div>
+              </div>
             </div>
           </div>
           <div class="kc-table-head task-grid">
@@ -1687,14 +2079,20 @@ function documentChunkActionLabel(document) {
               </div>
               <div class="kc-toolbar-actions">
                 <input v-model="documentKeyword" type="search" placeholder="搜索文档名称" />
-                <select v-model="documentStatusFilter">
-                  <option value="ALL">全部状态</option>
-                  <option value="UPLOADING">uploading</option>
-                  <option value="UPLOADED">uploaded</option>
-                  <option value="COMPLETED">success</option>
-                  <option value="PROCESSING">processing</option>
-                  <option value="FAILED">failed</option>
-                </select>
+                <div class="kc-select-menu" :class="{ open: isDocumentStatusMenuOpen }">
+                  <button type="button" class="kc-select-trigger" @click="toggleDocumentStatusMenu">
+                    <span>{{ documentStatusFilterText(documentStatusFilter) }}</span>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+                  </button>
+                  <div v-if="isDocumentStatusMenuOpen" class="kc-select-options">
+                    <button type="button" :class="{ active: documentStatusFilter === 'ALL' }" @click="setDocumentStatus('ALL')">全部状态</button>
+                    <button type="button" :class="{ active: documentStatusFilter === 'UPLOADING' }" @click="setDocumentStatus('UPLOADING')">uploading</button>
+                    <button type="button" :class="{ active: documentStatusFilter === 'UPLOADED' }" @click="setDocumentStatus('UPLOADED')">uploaded</button>
+                    <button type="button" :class="{ active: documentStatusFilter === 'COMPLETED' }" @click="setDocumentStatus('COMPLETED')">success</button>
+                    <button type="button" :class="{ active: documentStatusFilter === 'PROCESSING' }" @click="setDocumentStatus('PROCESSING')">processing</button>
+                    <button type="button" :class="{ active: documentStatusFilter === 'FAILED' }" @click="setDocumentStatus('FAILED')">failed</button>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="kc-table-head document-grid">
@@ -1786,7 +2184,7 @@ function documentChunkActionLabel(document) {
               </div>
               <div class="kc-toolbar-actions">
                 <div class="kc-select-menu" :class="{ open: isChunkStatusMenuOpen }">
-                  <button type="button" class="kc-select-trigger" @click="isChunkStatusMenuOpen = !isChunkStatusMenuOpen">
+                  <button type="button" class="kc-select-trigger" @click="toggleChunkStatusMenu">
                     <span>{{ statusFilterText(chunkStatusFilter) }}</span>
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
                   </button>
