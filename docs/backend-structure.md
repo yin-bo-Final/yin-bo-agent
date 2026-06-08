@@ -78,6 +78,16 @@ Flyway 入库任务迁移脚本。
 | 失败追踪 | 保存任务状态、重试次数、失败原因、requestId 和 MQ messageId |
 | 后台查询 | 支持后台失败任务列表和手动重试 |
 
+### `db/migration/V3__add_chat_message_created_index.sql`
+
+Flyway 消息趋势查询索引迁移脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 消息时间索引 | 为 `chat_message(created_at DESC)` 创建索引，支撑后台 dashboard 按小时 / 按自然日聚合消息数 |
+
 当前业务表边界：
 
 | 表 | 主要模块 | 功能 |
@@ -152,13 +162,13 @@ admin/
 
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
-| `GET` | `/api/admin/dashboard` | 查询管理后台仪表盘统计数据 |
+| `GET` | `/api/admin/dashboard` | 查询管理后台仪表盘统计数据，`messageRange=day/month` 控制消息曲线范围 |
 
 核心方法：
 
 | 方法 | 功能 |
 | --- | --- |
-| `dashboard(HttpServletRequest request)` | 校验管理员后返回仪表盘数据 |
+| `dashboard(HttpServletRequest request, String messageRange)` | 校验管理员后返回仪表盘数据 |
 
 ### `AdminDashboardService.java`
 
@@ -172,13 +182,18 @@ admin/
 | 会话统计 | 统计总会话数和消息数 |
 | 流量统计 | 汇总 `chat_message.content` 字符数 |
 | 响应统计 | 统计 assistant 消息平均响应耗时 |
+| 消息趋势 | 按今日 24 小时或本月自然日聚合消息数，并补齐缺失时段为 `0` |
 | 数据兜底 | JDBC 查询结果为空时回退为 `0` 或 `null` |
 
 核心方法：
 
 | 方法 | 功能 |
 | --- | --- |
-| `dashboard()` | 查询后台仪表盘统计数据 |
+| `dashboard(String messageRange)` | 查询后台仪表盘统计数据 |
+| `normalizeMessageRange(String messageRange)` | 将前端传入范围归一为 `day` 或 `month` |
+| `queryMessageTrendPoints(String messageRange)` | 根据范围查询消息曲线点 |
+| `queryDailyMessageTrendPoints()` | 查询今日 0-23 点消息数 |
+| `queryMonthlyMessageTrendPoints()` | 查询本月 1-30/31 日消息数 |
 | `queryLongOrZero(String sql)` | 执行聚合 SQL 并将空结果转成 `0` |
 | `queryNullableLong(String sql)` | 执行可能为空的 Long 聚合查询 |
 | `nullToZero(Long value)` | 将空 Long 转成 `0` |
@@ -198,6 +213,8 @@ admin/
 | `averageResponseTimeMs` | 平均响应耗时 |
 | `knowledgeErrorRate` | 知识库错误率，占位字段，当前 service 返回 `null` |
 | `noKnowledgeRate` | 无知识命中率，占位字段，当前 service 返回 `null` |
+| `messageTrendRange` | 消息曲线范围，当前支持 `day` 和 `month` |
+| `messageTrendPoints` | 消息曲线点，`day` 为 0-23 点每小时消息数，`month` 为当月 1-30/31 日每日消息数 |
 
 ## `auth` 模块
 

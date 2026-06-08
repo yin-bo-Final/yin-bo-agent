@@ -2,8 +2,13 @@ import { parseResponse } from './http';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
-export async function fetchAdminDashboard() {
-  const response = await fetch(`${API_BASE_URL}/admin/dashboard`, {
+export async function fetchAdminDashboard(options = {}) {
+  const searchParams = new URLSearchParams();
+  if (options.messageRange) {
+    searchParams.set('messageRange', options.messageRange);
+  }
+  const query = searchParams.toString();
+  const response = await fetch(`${API_BASE_URL}/admin/dashboard${query ? `?${query}` : ''}`, {
     credentials: 'include'
   });
   return parseResponse(response, 'Dashboard 加载失败');

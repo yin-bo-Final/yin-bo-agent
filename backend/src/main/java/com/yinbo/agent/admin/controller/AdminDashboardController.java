@@ -6,6 +6,7 @@ import com.yinbo.agent.admin.service.AdminDashboardService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -24,8 +25,11 @@ public class AdminDashboardController {
 
     @GetMapping
     // 查询管理后台仪表盘统计数据。
-    public AdminDashboardResponse dashboard(HttpServletRequest request) {
+    public AdminDashboardResponse dashboard(
+            HttpServletRequest request,
+            @RequestParam(defaultValue = "day") String messageRange
+    ) {
         adminGuard.requireAdmin(request);
-        return dashboardService.dashboard();
+        return dashboardService.dashboard(messageRange);
     }
 }

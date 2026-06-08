@@ -1029,6 +1029,9 @@ async function openConversation(targetConversationId) {
 
   isLoadingConversationDetail.value = true;
   conversationError.value = '';
+  activeMessageIndex.value = 0;
+  isConversationProgressOpen.value = false;
+  messages.value = [];
   try {
     const response = await fetchConversationDetail(targetConversationId);
     conversationId.value = response.conversationId;
@@ -1097,6 +1100,9 @@ async function openConversationFromRoute(targetConversationId, replaceHistory) {
 
   isLoadingConversationDetail.value = true;
   conversationError.value = '';
+  activeMessageIndex.value = 0;
+  isConversationProgressOpen.value = false;
+  messages.value = [];
   try {
     const response = await fetchConversationDetail(targetConversationId);
     conversationId.value = response.conversationId;
@@ -1376,13 +1382,9 @@ function stopPointerFrame() {
         <button class="rail-button rail-logo logo-morph" type="button" data-tooltip="展开导航栏" @click="toggleSidebar">
           <span class="logo-text">
             <svg class="yinbo-logo" viewBox="0 0 32 32" aria-hidden="true">
-              <circle cx="16" cy="16" r="2.2" />
-              <path d="M16 5.5c4.4 0 7.7 2.6 7.7 6.2 0 2.8-2 4.8-5.6 5.7" />
-              <path d="M25.1 20.6c-2.2 3.8-6.1 5.3-9.2 3.5-2.4-1.4-3.2-4.1-2.2-7.7" />
-              <path d="M6.9 20.6c-2.2-3.8-1.6-7.9 1.5-9.7 2.4-1.4 5.2-.7 7.8 2" />
-              <path d="M16 26.5c-4.4 0-7.7-2.6-7.7-6.2 0-2.8 2-4.8 5.6-5.7" />
-              <path d="M6.9 11.4c2.2-3.8 6.1-5.3 9.2-3.5 2.4 1.4 3.2 4.1 2.2 7.7" />
-              <path d="M25.1 11.4c2.2 3.8 1.6 7.9-1.5 9.7-2.4 1.4-5.2.7-7.8-2" />
+              <g transform="translate(1 -1) rotate(-45 16 16)">
+                <path d="M16 4.8c6.2 0 11.2 5 11.2 11.2S22.2 27.2 16 27.2 4.8 22.2 4.8 16 9.8 4.8 16 4.8c4.5 0 8.1 3.6 8.1 8.1S20.5 21 16 21s-8.1-3.6-8.1-8.1S11.5 4.8 16 4.8c3 0 5.4 2.4 5.4 5.4s-2.4 5.4-5.4 5.4-5.4-2.4-5.4-5.4S13 4.8 16 4.8c1.7 0 3.1 1.4 3.1 3.1S17.7 11 16 11s-3.1-1.4-3.1-3.1" />
+              </g>
             </svg>
           </span>
           <svg class="logo-hover-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -1436,13 +1438,9 @@ function stopPointerFrame() {
         <div class="brand">
           <div class="brand-mark">
             <svg class="yinbo-logo" viewBox="0 0 32 32" aria-hidden="true">
-              <circle cx="16" cy="16" r="2.2" />
-              <path d="M16 5.5c4.4 0 7.7 2.6 7.7 6.2 0 2.8-2 4.8-5.6 5.7" />
-              <path d="M25.1 20.6c-2.2 3.8-6.1 5.3-9.2 3.5-2.4-1.4-3.2-4.1-2.2-7.7" />
-              <path d="M6.9 20.6c-2.2-3.8-1.6-7.9 1.5-9.7 2.4-1.4 5.2-.7 7.8 2" />
-              <path d="M16 26.5c-4.4 0-7.7-2.6-7.7-6.2 0-2.8 2-4.8 5.6-5.7" />
-              <path d="M6.9 11.4c2.2-3.8 6.1-5.3 9.2-3.5 2.4 1.4 3.2 4.1 2.2 7.7" />
-              <path d="M25.1 11.4c2.2 3.8 1.6 7.9-1.5 9.7-2.4 1.4-5.2.7-7.8-2" />
+              <g transform="translate(1 -1) rotate(-45 16 16)">
+                <path d="M16 4.8c6.2 0 11.2 5 11.2 11.2S22.2 27.2 16 27.2 4.8 22.2 4.8 16 9.8 4.8 16 4.8c4.5 0 8.1 3.6 8.1 8.1S20.5 21 16 21s-8.1-3.6-8.1-8.1S11.5 4.8 16 4.8c3 0 5.4 2.4 5.4 5.4s-2.4 5.4-5.4 5.4-5.4-2.4-5.4-5.4S13 4.8 16 4.8c1.7 0 3.1 1.4 3.1 3.1S17.7 11 16 11s-3.1-1.4-3.1-3.1" />
+              </g>
             </svg>
           </div>
           <div class="brand-copy">
@@ -1479,9 +1477,6 @@ function stopPointerFrame() {
         <section class="conversation-panel">
           <div class="conversation-panel-header">
             <strong>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M21 12a8.5 8.5 0 0 1-8.5 8.5H6l-3 2v-6.5A8.5 8.5 0 1 1 21 12Z" />
-              </svg>
               历史会话
             </strong>
             <span v-if="isLoadingConversations">加载中...</span>
@@ -1508,6 +1503,11 @@ function stopPointerFrame() {
                 @click="openConversation(conversation.conversationId)"
               >
                 <span class="conversation-title-line">
+                  <span class="conversation-item-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <path d="M21 12a8.5 8.5 0 0 1-8.5 8.5H7l-4 2.5v-6.1A8.5 8.5 0 1 1 21 12Z" />
+                    </svg>
+                  </span>
                   <strong>{{ conversation.title }}</strong>
                   <span
                     v-if="conversation.pinned"
@@ -1700,7 +1700,7 @@ function stopPointerFrame() {
         @focusout="queueConversationProgressCardClose"
       >
         <div class="conversation-progress-hitbox" aria-hidden="true"></div>
-        <TransitionGroup name="progress-tick" tag="div" class="conversation-progress-rail">
+        <div class="conversation-progress-rail" :key="conversationId || 'fresh-progress'">
           <button
             v-for="item in visibleConversationProgressTicks"
             :key="`rail-${item.id}`"
@@ -1711,7 +1711,7 @@ function stopPointerFrame() {
             :aria-label="`跳转到第 ${item.position + 1} 条用户消息：${item.snippet}`"
             @click="scrollToMessage(item.index)"
           ></button>
-        </TransitionGroup>
+        </div>
         <div
           class="conversation-progress-card"
           @mouseenter="openConversationProgressCard"
@@ -1797,7 +1797,9 @@ function stopPointerFrame() {
           :disabled="!canUseComposer"
           :aria-label="composerSubmitText"
         >
-          <span v-if="isSending">{{ composerSubmitText }}</span>
+          <svg v-if="isSending" class="composer-stop-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="6.5" y="6.5" width="11" height="11" rx="2.2" />
+          </svg>
           <svg v-else viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 19V5" />
             <path d="m5 12 7-7 7 7" />
