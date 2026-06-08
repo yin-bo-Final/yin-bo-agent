@@ -20,7 +20,10 @@ backend/src/main/
 └─ resources/
    ├─ application.yml
    └─ db/migration/
-      └─ V1__init_schema.sql
+      ├─ V1__init_schema.sql
+      ├─ V2__create_ingestion_task.sql
+      ├─ V3__add_chat_message_created_index.sql
+      └─ V4__add_dashboard_trend_indexes.sql
 ```
 
 ## `resources` 配置模块
@@ -80,13 +83,24 @@ Flyway 入库任务迁移脚本。
 
 ### `db/migration/V3__add_chat_message_created_index.sql`
 
-Flyway 消息趋势查询索引迁移脚本。
+Flyway Dashboard 消息趋势索引迁移脚本。
 
 主要功能：
 
 | 功能 | 说明 |
 | --- | --- |
-| 消息时间索引 | 为 `chat_message(created_at DESC)` 创建索引，支撑后台 dashboard 按小时 / 按自然日聚合消息数 |
+| 消息时间索引 | 为 `chat_message(created_at DESC)` 创建索引，支撑后台 Dashboard 消息、响应时间和活跃用户趋势 |
+
+### `db/migration/V4__add_dashboard_trend_indexes.sql`
+
+Flyway Dashboard 多趋势索引迁移脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 会话时间索引 | 为 `chat_conversation(created_at DESC)` 创建索引，支撑会话趋势 |
+| 最近登录索引 | 为 `auth_user(last_login_at DESC)` 创建索引，支撑 Dashboard 最近 24 小时活跃用户指标 |
 
 当前业务表边界：
 
@@ -133,7 +147,8 @@ admin/
 ├─ dto/
 │  └─ AdminDashboardResponse.java
 └─ service/
-   └─ AdminDashboardService.java
+   ├─ AdminDashboardService.java
+   └─ AdminDashboardTrendService.java
 ```
 
 ### `AdminGuard.java`
@@ -162,7 +177,7 @@ admin/
 
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
-| `GET` | `/api/admin/dashboard` | 查询管理后台仪表盘统计数据，`messageRange=day/month` 控制消息曲线范围 |
+| `GET` | `/api/admin/dashboard` | 查询管理后台仪表盘统计数据，`messageRange=day/month` 控制趋势图范围 |
 
 核心方法：
 
@@ -182,7 +197,7 @@ admin/
 | 会话统计 | 统计总会话数和消息数 |
 | 流量统计 | 汇总 `chat_message.content` 字符数 |
 | 响应统计 | 统计 assistant 消息平均响应耗时 |
-| 消息趋势 | 按今日 24 小时或本月自然日聚合消息数，并补齐缺失时段为 `0` |
+| 趋势入口 | 调用 `AdminDashboardTrendService` 聚合消息、会话、响应时间和活跃用户趋势 |
 | 数据兜底 | JDBC 查询结果为空时回退为 `0` 或 `null` |
 
 核心方法：
@@ -190,13 +205,35 @@ admin/
 | 方法 | 功能 |
 | --- | --- |
 | `dashboard(String messageRange)` | 查询后台仪表盘统计数据 |
-| `normalizeMessageRange(String messageRange)` | 将前端传入范围归一为 `day` 或 `month` |
-| `queryMessageTrendPoints(String messageRange)` | 根据范围查询消息曲线点 |
-| `queryDailyMessageTrendPoints()` | 查询今日 0-23 点消息数 |
-| `queryMonthlyMessageTrendPoints()` | 查询本月 1-30/31 日消息数 |
 | `queryLongOrZero(String sql)` | 执行聚合 SQL 并将空结果转成 `0` |
 | `queryNullableLong(String sql)` | 执行可能为空的 Long 聚合查询 |
 | `nullToZero(Long value)` | 将空 Long 转成 `0` |
+| `extractMessageTrendPoints(List<DashboardTrendSeries> dashboardTrendSeries)` | 从通用趋势列表中提取兼容旧字段的消息曲线 |
+
+### `AdminDashboardTrendService.java`
+
+后台趋势折线图聚合服务。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 范围归一 | 将前端传入的趋势范围统一为 `day` 或 `month` |
+| 消息趋势 | 按 `chat_message.created_at` 聚合消息数，缺失小时或日期补 `0` |
+| 会话趋势 | 按 `chat_conversation.created_at` 聚合会话数，缺失小时或日期补 `0` |
+| 响应时间趋势 | 按 assistant 消息 `response_duration_ms` 聚合平均响应时间，返回 `10s` 和 `15s` 阈值线 |
+| 活跃用户趋势 | 按 `chat_message.created_at` 分桶统计发送过用户消息的去重 `user_id` |
+
+核心方法：
+
+| 方法 | 功能 |
+| --- | --- |
+| `normalizeRange(String trendRange)` | 将趋势范围归一为 `day` 或 `month` |
+| `queryDashboardTrendSeries(String trendRange)` | 一次性返回 Dashboard 所有趋势折线图数据 |
+| `queryMessageTrendPoints(String trendRange)` | 返回兼容旧字段的消息趋势点 |
+| `queryCountTrend(...)` | 查询计数类趋势数据 |
+| `queryResponseTimeTrend(TimeRange timeRange)` | 查询平均响应时间趋势和阈值线 |
+| `fillTrendPoints(TimeRange timeRange, Map<Integer, Long> valueByBucket)` | 按范围补齐缺失时间点为 `0` |
 
 ### `AdminDashboardResponse.java`
 
@@ -215,6 +252,20 @@ admin/
 | `noKnowledgeRate` | 无知识命中率，占位字段，当前 service 返回 `null` |
 | `messageTrendRange` | 消息曲线范围，当前支持 `day` 和 `month` |
 | `messageTrendPoints` | 消息曲线点，`day` 为 0-23 点每小时消息数，`month` 为当月 1-30/31 日每日消息数 |
+| `dashboardTrendSeries` | 通用趋势列表，包含消息、会话、响应时间和活跃用户趋势 |
+
+`dashboardTrendSeries` 子结构：
+
+| 字段 | 功能 |
+| --- | --- |
+| `type` | 趋势类型，当前为 `message`、`conversation`、`responseTime`、`activeUser` |
+| `title` | 图表标题 |
+| `summaryLabel` | 摘要指标名 |
+| `unit` | 指标单位 |
+| `color` | 折线主色 |
+| `summaryValue` | 当前范围内的汇总值，响应时间为平均值 |
+| `thresholds` | 可选阈值线，响应时间趋势使用 `10s` 和 `15s` |
+| `points` | 折线图数据点 |
 
 ## `auth` 模块
 
@@ -1265,7 +1316,7 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | Session 登录态 | `SessionAuthService`、`LoginInterceptor`、`WebConfig` |
 | gateway 用户维度限流所需用户 ID | `AuthConstants.LOGIN_USER_ID_SESSION_KEY`、`SessionAuthService.createLoginSession(...)` |
 | 管理员权限校验 | `AdminGuard` |
-| 后台仪表盘 | `AdminDashboardController`、`AdminDashboardService` |
+| 后台仪表盘 | `AdminDashboardController`、`AdminDashboardService`、`AdminDashboardTrendService` |
 | 普通 AI 对话 | `ChatController`、`ChatService.chat(...)`、`ConversationFlowExecutor.executeSync(...)` |
 | SSE 流式 AI 对话 | `ChatController`、`ChatService.streamChat(...)`、`ConversationFlowExecutor.executeStream(...)` |
 | 会话处理流水线 | `ConversationFlowExecutor`、`ChatExecutionContext`、`ConversationLifecycleService`、`ConversationMemoryService`、`ChatMessagePersistenceService`、`DirectChatService`、`QueryRewriteService`、`IntentResolutionService`、`ClarificationService`、`RetrievalExecuteService`、`PromptAssemblyService`、`ChatStreamResponseWriter` |
@@ -1287,5 +1338,5 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | 向量写入和重建 | `DocumentIngestionService`、`PgVectorRepository`、`AiInfraClient` |
 | 知识库管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
 | 文档和分块管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
-| 数据库迁移 | `resources/db/migration/V1__init_schema.sql`、`resources/db/migration/V2__create_ingestion_task.sql` |
+| 数据库迁移 | `resources/db/migration/V1__init_schema.sql`、`resources/db/migration/V2__create_ingestion_task.sql`、`resources/db/migration/V3__add_chat_message_created_index.sql`、`resources/db/migration/V4__add_dashboard_trend_indexes.sql` |
 | Actuator 安全收口 | `application.yml` |

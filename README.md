@@ -93,6 +93,7 @@ RAG 文档入库链路：
 
 - 会话页头像菜单中管理员可进入“后台管理”
 - Dashboard 展示活跃用户、消息数、会话数、流量数、平均响应时间
+- Dashboard 趋势分析支持消息、会话、响应时间和活跃用户趋势，并可切换 `24小时` / `本月`
 - 知识库支持新建、编辑、删除
 - 文档支持上传、URL 录入、分块、重新分块、重建向量、详情、删除
 - 分块支持查看、编辑、删除、启用、禁用、批量启用、批量禁用
@@ -153,7 +154,10 @@ SpringAI-Program/
 │     └─ resources/
 │        ├─ application.yml
 │        └─ db/migration/
-│           └─ V1__init_schema.sql
+│           ├─ V1__init_schema.sql
+│           ├─ V2__create_ingestion_task.sql
+│           ├─ V3__add_chat_message_created_index.sql
+│           └─ V4__add_dashboard_trend_indexes.sql
 ├─ gateway/                         # Spring Cloud Gateway 网关模块
 │  ├─ pom.xml
 │  └─ src/main/
@@ -411,7 +415,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 
 ## 数据表
 
-当前使用 Flyway 管理数据库结构，迁移脚本位于 [backend/src/main/resources/db/migration](backend/src/main/resources/db/migration)。`V1__init_schema.sql` 负责初始化业务表、pgvector 扩展、向量表和 HNSW 索引。
+当前使用 Flyway 管理数据库结构，迁移脚本位于 [backend/src/main/resources/db/migration](backend/src/main/resources/db/migration)。`V1__init_schema.sql` 负责初始化业务表、pgvector 扩展、向量表和 HNSW 索引，后续 `V2` 到 `V4` 继续补充入库任务表和 Dashboard 趋势查询索引。
 
 为了兼容已经存在的本地数据库，`application.yml` 开启了 `spring.flyway.baseline-on-migrate=true`，并把 `baseline-version` 设置为 `0`。这样老库首次切换到 Flyway 时会先建立 `flyway_schema_history`，再执行 `V1` 中的幂等 DDL；新库则会直接从 `V1` 开始迁移。
 

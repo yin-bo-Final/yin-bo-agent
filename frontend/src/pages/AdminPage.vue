@@ -1,6 +1,6 @@
 <script setup>
 import { LineChart } from 'echarts/charts';
-import { GridComponent, TooltipComponent } from 'echarts/components';
+import { GridComponent, MarkLineComponent, TooltipComponent } from 'echarts/components';
 import * as echarts from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
@@ -30,7 +30,7 @@ import {
 } from '../api/adminApi';
 import { createQuietReveal } from '../utils/quietMotion';
 
-echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([LineChart, GridComponent, TooltipComponent, MarkLineComponent, CanvasRenderer]);
 
 const props = defineProps({
   currentUser: {
@@ -78,6 +78,7 @@ const documentStatusFilter = ref('ALL');
 const taskStatusFilter = ref('ALL');
 const chunkStatusFilter = ref('ALL');
 const messageTrendRange = ref('day');
+const activeTrendType = ref('message');
 const isCreateModalOpen = ref(false);
 const isEditModalOpen = ref(false);
 const detailKnowledgeBase = ref(null);
@@ -148,6 +149,13 @@ let knowledgePollTimer = null;
 let stopAdminMotion = null;
 let dashboardChart = null;
 let dashboardTrendAnimationFrame = 0;
+
+const trendTypeOptions = [
+  { type: 'message', label: '消息' },
+  { type: 'conversation', label: '会话' },
+  { type: 'responseTime', label: '响应时间' },
+  { type: 'activeUser', label: '活跃用户' }
+];
 
 const activeModule = computed(() => route.value.module);
 const currentView = computed(() => route.value.view);
@@ -374,7 +382,47 @@ const messageTrendPoints = computed(() => {
   const points = dashboard.value?.messageTrendPoints;
   return Array.isArray(points) ? points : [];
 });
-const messageTrendTotal = computed(() => messageTrendPoints.value.reduce((total, point) => total + (point.messageCount || 0), 0));
+const dashboardTrendSeries = computed(() => {
+  const series = dashboard.value?.dashboardTrendSeries;
+  if (Array.isArray(series) && series.length > 0) {
+    return series;
+  }
+  const fallbackPoints = messageTrendPoints.value.map((point) => ({
+    label: point.label || '-',
+    value: point.messageCount || 0
+  }));
+  return [{
+    type: 'message',
+    title: '消息趋势',
+    summaryLabel: '消息数',
+    unit: '条',
+    color: '#4C4F69',
+    summaryValue: fallbackPoints.reduce((total, point) => total + point.value, 0),
+    thresholds: [],
+    points: fallbackPoints
+  }];
+});
+const activeDashboardTrend = computed(() => {
+  return dashboardTrendSeries.value.find((series) => series.type === activeTrendType.value)
+    || dashboardTrendSeries.value[0]
+    || null;
+});
+const activeTrendPoints = computed(() => {
+  const points = activeDashboardTrend.value?.points;
+  return Array.isArray(points) ? points : [];
+});
+const activeTrendThresholds = computed(() => {
+  const thresholds = activeDashboardTrend.value?.thresholds;
+  return Array.isArray(thresholds) ? thresholds : [];
+});
+const activeTrendSummaryValue = computed(() => {
+  const value = activeDashboardTrend.value?.summaryValue;
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+});
+const activeTrendOptionIndex = computed(() => {
+  return Math.max(0, trendTypeOptions.findIndex((option) => option.type === activeTrendType.value));
+});
+const dashboardTrendRangeIndex = computed(() => messageTrendRange.value === 'month' ? 1 : 0);
 
 onMounted(async () => {
   window.addEventListener('popstate', handleRouteChange);
@@ -395,8 +443,14 @@ onUnmounted(() => {
   }
 });
 
-watch([messageTrendPoints, activeModule], async () => {
+watch([activeTrendPoints, activeModule, activeTrendType], async () => {
   await renderDashboardTrendChart();
+}, { deep: true });
+
+watch(dashboardTrendSeries, (series) => {
+  if (series.length > 0 && !series.some((item) => item.type === activeTrendType.value)) {
+    activeTrendType.value = series[0].type;
+  }
 }, { deep: true });
 
 async function runAdminReveal() {
@@ -476,6 +530,13 @@ async function setMessageTrendRange(value) {
   await loadDashboard();
 }
 
+function setActiveTrendType(value) {
+  if (activeTrendType.value === value) {
+    return;
+  }
+  activeTrendType.value = value;
+}
+
 async function renderDashboardTrendChart() {
   await nextTick();
   if (activeModule.value !== 'dashboard' || !dashboardTrendChart.value) {
@@ -486,15 +547,19 @@ async function renderDashboardTrendChart() {
     dashboardChart = echarts.init(dashboardTrendChart.value, null, { renderer: 'canvas' });
   }
 
-  const points = messageTrendPoints.value;
+  const trend = activeDashboardTrend.value;
+  const points = activeTrendPoints.value;
   const labels = points.map((point) => point.label || '-');
-  const messageCounts = points.map((point) => point.messageCount || 0);
-  const yAxisMax = Math.max(5, Math.ceil(Math.max(...messageCounts, 0) * 1.2));
+  const trendValues = points.map((point) => Number(point.value || 0));
+  const thresholdValues = activeTrendThresholds.value.map((threshold) => Number(threshold.value || 0));
+  const maxTrendValue = Math.max(...trendValues, ...thresholdValues, 0);
+  const yAxisMax = Math.max(5, Math.ceil(maxTrendValue * 1.18));
+  const trendColor = trend?.color || '#4C4F69';
 
   dashboardChart.setOption({
     backgroundColor: 'transparent',
     animation: false,
-    color: ['#4C4F69'],
+    color: [trendColor],
     textStyle: {
       fontFamily: '"Cascadia Mono", "Microsoft YaHei", Consolas, monospace',
       color: '#303446'
@@ -522,7 +587,7 @@ async function renderDashboardTrendChart() {
         const point = points[index] || {};
         return [
           `<strong>${point.label || ''}</strong>`,
-          `消息数: ${formatNumber(point.messageCount || 0)}`
+          `${trend?.summaryLabel || '数值'}: ${formatTrendValue(point.value || 0, trend?.unit)}`
         ].join('<br/>');
       }
     },
@@ -563,18 +628,21 @@ async function renderDashboardTrendChart() {
       axisTick: { show: false },
       axisLabel: {
         color: 'rgba(48, 52, 70, 0.52)',
-        fontSize: 12
+        fontSize: 12,
+        formatter(value) {
+          return formatTrendAxisValue(value, trend?.unit);
+        }
       }
     },
     series: [
-      createTrendSeries('消息数', messageCounts)
+      createTrendSeries(trend?.summaryLabel || '趋势', trendValues, trend)
     ]
   }, true);
   dashboardChart.resize();
-  renderDashboardTrendOverlay(labels, messageCounts);
+  renderDashboardTrendOverlay(labels, trendValues, trendColor);
 }
 
-async function renderDashboardTrendOverlay(labels, data) {
+async function renderDashboardTrendOverlay(labels, data, color = '#4C4F69') {
   await nextTick();
   if (!dashboardChart || !dashboardTrendShell.value || !dashboardTrendOverlay.value || !data.length) {
     return;
@@ -592,6 +660,7 @@ async function renderDashboardTrendOverlay(labels, data) {
   const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
   path.setAttribute('d', createSmoothPath(pixelPoints));
   path.setAttribute('class', 'dashboard-trend-svg-line');
+  path.style.stroke = color;
   svg.appendChild(path);
 
   const circles = pixelPoints.map((point) => {
@@ -600,6 +669,7 @@ async function renderDashboardTrendOverlay(labels, data) {
     circle.setAttribute('cy', point.y);
     circle.setAttribute('r', '0');
     circle.setAttribute('class', 'dashboard-trend-svg-point');
+    circle.style.stroke = color;
     svg.appendChild(circle);
     return circle;
   });
@@ -676,7 +746,9 @@ function easeInOutCubic(value) {
     : 1 - Math.pow(-2 * value + 2, 3) / 2;
 }
 
-function createTrendSeries(name, data) {
+function createTrendSeries(name, data, trend) {
+  const color = trend?.color || '#4C4F69';
+  const thresholds = Array.isArray(trend?.thresholds) ? trend.thresholds : [];
   return {
     name,
     type: 'line',
@@ -688,7 +760,7 @@ function createTrendSeries(name, data) {
     connectNulls: false,
     lineStyle: {
       width: 3,
-      color: '#4C4F69',
+      color,
       opacity: 0,
       cap: 'round',
       join: 'round'
@@ -697,8 +769,28 @@ function createTrendSeries(name, data) {
       color: '#ffffff',
       opacity: 0,
       borderWidth: 2,
-      borderColor: '#4C4F69'
+      borderColor: color
     },
+    markLine: thresholds.length ? {
+      symbol: 'none',
+      silent: true,
+      data: thresholds.map((threshold) => ({
+        name: threshold.label,
+        yAxis: threshold.value,
+        label: {
+          formatter: threshold.label,
+          position: 'insideEndTop',
+          color: threshold.color || '#4C4F69',
+          fontSize: 12,
+          fontWeight: 700
+        },
+        lineStyle: {
+          color: threshold.color || '#4C4F69',
+          type: 'dashed',
+          width: 1.5
+        }
+      }))
+    } : undefined,
     emphasis: {
       focus: 'series',
       lineStyle: {
@@ -711,8 +803,13 @@ function createTrendSeries(name, data) {
 function resizeDashboardTrendChart() {
   dashboardChart?.resize();
   if (dashboardChart) {
-    const points = messageTrendPoints.value;
-    renderDashboardTrendOverlay(points.map((point) => point.label || '-'), points.map((point) => point.messageCount || 0));
+    const trend = activeDashboardTrend.value;
+    const points = activeTrendPoints.value;
+    renderDashboardTrendOverlay(
+      points.map((point) => point.label || '-'),
+      points.map((point) => Number(point.value || 0)),
+      trend?.color || '#4C4F69'
+    );
   }
 }
 
@@ -1466,6 +1563,26 @@ function formatDuration(value) {
   return `${(value / 1000).toFixed(2)}s`;
 }
 
+function formatTrendValue(value, unit) {
+  const numberValue = Number(value || 0);
+  if (unit === '毫秒') {
+    return formatDuration(numberValue);
+  }
+  return formatNumber(numberValue);
+}
+
+function formatTrendAxisValue(value, unit) {
+  const numberValue = Number(value || 0);
+  if (unit === '毫秒') {
+    if (numberValue >= 1000) {
+      const seconds = numberValue / 1000;
+      return `${seconds >= 10 ? seconds.toFixed(0) : seconds.toFixed(1)}s`;
+    }
+    return `${Math.round(numberValue)}ms`;
+  }
+  return formatNumber(Math.round(numberValue));
+}
+
 function metricText(value, fallback = '待接入') {
   return value === null || value === undefined ? fallback : formatNumber(value);
 }
@@ -1825,15 +1942,35 @@ function documentChunkActionLabel(document) {
 
         <article class="dashboard-trend-card">
           <header class="dashboard-trend-header">
-            <div class="dashboard-trend-title">
-              <strong>数据曲线</strong>
-              <span aria-label="消息曲线说明">?</span>
+            <div class="dashboard-trend-heading">
+              <div class="dashboard-trend-title">
+                <strong>趋势分析</strong>
+                <span aria-label="趋势分析说明">?</span>
+              </div>
+              <div
+                class="dashboard-trend-actions dashboard-trend-type-switch"
+                :style="{ '--trend-index': activeTrendOptionIndex }"
+                role="group"
+                aria-label="趋势类型"
+              >
+                <span class="dashboard-trend-indicator" aria-hidden="true"></span>
+                <button
+                  v-for="option in trendTypeOptions"
+                  :key="option.type"
+                  type="button"
+                  :class="{ active: activeDashboardTrend?.type === option.type }"
+                  :disabled="isLoadingDashboard || !dashboardTrendSeries.some((series) => series.type === option.type)"
+                  @click="setActiveTrendType(option.type)"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
             </div>
             <div
-              class="dashboard-trend-actions"
-              :class="{ 'is-month': messageTrendRange === 'month' }"
+              class="dashboard-trend-actions dashboard-trend-range-switch"
+              :style="{ '--trend-index': dashboardTrendRangeIndex }"
               role="group"
-              aria-label="消息曲线范围"
+              aria-label="趋势范围"
             >
               <span class="dashboard-trend-indicator" aria-hidden="true"></span>
               <button
@@ -1854,10 +1991,21 @@ function documentChunkActionLabel(document) {
               </button>
             </div>
           </header>
-          <div class="dashboard-trend-summary" aria-label="消息统计">
-            <span><i></i>消息数：{{ metricText(messageTrendTotal, '0') }}</span>
+          <div class="dashboard-trend-summary" :aria-label="`${activeDashboardTrend?.summaryLabel || '趋势'}统计`">
+            <span class="dashboard-trend-summary-card">
+              <i :style="{ backgroundColor: activeDashboardTrend?.color || '#4C4F69' }"></i>
+              <span class="dashboard-trend-summary-copy">
+                <b>{{ activeDashboardTrend?.summaryLabel || '趋势数' }}：{{ formatTrendValue(activeTrendSummaryValue, activeDashboardTrend?.unit) }}</b>
+                <small>单位：{{ activeDashboardTrend?.unit || '-' }}</small>
+              </span>
+            </span>
           </div>
-          <div v-if="messageTrendPoints.length" ref="dashboardTrendShell" class="dashboard-trend-chart" aria-label="消息数折线图">
+          <div
+            v-if="activeTrendPoints.length"
+            ref="dashboardTrendShell"
+            class="dashboard-trend-chart"
+            :aria-label="`${activeDashboardTrend?.title || '趋势'}折线图`"
+          >
             <div ref="dashboardTrendChart" class="dashboard-trend-chart-canvas"></div>
             <svg ref="dashboardTrendOverlay" class="dashboard-trend-overlay" aria-hidden="true"></svg>
           </div>
