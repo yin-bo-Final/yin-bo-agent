@@ -9,6 +9,7 @@ public record ConversationDetailResponse(
         String title,
         String modelId,
         Instant createdAt,
-        List<ConversationMessageResponse> messages
+        List<ConversationMessageResponse> messages,
+        ConversationMemorySummaryResponse memorySummary
 ) {
 }

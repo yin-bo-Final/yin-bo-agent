@@ -2,6 +2,7 @@ package com.yinbo.agent;
 
 import com.yinbo.agent.config.AiInfraProperties;
 import com.yinbo.agent.config.AuthProperties;
+import com.yinbo.agent.config.ChatMemoryProperties;
 import com.yinbo.agent.config.ConcurrencyLimitProperties;
 import com.yinbo.agent.config.ObjectStorageProperties;
 import com.yinbo.agent.config.RagProperties;
@@ -14,6 +15,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @EnableConfigurationProperties({
         AiInfraProperties.class,
         AuthProperties.class,
+        ChatMemoryProperties.class,
         ConcurrencyLimitProperties.class,
         ObjectStorageProperties.class,
         RagProperties.class

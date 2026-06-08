@@ -4,6 +4,7 @@ import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import { cancelAccount, logout } from '../api/authApi';
 import {
+  compressConversationMemory,
   deleteConversation as deleteConversationRequest,
   fetchConversationDetail,
   fetchConversations,
@@ -55,6 +56,11 @@ const fallbackModels = [
   }
 ];
 
+const CHAT_MEMORY_CONTEXT_MAX_TOKENS = positiveNumber(import.meta.env.VITE_CHAT_MEMORY_CONTEXT_MAX_TOKENS, 100000);
+const CHAT_MEMORY_RECENT_WINDOW_MESSAGE_COUNT = positiveNumber(import.meta.env.VITE_CHAT_MEMORY_RECENT_WINDOW_MESSAGE_COUNT, 20);
+const CHAT_MEMORY_WARNING_RATIO = 0.72;
+const CHAT_MEMORY_DANGER_RATIO = 0.9;
+
 const models = ref(fallbackModels);
 const selectedModelId = ref(fallbackModels[0].id);
 const currentUser = computed(() => props.currentUser);
@@ -64,6 +70,7 @@ const inputText = ref('');
 const conversationId = ref('');
 const conversations = ref([]);
 const isSending = ref(false);
+const isCompressingMemory = ref(false);
 const isCancellingAccount = ref(false);
 const isLoadingConversations = ref(false);
 const isLoadingConversationDetail = ref(false);
@@ -97,6 +104,8 @@ const activeMessageIndex = ref(0);
 const activeStreamController = ref(null);
 const activeStreamAnimator = ref(null);
 const activeAssistantMessage = ref(null);
+const activeMemoryStatusMessageId = ref('');
+const memorySummarySnapshot = ref(null);
 const authPointer = ref({
   x: 0,
   y: 0
@@ -147,10 +156,23 @@ const filteredConversations = computed(() => {
   });
 });
 const canSend = computed(() => {
-  return inputText.value.trim().length > 0 && !isSending.value && !isLoadingConversationDetail.value;
+  return inputText.value.trim().length > 0
+    && !isSending.value
+    && !isCompressingMemory.value
+    && !isLoadingConversationDetail.value;
 });
 const canUseComposer = computed(() => {
   return isSending.value || canSend.value;
+});
+const canCompressMemory = computed(() => {
+  return Boolean(conversationId.value)
+    && !isSending.value
+    && !isCompressingMemory.value
+    && !isLoadingConversationDetail.value
+    && conversationContentMessages.value.length >= 2;
+});
+const isComposerLocked = computed(() => {
+  return isCompressingMemory.value || isLoadingConversationDetail.value;
 });
 const composerSubmitText = computed(() => {
   return isSending.value ? '中断' : '发送';
@@ -162,6 +184,32 @@ const isFreshConversation = computed(() => {
 const hasStreamingAssistant = computed(() => {
   return messages.value.some((message) => message.role === 'assistant' && message.isStreaming);
 });
+const conversationContentMessages = computed(() => {
+  return messages.value.filter((message) => isConversationContentMessage(message));
+});
+const tokenUsage = computed(() => {
+  const usedTokens = estimateVisiblePromptTokens();
+  const maxTokens = Math.max(1, CHAT_MEMORY_CONTEXT_MAX_TOKENS);
+  const ratio = Math.min(1, usedTokens / maxTokens);
+  return {
+    usedTokens,
+    maxTokens,
+    remainingTokens: Math.max(0, maxTokens - usedTokens),
+    percent: Math.min(100, Math.round(ratio * 100)),
+    progress: Math.min(100, Math.max(1, ratio * 100)),
+    ratio
+  };
+});
+const tokenMeterStyle = computed(() => ({
+  '--token-meter-offset': 100 - tokenUsage.value.progress
+}));
+const tokenMeterLabel = computed(() => {
+  return `背景信息窗口：${tokenUsage.value.percent}% 已用，已用 ${formatTokenCount(tokenUsage.value.usedTokens)} 标记，共 ${formatTokenCount(tokenUsage.value.maxTokens)}`;
+});
+const tokenMeterStateClass = computed(() => ({
+  warning: tokenUsage.value.ratio >= CHAT_MEMORY_WARNING_RATIO,
+  danger: tokenUsage.value.ratio >= CHAT_MEMORY_DANGER_RATIO
+}));
 const greetingName = computed(() => {
   return currentUser.value?.displayName || currentUser.value?.username || '朋友';
 });
@@ -301,6 +349,8 @@ async function submitMessage() {
   }
 
   const content = inputText.value.trim();
+  const shouldShowAutoCompression = shouldPredictAutoCompression(content);
+  let autoCompressionStatusMessageId = '';
   inputText.value = '';
   shouldAutoScroll.value = true;
   messages.value.push({
@@ -308,15 +358,20 @@ async function submitMessage() {
     role: 'user',
     content
   });
+  if (shouldShowAutoCompression) {
+    autoCompressionStatusMessageId = upsertMemoryStatusMessage('compressing').id;
+  }
 
   isSending.value = true;
   conversationError.value = '';
   await scrollToBottom();
 
-  const requestMessages = messages.value.map((message) => ({
-    role: message.role,
-    content: message.content
-  }));
+  const requestMessages = messages.value
+    .filter((message) => isConversationContentMessage(message))
+    .map((message) => ({
+      role: message.role,
+      content: message.content
+    }));
   const assistantMessageDraft = {
     id: crypto.randomUUID(),
     role: 'assistant',
@@ -347,6 +402,17 @@ async function submitMessage() {
     const streamResult = await streamChatMessage(payload, {
       signal: streamController.signal,
       onStart(event) {
+        if (autoCompressionStatusMessageId) {
+          const hasMemorySummary = applyMemorySummary(event.memorySummary);
+          updateMemoryStatusMessage(
+            autoCompressionStatusMessageId,
+            hasMemorySummary ? 'compressed' : 'idle',
+            hasMemorySummary ? '上下文已压缩' : '当前上下文无需压缩'
+          );
+          autoCompressionStatusMessageId = '';
+        } else {
+          applyMemorySummary(event.memorySummary);
+        }
         if (event.conversationId) {
           conversationId.value = event.conversationId;
           updateBrowserUrl(event.conversationId, { replace: true });
@@ -364,6 +430,10 @@ async function submitMessage() {
         assistantMessage.responseDurationMs = event.responseDurationMs ?? assistantMessage.responseDurationMs;
       },
       onError(event) {
+        if (autoCompressionStatusMessageId) {
+          updateMemoryStatusMessage(autoCompressionStatusMessageId, 'failed', '上下文压缩失败');
+          autoCompressionStatusMessageId = '';
+        }
         streamAnimator.replace(event.error || '流式响应失败了，请稍后重试。');
       }
     });
@@ -384,6 +454,9 @@ async function submitMessage() {
     if (error.name === 'AbortError') {
       streamAnimator.replace(interruptedMessageContent(assistantMessage));
       return;
+    }
+    if (autoCompressionStatusMessageId) {
+      updateMemoryStatusMessage(autoCompressionStatusMessageId, 'failed', '上下文压缩失败');
     }
     if (error.message.includes('未登录') || error.message.includes('会话已过期')) {
       resetConversationState();
@@ -427,10 +500,135 @@ function interruptedMessageContent(message) {
   return `${message.content.trimEnd()}\n\n[已中断]`;
 }
 
+async function compressCurrentConversationMemory() {
+  if (!isAuthenticated.value) {
+    emit('session-expired');
+    return;
+  }
+  if (!canCompressMemory.value) {
+    return;
+  }
+
+  conversationError.value = '';
+  isCompressingMemory.value = true;
+  const statusMessage = upsertMemoryStatusMessage('compressing');
+  shouldAutoScroll.value = true;
+  await scrollToBottom();
+
+  try {
+    const response = await compressConversationMemory(conversationId.value);
+    if (response?.compressed) {
+      applyMemorySummary(response);
+      updateMemoryStatusMessage(statusMessage.id, 'compressed', '上下文已压缩');
+    } else {
+      updateMemoryStatusMessage(statusMessage.id, 'idle', response?.message || '当前上下文暂无需要压缩的内容');
+    }
+    await loadConversations();
+  } catch (error) {
+    updateMemoryStatusMessage(statusMessage.id, 'failed', '上下文压缩失败');
+    conversationError.value = error.message;
+  } finally {
+    isCompressingMemory.value = false;
+    await scrollToBottom();
+  }
+}
+
+function upsertMemoryStatusMessage(status) {
+  const activeMessage = messages.value.find((message) => message.id === activeMemoryStatusMessageId.value);
+  if (activeMessage?.status === 'compressing') {
+    activeMessage.status = status;
+    activeMessage.content = memoryStatusText(status);
+    return activeMessage;
+  }
+
+  const message = {
+    id: `memory-${crypto.randomUUID()}`,
+    role: 'memory-status',
+    status,
+    content: memoryStatusText(status)
+  };
+  activeMemoryStatusMessageId.value = message.id;
+  messages.value.push(message);
+  return message;
+}
+
+function updateMemoryStatusMessage(messageId, status, content) {
+  const message = messages.value.find((item) => item.id === messageId);
+  if (!message) {
+    return;
+  }
+  message.status = status;
+  message.content = content || memoryStatusText(status);
+}
+
+function memoryStatusText(status) {
+  if (status === 'compressing') {
+    return '正在压缩上下文';
+  }
+  if (status === 'failed') {
+    return '上下文压缩失败';
+  }
+  if (status === 'idle') {
+    return '当前上下文无需压缩';
+  }
+  return '上下文已压缩';
+}
+
+function applyMemorySummary(summary) {
+  const normalizedSummary = normalizeMemorySummary(summary);
+  if (!normalizedSummary) {
+    return false;
+  }
+  memorySummarySnapshot.value = normalizedSummary;
+  return true;
+}
+
+function restoreMemorySummaryDivider(summary) {
+  const normalizedSummary = normalizeMemorySummary(summary);
+  if (!normalizedSummary) {
+    return;
+  }
+
+  memorySummarySnapshot.value = normalizedSummary;
+  const message = {
+    id: `memory-${crypto.randomUUID()}`,
+    role: 'memory-status',
+    status: 'compressed',
+    content: memoryStatusText('compressed')
+  };
+  activeMemoryStatusMessageId.value = message.id;
+
+  const coveredEndMessageId = Number(normalizedSummary.coveredEndMessageId);
+  const insertIndex = messages.value.findIndex((item) => {
+    return Number(item.serverMessageId) === coveredEndMessageId;
+  });
+  if (insertIndex >= 0) {
+    messages.value.splice(insertIndex + 1, 0, message);
+    return;
+  }
+  messages.value.push(message);
+}
+
+function normalizeMemorySummary(summary) {
+  if (!summary || summary.coveredEndMessageId === null || summary.coveredEndMessageId === undefined) {
+    return null;
+  }
+  return {
+    coveredStartMessageId: summary.coveredStartMessageId ?? null,
+    coveredEndMessageId: summary.coveredEndMessageId,
+    sourceMessageCount: summary.sourceMessageCount || 0,
+    summaryTokens: summary.summaryTokens || 0,
+    createdAt: summary.createdAt || null
+  };
+}
+
 function startNewChat() {
   conversationId.value = '';
   inputText.value = '';
   conversationError.value = '';
+  isCompressingMemory.value = false;
+  activeMemoryStatusMessageId.value = '';
+  memorySummarySnapshot.value = null;
   isModelMenuOpen.value = false;
   conversationOpenMenuId.value = '';
   activeMessageIndex.value = 0;
@@ -525,6 +723,9 @@ function toggleRecentPopover() {
 }
 
 function toggleModelMenu() {
+  if (isCompressingMemory.value) {
+    return;
+  }
   isRecentPopoverOpen.value = false;
   isUserMenuOpen.value = false;
   isCancelMenuOpen.value = false;
@@ -532,6 +733,9 @@ function toggleModelMenu() {
 }
 
 function toggleThinkMode() {
+  if (isCompressingMemory.value) {
+    return;
+  }
   thinkMode.value = !thinkMode.value;
 }
 
@@ -628,6 +832,9 @@ async function confirmDeleteConversation() {
       conversationId.value = '';
       inputText.value = '';
       conversationError.value = '';
+      isCompressingMemory.value = false;
+      activeMemoryStatusMessageId.value = '';
+      memorySummarySnapshot.value = null;
       messages.value = buildNewConversationMessages();
       updateBrowserUrl('', { replace: true });
     }
@@ -723,6 +930,82 @@ function clearProgressCardCloseTimer() {
     window.clearTimeout(progressCardCloseTimer);
     progressCardCloseTimer = 0;
   }
+}
+
+function shouldPredictAutoCompression(nextUserContent) {
+  if (memorySummarySnapshot.value) {
+    return false;
+  }
+  if (conversationContentMessages.value.length < 8) {
+    return false;
+  }
+  return estimateVisiblePromptTokens(nextUserContent) >= CHAT_MEMORY_CONTEXT_MAX_TOKENS * CHAT_MEMORY_DANGER_RATIO;
+}
+
+function estimateVisiblePromptTokens(extraInput = inputText.value) {
+  const contentMessages = conversationContentMessages.value;
+  let estimatedMessages = contentMessages;
+  let usedTokens = 0;
+
+  if (memorySummarySnapshot.value) {
+    usedTokens += Number(memorySummarySnapshot.value.summaryTokens || 0);
+    estimatedMessages = promptMessagesAfterCompression(contentMessages, memorySummarySnapshot.value);
+  }
+
+  estimatedMessages.forEach((message) => {
+    usedTokens += 4 + estimateTokenCount(message.role) + estimateTokenCount(message.content);
+  });
+  usedTokens += estimateTokenCount(extraInput);
+  return Math.max(0, Math.round(usedTokens));
+}
+
+function promptMessagesAfterCompression(contentMessages, summary) {
+  const coveredStartMessageId = Number(summary.coveredStartMessageId);
+  const coveredEndMessageId = Number(summary.coveredEndMessageId);
+  if (!Number.isFinite(coveredStartMessageId) || !Number.isFinite(coveredEndMessageId)) {
+    return contentMessages.slice(-CHAT_MEMORY_RECENT_WINDOW_MESSAGE_COUNT);
+  }
+
+  return contentMessages.filter((message) => {
+    const serverMessageId = Number(message.serverMessageId);
+    return !Number.isFinite(serverMessageId)
+      || serverMessageId < coveredStartMessageId
+      || serverMessageId > coveredEndMessageId;
+  });
+}
+
+function positiveNumber(value, fallbackValue) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : fallbackValue;
+}
+
+function estimateTokenCount(content) {
+  if (!content || !String(content).trim()) {
+    return 0;
+  }
+  const text = String(content);
+  let asciiChars = 0;
+  let nonAsciiChars = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.charCodeAt(index) <= 127) {
+      asciiChars += 1;
+    } else {
+      nonAsciiChars += 1;
+    }
+  }
+  return Math.max(1, Math.ceil(asciiChars / 4 + nonAsciiChars / 1.8));
+}
+
+function formatTokenCount(value) {
+  const tokenCount = Number(value || 0);
+  if (tokenCount >= 1000) {
+    return `${Math.round(tokenCount / 1000)}k`;
+  }
+  return String(tokenCount);
+}
+
+function isConversationContentMessage(message) {
+  return message?.role === 'user' || message?.role === 'assistant';
 }
 
 function cleanProgressContent(message) {
@@ -1029,6 +1312,9 @@ async function openConversation(targetConversationId) {
 
   isLoadingConversationDetail.value = true;
   conversationError.value = '';
+  isCompressingMemory.value = false;
+  activeMemoryStatusMessageId.value = '';
+  memorySummarySnapshot.value = null;
   activeMessageIndex.value = 0;
   isConversationProgressOpen.value = false;
   messages.value = [];
@@ -1037,7 +1323,8 @@ async function openConversation(targetConversationId) {
     conversationId.value = response.conversationId;
     selectedModelId.value = response.modelId || selectedModelId.value;
     messages.value = response.messages.map((message, index) => ({
-      id: `${response.conversationId}-${message.createdAt}-${index}`,
+      id: `${response.conversationId}-${message.messageId || message.createdAt}-${index}`,
+      serverMessageId: message.messageId ?? null,
       role: message.role,
       content: message.content,
       totalTokens: message.totalTokens ?? null,
@@ -1045,6 +1332,8 @@ async function openConversation(targetConversationId) {
     }));
     if (messages.value.length === 0) {
       messages.value = buildNewConversationMessages();
+    } else {
+      restoreMemorySummaryDivider(response.memorySummary);
     }
     updateBrowserUrl(response.conversationId, { replace: false });
     await scrollToBottom();
@@ -1065,6 +1354,9 @@ function resetConversationState() {
   inputText.value = '';
   conversations.value = [];
   conversationError.value = '';
+  isCompressingMemory.value = false;
+  activeMemoryStatusMessageId.value = '';
+  memorySummarySnapshot.value = null;
   activeMessageIndex.value = 0;
   updateBrowserUrl('', { replace: true });
 }
@@ -1100,6 +1392,9 @@ async function openConversationFromRoute(targetConversationId, replaceHistory) {
 
   isLoadingConversationDetail.value = true;
   conversationError.value = '';
+  isCompressingMemory.value = false;
+  activeMemoryStatusMessageId.value = '';
+  memorySummarySnapshot.value = null;
   activeMessageIndex.value = 0;
   isConversationProgressOpen.value = false;
   messages.value = [];
@@ -1108,7 +1403,8 @@ async function openConversationFromRoute(targetConversationId, replaceHistory) {
     conversationId.value = response.conversationId;
     selectedModelId.value = response.modelId || selectedModelId.value;
     messages.value = response.messages.map((message, index) => ({
-      id: `${response.conversationId}-${message.createdAt}-${index}`,
+      id: `${response.conversationId}-${message.messageId || message.createdAt}-${index}`,
+      serverMessageId: message.messageId ?? null,
       role: message.role,
       content: message.content,
       totalTokens: message.totalTokens ?? null,
@@ -1116,6 +1412,8 @@ async function openConversationFromRoute(targetConversationId, replaceHistory) {
     }));
     if (messages.value.length === 0) {
       messages.value = buildNewConversationMessages();
+    } else {
+      restoreMemorySummaryDivider(response.memorySummary);
     }
     updateBrowserUrl(response.conversationId, { replace: replaceHistory });
     await scrollToBottom();
@@ -1135,6 +1433,9 @@ function startNewChatForRoute(replaceHistory) {
   conversationId.value = '';
   inputText.value = '';
   conversationError.value = '';
+  isCompressingMemory.value = false;
+  activeMemoryStatusMessageId.value = '';
+  memorySummarySnapshot.value = null;
   activeMessageIndex.value = 0;
   messages.value = buildNewConversationMessages();
   updateBrowserUrl('', { replace: replaceHistory });
@@ -1670,19 +1971,40 @@ function stopPointerFrame() {
         @click="handleMessageListClick"
         @scroll.passive="handleMessageListScroll"
       >
-        <article
+        <template
           v-for="(message, index) in messages"
           :key="message.id"
-          class="message-row"
-          :class="message.role"
-          :data-message-index="index"
-          :data-message-id="message.id"
         >
-          <div class="message-bubble markdown-body" v-html="renderMessageContent(message)"></div>
-          <small v-if="message.role === 'assistant' && !message.isStreaming && message.totalTokens !== null && message.totalTokens !== undefined" class="message-usage">
-            消耗token数量: {{ message.totalTokens }}
-          </small>
-        </article>
+          <article
+            v-if="message.role === 'memory-status'"
+            class="memory-divider-row"
+            :class="message.status"
+          >
+            <div class="memory-divider">
+              <span class="memory-divider-label">
+                <span v-if="message.status === 'compressing'" class="memory-divider-spinner" aria-hidden="true"></span>
+                <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 7h8" />
+                  <path d="M8 12h5" />
+                  <path d="M7 3.5h10a2 2 0 0 1 2 2v13l-3-2-3 2-3-2-3 2v-13a2 2 0 0 1 2-2Z" />
+                </svg>
+                {{ message.content }}
+              </span>
+            </div>
+          </article>
+          <article
+            v-else
+            class="message-row"
+            :class="message.role"
+            :data-message-index="index"
+            :data-message-id="message.id"
+          >
+            <div class="message-bubble markdown-body" v-html="renderMessageContent(message)"></div>
+            <small v-if="message.role === 'assistant' && !message.isStreaming && message.totalTokens !== null && message.totalTokens !== undefined" class="message-usage">
+              消耗token数量: {{ message.totalTokens }}
+            </small>
+          </article>
+        </template>
 
         <article v-if="isSending && !hasStreamingAssistant" class="message-row assistant">
           <div class="message-bubble thinking">正在思考</div>
@@ -1732,17 +2054,47 @@ function stopPointerFrame() {
       </nav>
 
       <form class="composer" @submit.prevent="submitMessage">
+        <button
+          class="composer-compress-button"
+          type="button"
+          :disabled="!canCompressMemory"
+          :aria-busy="isCompressingMemory"
+          :title="conversationId ? '压缩上下文' : '发送第一条消息后才能压缩上下文'"
+          aria-label="压缩上下文"
+          @click="compressCurrentConversationMemory"
+        >
+          <span class="composer-compress-text">{{ isCompressingMemory ? '压缩中' : '压缩' }}</span>
+        </button>
         <textarea
           v-model="inputText"
           placeholder="给 yin-bo-agent 发送消息"
           rows="1"
+          :disabled="isComposerLocked"
           @keydown.enter.exact.prevent="submitMessage"
         />
+        <div
+          class="composer-token-meter"
+          :class="tokenMeterStateClass"
+          :style="tokenMeterStyle"
+          :aria-label="tokenMeterLabel"
+          tabindex="0"
+        >
+          <svg viewBox="0 0 42 42" aria-hidden="true">
+            <circle class="token-meter-track" cx="21" cy="21" r="16" pathLength="100" />
+            <circle class="token-meter-value" cx="21" cy="21" r="16" pathLength="100" />
+          </svg>
+          <div class="composer-token-tooltip" role="tooltip">
+            <span>背景信息窗口：</span>
+            <strong>{{ tokenUsage.percent }}% 已用</strong>
+            <span>已用 {{ formatTokenCount(tokenUsage.usedTokens) }} 标记，共 {{ formatTokenCount(tokenUsage.maxTokens) }}</span>
+          </div>
+        </div>
         <button
           class="think-toggle"
           :class="{ active: thinkMode }"
           type="button"
           :aria-pressed="thinkMode"
+          :disabled="isComposerLocked"
           :title="thinkMode ? '关闭 Think 模式' : '开启 Think 模式'"
           @click="toggleThinkMode"
         >
@@ -1756,6 +2108,7 @@ function stopPointerFrame() {
             type="button"
             aria-haspopup="listbox"
             :aria-expanded="isModelMenuOpen"
+            :disabled="isComposerLocked"
             @click="toggleModelMenu"
           >
             <span class="composer-model-copy">

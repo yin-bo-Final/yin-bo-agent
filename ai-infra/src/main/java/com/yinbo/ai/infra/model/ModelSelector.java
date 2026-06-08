@@ -24,10 +24,11 @@ public class ModelSelector {
     // 选择 Chat 候选模型。
     public List<ModelTarget> selectChatCandidates(String requestedModelId, boolean deepThinking) {
         AiModelProperties.ModelGroup group = aiModelProperties.chat();
+        boolean requireThinking = deepThinking && hasEnabledThinkingCandidates(group);
         String preferredModelId = deepThinking && group.deepThinkingModel() != null
                 ? group.deepThinkingModel()
                 : firstNonBlank(requestedModelId, group.defaultModel());
-        return select(ModelCapability.CHAT, preferredModelId, deepThinking);
+        return select(ModelCapability.CHAT, preferredModelId, requireThinking);
     }
 
     // 选择 Embedding 候选模型。
@@ -73,5 +74,12 @@ public class ModelSelector {
             return first.trim();
         }
         return second == null || second.isBlank() ? null : second.trim();
+    }
+
+    // 只有显式配置了支持思考的候选时，Think 模式才收窄模型范围。
+    private boolean hasEnabledThinkingCandidates(AiModelProperties.ModelGroup group) {
+        return group.candidates().stream()
+                .filter(AiModelProperties.ModelCandidate::enabledValue)
+                .anyMatch(AiModelProperties.ModelCandidate::supportsThinkingValue);
     }
 }

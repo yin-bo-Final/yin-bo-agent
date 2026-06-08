@@ -22,7 +22,7 @@ import org.springframework.stereotype.Service;
 public class ChatMessageCacheService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatMessageCacheService.class);
-    private static final String CACHE_KEY_PREFIX = "yinbo:agent:chat:messages:";
+    private static final String CACHE_KEY_PREFIX = "yinbo:agent:chat:messages:v2:";
     private static final Duration MESSAGE_CACHE_TTL = Duration.ofMinutes(30);
     private static final long DELAYED_EVICT_MILLIS = 500L;
     private static final TypeReference<List<CachedChatMessage>> CACHED_MESSAGE_LIST_TYPE = new TypeReference<>() {
@@ -112,6 +112,7 @@ public class ChatMessageCacheService {
 
     // 缓存中的会话消息结构。
     public record CachedChatMessage(
+            Long id,
             String role,
             String content,
             String modelId,
@@ -123,6 +124,7 @@ public class ChatMessageCacheService {
         // 从数据库消息实体转换为缓存消息。
         public static CachedChatMessage from(ChatMessageEntity message) {
             return new CachedChatMessage(
+                    message.getId(),
                     message.getRole(),
                     message.getContent(),
                     message.getModelId(),

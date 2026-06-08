@@ -50,7 +50,7 @@ public class PromptAssemblyService {
 
     // 构造普通直聊请求。
     public LLMRequest buildDirectRequest(ChatExecutionContext ctx) {
-        return buildRequest(ctx.conversationMessages(), ctx.model().id(), ctx.request().thinkModeEnabled());
+        return buildRequest(ctx.promptConversationMessages(), ctx.model().id(), ctx.request().thinkModeEnabled());
     }
 
     // 构造带检索上下文的请求，当前先复用普通直聊请求。

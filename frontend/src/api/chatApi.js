@@ -154,6 +154,15 @@ export async function fetchConversationDetail(conversationId) {
   return parseResponse(response, '会话消息加载失败');
 }
 
+export async function compressConversationMemory(conversationId) {
+  const response = await fetch(`${API_BASE_URL}/conversations/${conversationId}/memory/compress`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+
+  return parseResponse(response, '会话记忆压缩失败');
+}
+
 export async function updateConversationPin(conversationId, pinned) {
   if (!pinned) {
     return unpinConversation(conversationId);

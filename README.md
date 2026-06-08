@@ -84,6 +84,8 @@ RAG 文档入库链路：
 - Chat / Embedding / Rerank 模型由 ai-infra 的 `app.ai` 配置驱动，支持供应商、候选模型、优先级、熔断和故障转移
 - 普通响应和 SSE 流式响应
 - 会话生成已拆成 `ConversationFlowExecutor` 编排器和 `chat/flow` 分层阶段服务，当前保留直接 LLM 生成，查询改写、意图识别、歧义引导、RAG 检索和工具调用为后续扩展点
+- 会话记忆支持自动上下文压缩和手动压缩，Prompt 使用“头部原文 + 历史摘要 + 最近窗口原文”，原始消息仍完整保存在 `chat_message`
+- 前端输入框显示上下文 token 使用圆环，并提供手动压缩按钮；压缩中消息列表显示分割线且禁止继续发送，接近 90% 上下文时会展示自动压缩提示，最终以服务端返回的摘要水位线为准
 - 会话列表、搜索、置顶、取消置顶、删除
 - 刷新后通过 `/c/{conversationId}` 恢复会话
 - assistant 消息记录响应耗时和 token 消耗
@@ -157,7 +159,8 @@ SpringAI-Program/
 │           ├─ V1__init_schema.sql
 │           ├─ V2__create_ingestion_task.sql
 │           ├─ V3__add_chat_message_created_index.sql
-│           └─ V4__add_dashboard_trend_indexes.sql
+│           ├─ V4__add_dashboard_trend_indexes.sql
+│           └─ V5__create_conversation_memory_summary.sql
 ├─ gateway/                         # Spring Cloud Gateway 网关模块
 │  ├─ pom.xml
 │  └─ src/main/
@@ -187,6 +190,7 @@ SpringAI-Program/
 │  ├─ gateway-structure.md          # 网关模块边界和路由
 │  ├─ ai-infra-structure.md         # AI 基础设施服务和 HTTP 契约
 │  ├─ backend-structure.md          # 后端模块边界
+│  ├─ conversation-memory-compression-flow.md # 会话记忆压缩流程
 │  ├─ frontend-structure.md         # 前端模块边界
 │  └─ frontend-style-guide.md       # 前端样式约定
 ├─ local-secrets.example.yml        # 本地私密配置模板
@@ -199,6 +203,7 @@ AI / Codex 协作规则见 [codex.md](codex.md)。
 网关模块说明见 [docs/gateway-structure.md](docs/gateway-structure.md)，
 AI 基础设施说明见 [docs/ai-infra-structure.md](docs/ai-infra-structure.md)，
 后端模块说明见 [docs/backend-structure.md](docs/backend-structure.md)，
+会话记忆压缩流程见 [docs/conversation-memory-compression-flow.md](docs/conversation-memory-compression-flow.md)，
 前端模块说明见 [docs/frontend-structure.md](docs/frontend-structure.md)。
 前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
@@ -246,6 +251,18 @@ YINBO_AI_INFRA_URI: http://localhost:8082
 AI_INFRA_REQUEST_TIMEOUT: 5m
 GATEWAY_INTERNAL_TOKEN: replace-with-a-dev-internal-token
 APP_SLOW_REQUEST_THRESHOLD_MS: 3000
+CHAT_MEMORY_CONTEXT_MAX_TOKENS: 100000
+CHAT_MEMORY_OUTPUT_RESERVE_TOKENS: 8000
+CHAT_MEMORY_RAG_RESERVE_TOKENS: 12000
+CHAT_MEMORY_TOOL_RESERVE_TOKENS: 4000
+CHAT_MEMORY_SAFETY_MARGIN_TOKENS: 4000
+CHAT_MEMORY_RECENT_WINDOW_MESSAGE_COUNT: 20
+CHAT_MEMORY_HEAD_MESSAGE_COUNT: 4
+CHAT_MEMORY_MIN_COMPRESS_MESSAGE_COUNT: 8
+CHAT_MEMORY_COMPRESSION_WINDOW_TOKENS: 24000
+CHAT_MEMORY_MAX_SUMMARY_TOKENS: 4000
+CHAT_MEMORY_AUTO_COMPRESS_THRESHOLD_RATIO: 0.9
+CHAT_MEMORY_COMPRESSION_VERSION: v1
 UPLOAD_GATEWAY_RATE_REPLENISH: 20
 UPLOAD_GATEWAY_RATE_BURST: 240
 UPLOAD_GATEWAY_RATE_REQUESTED: 60
@@ -387,6 +404,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 | `POST` | `/api/chat/stream` | SSE 流式聊天 |
 | `GET` | `/api/conversations` | 查询会话列表 |
 | `GET` | `/api/conversations/{conversationId}` | 查询会话详情 |
+| `POST` | `/api/conversations/{conversationId}/memory/compress` | 手动压缩会话记忆 |
 | `POST/PATCH` | `/api/conversations/{conversationId}/pin` | 置顶或更新置顶 |
 | `POST` | `/api/conversations/{conversationId}/unpin` | 取消置顶 |
 | `DELETE` | `/api/conversations/{conversationId}` | 删除会话 |
@@ -415,7 +433,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 
 ## 数据表
 
-当前使用 Flyway 管理数据库结构，迁移脚本位于 [backend/src/main/resources/db/migration](backend/src/main/resources/db/migration)。`V1__init_schema.sql` 负责初始化业务表、pgvector 扩展、向量表和 HNSW 索引，后续 `V2` 到 `V4` 继续补充入库任务表和 Dashboard 趋势查询索引。
+当前使用 Flyway 管理数据库结构，迁移脚本位于 [backend/src/main/resources/db/migration](backend/src/main/resources/db/migration)。`V1__init_schema.sql` 负责初始化业务表、pgvector 扩展、向量表和 HNSW 索引，后续 `V2` 到 `V5` 继续补充入库任务表、Dashboard 趋势查询索引和会话记忆摘要表。
 
 为了兼容已经存在的本地数据库，`application.yml` 开启了 `spring.flyway.baseline-on-migrate=true`，并把 `baseline-version` 设置为 `0`。这样老库首次切换到 Flyway 时会先建立 `flyway_schema_history`，再执行 `V1` 中的幂等 DDL；新库则会直接从 `V1` 开始迁移。
 
@@ -424,6 +442,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 | `auth_user` | 用户、密码哈希、角色、状态 |
 | `chat_conversation` | 会话信息、置顶时间、最近消息时间 |
 | `chat_message` | 消息内容、模型、响应耗时、token 统计 |
+| `conversation_memory_summary` | 会话记忆压缩摘要、水位线、压缩模型和触发方式 |
 | `knowledge_base` | 知识库、Embedding 模型、collection |
 | `knowledge_document` | 文档元数据、RustFS 对象信息、状态、耗时 |
 | `knowledge_chunk` | 分块内容、启用状态、token 数、字符数、向量文档 ID |
@@ -443,6 +462,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 - 关键业务日志使用 `event=...`：登录注册、知识库变更、文档上传、AI 调用、RocketMQ 投递消费、ingestion 完成或失败都会有明确事件。
 - 模型调用不要散落在业务 Service 中，backend 只通过 `AiInfraClient` 调 ai-infra；HTTP 契约放在 `ai-api`，模型供应商实现只放在 `ai-infra`。
 - 会话编排不要继续堆进 `ChatService`，新增查询改写、意图识别、歧义引导、RAG 检索或工具调用时优先扩展 `chat/flow` 下对应子包服务，并通过 `ChatExecutionContext` 传递阶段结果。
+- 会话记忆压缩流程见 [docs/conversation-memory-compression-flow.md](docs/conversation-memory-compression-flow.md)，压缩只写 `conversation_memory_summary`，不要删除或覆盖 `chat_message` 原始消息。
 - 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本。
 - 上传文件大小默认限制为单文件 `200MB`；gateway 会先拦截超过 `200MB` 的上传请求，service multipart 和前端 Nginx 单请求默认上限为 `220MB`。

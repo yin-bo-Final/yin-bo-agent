@@ -6,6 +6,7 @@ import com.yinbo.agent.chat.dto.ChatRequest;
 import com.yinbo.agent.chat.dto.ChatResponse;
 import com.yinbo.agent.chat.entity.ChatConversation;
 import com.yinbo.agent.chat.entity.ChatMessageEntity;
+import com.yinbo.agent.chat.entity.ConversationMemorySummary;
 import com.yinbo.agent.chat.service.ChatMessageCacheService.CachedChatMessage;
 import com.yinbo.ai.api.model.ModelOption;
 import java.util.ArrayList;
@@ -23,6 +24,8 @@ public class ChatExecutionContext {
     private ChatMessage latestUserMessage;
     private ChatConversation conversation;
     private List<CachedChatMessage> conversationMessages = new ArrayList<>();
+    private List<CachedChatMessage> promptConversationMessages = new ArrayList<>();
+    private ConversationMemorySummary memorySummary;
     private ChatMessageEntity userMessage;
     private String originalQuery;
     private String rewrittenQuery;
@@ -102,6 +105,24 @@ public class ChatExecutionContext {
         this.conversationMessages = conversationMessages == null
                 ? new ArrayList<>()
                 : new ArrayList<>(conversationMessages);
+    }
+
+    public List<CachedChatMessage> promptConversationMessages() {
+        return promptConversationMessages;
+    }
+
+    public void setPromptConversationMessages(List<CachedChatMessage> promptConversationMessages) {
+        this.promptConversationMessages = promptConversationMessages == null
+                ? new ArrayList<>()
+                : new ArrayList<>(promptConversationMessages);
+    }
+
+    public ConversationMemorySummary memorySummary() {
+        return memorySummary;
+    }
+
+    public void setMemorySummary(ConversationMemorySummary memorySummary) {
+        this.memorySummary = memorySummary;
     }
 
     public ChatMessageEntity userMessage() {

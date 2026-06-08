@@ -1,5 +1,6 @@
 package com.yinbo.agent.common;
 
+import java.io.IOException;
 import java.time.Instant;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
@@ -115,6 +116,29 @@ public class GlobalExceptionHandler {
                 ));
     }
 
+    @ExceptionHandler(IOException.class)
+    // 处理客户端主动断开连接，避免 SSE 已提交响应再写 JSON 错误体。
+    public ResponseEntity<Void> handleIOException(IOException exception) {
+        if (isClientDisconnected(exception)) {
+            log.info(
+                    "event=client_disconnected requestId={} type={} message={}",
+                    requestId(),
+                    exception.getClass().getSimpleName(),
+                    sanitizeLogValue(exception.getMessage())
+            );
+            return ResponseEntity.noContent().build();
+        }
+        log.error(
+                "event=exception requestId={} type={} status={} message={}",
+                requestId(),
+                exception.getClass().getSimpleName(),
+                HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                exception.getMessage(),
+                exception
+        );
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+    }
+
     @ExceptionHandler(Exception.class)
     // 处理未预期的系统异常。
     public ResponseEntity<ApiErrorResponse> handleUnexpected(Exception exception) {
@@ -147,5 +171,26 @@ public class GlobalExceptionHandler {
         }
         String sanitized = value.replaceAll("[\\r\\n\\t]", "_");
         return sanitized.length() <= 256 ? sanitized : sanitized.substring(0, 256);
+    }
+
+    // 判断异常是否来自客户端主动关闭连接。
+    private static boolean isClientDisconnected(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            String className = current.getClass().getName();
+            if (className.contains("ClientAbortException") || className.contains("SocketException")) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null && (
+                    message.contains("Broken pipe")
+                            || message.contains("Connection reset")
+                            || message.contains("已建立的连接")
+            )) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 }

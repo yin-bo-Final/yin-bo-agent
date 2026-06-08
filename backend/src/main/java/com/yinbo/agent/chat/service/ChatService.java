@@ -6,6 +6,8 @@ import com.yinbo.agent.auth.entity.AuthUser;
 import com.yinbo.agent.chat.dto.ChatRequest;
 import com.yinbo.agent.chat.dto.ChatResponse;
 import com.yinbo.agent.chat.dto.ConversationDetailResponse;
+import com.yinbo.agent.chat.dto.ConversationMemoryCompressionResponse;
+import com.yinbo.agent.chat.dto.ConversationMemorySummaryResponse;
 import com.yinbo.agent.chat.dto.ConversationMessageResponse;
 import com.yinbo.agent.chat.dto.ConversationSummaryResponse;
 import com.yinbo.agent.chat.dto.PinConversationRequest;
@@ -13,6 +15,7 @@ import com.yinbo.agent.chat.entity.ChatConversation;
 import com.yinbo.agent.chat.entity.ChatMessageEntity;
 import com.yinbo.agent.chat.flow.ConversationFlowExecutor;
 import com.yinbo.agent.chat.flow.context.ChatExecutionContext;
+import com.yinbo.agent.chat.flow.memory.ConversationMemoryCompressionService;
 import com.yinbo.agent.chat.flow.memory.ConversationMemoryService;
 import com.yinbo.agent.chat.mapper.ChatConversationMapper;
 import com.yinbo.agent.chat.mapper.ChatMessageMapper;
@@ -35,6 +38,7 @@ public class ChatService {
 
     private final ConversationFlowExecutor conversationFlowExecutor;
     private final ConversationMemoryService conversationMemoryService;
+    private final ConversationMemoryCompressionService conversationMemoryCompressionService;
     private final ChatConversationMapper chatConversationMapper;
     private final ChatMessageMapper chatMessageMapper;
     private final ChatMessageCacheService chatMessageCacheService;
@@ -43,12 +47,14 @@ public class ChatService {
     public ChatService(
             ConversationFlowExecutor conversationFlowExecutor,
             ConversationMemoryService conversationMemoryService,
+            ConversationMemoryCompressionService conversationMemoryCompressionService,
             ChatConversationMapper chatConversationMapper,
             ChatMessageMapper chatMessageMapper,
             ChatMessageCacheService chatMessageCacheService
     ) {
         this.conversationFlowExecutor = conversationFlowExecutor;
         this.conversationMemoryService = conversationMemoryService;
+        this.conversationMemoryCompressionService = conversationMemoryCompressionService;
         this.chatConversationMapper = chatConversationMapper;
         this.chatMessageMapper = chatMessageMapper;
         this.chatMessageCacheService = chatMessageCacheService;
@@ -86,8 +92,19 @@ public class ChatService {
                 conversation.getTitle(),
                 conversation.getModelId(),
                 toInstant(conversation.getCreatedAt()),
-                messages
+                messages,
+                ConversationMemorySummaryResponse.from(conversationMemoryCompressionService.selectActiveSummary(
+                        authUser.getId(),
+                        conversation.getId()
+                ))
         );
+    }
+
+    // 手动压缩指定会话的历史记忆。
+    public ConversationMemoryCompressionResponse compressConversationMemory(AuthUser authUser, String conversationId) {
+        ChatConversation conversation = requireOwnedConversation(authUser.getId(), conversationId);
+        List<CachedChatMessage> messages = loadConversationMessages(authUser.getId(), conversation.getId());
+        return conversationMemoryCompressionService.compressManually(authUser, conversation, messages);
     }
 
     @Transactional
@@ -132,6 +149,7 @@ public class ChatService {
         chatMessageMapper.delete(new LambdaQueryWrapper<ChatMessageEntity>()
                 .eq(ChatMessageEntity::getConversationId, conversation.getId())
                 .eq(ChatMessageEntity::getUserId, authUser.getId()));
+        conversationMemoryCompressionService.deleteSummaries(authUser.getId(), conversation.getId());
         chatConversationMapper.deleteById(conversation.getId());
         evictConversationMessagesAfterCommit(authUser.getId(), conversation.getId());
     }
@@ -174,7 +192,8 @@ public class ChatService {
                 message.modelId(),
                 message.createdAt(),
                 message.responseDurationMs(),
-                message.totalTokens()
+                message.totalTokens(),
+                message.id()
         );
     }
 

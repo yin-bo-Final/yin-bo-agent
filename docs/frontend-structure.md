@@ -71,6 +71,9 @@ GET  /api/auth/me
 - 新建会话
 - 普通聊天和流式聊天
 - 流式聊天会识别 SSE 的 `done` / `error` 事件，断流但没有完成事件时会显示中断提示
+- 输入框展示上下文 token 使用圆环，左侧压缩按钮可手动触发会话记忆压缩
+- 手动压缩时消息列表显示“正在压缩上下文”，压缩完成后显示“上下文已压缩”分割线，压缩中禁止继续发送；发送时如果前端估算接近 90% 上下文，也会展示自动压缩提示，并以 SSE `start` 返回的真实摘要状态为准
+- 打开历史会话时会根据会话详情返回的 active summary 恢复压缩分割线和 token 圆环估算
 - 会话列表、搜索、回放
 - 会话置顶、取消置顶、删除
 - 用户菜单
@@ -86,6 +89,7 @@ POST   /api/chat
 POST   /api/chat/stream
 GET    /api/conversations
 GET    /api/conversations/{conversationId}
+POST   /api/conversations/{conversationId}/memory/compress
 DELETE /api/conversations/{conversationId}
 ```
 
@@ -142,7 +146,7 @@ DELETE /api/admin/ingestion/tasks/{taskId}
 | 文件 | 说明 |
 | --- | --- |
 | `authApi.js` | 注册、登录、当前用户、退出、注销 |
-| `chatApi.js` | 模型列表、聊天、流式聊天、会话管理 |
+| `chatApi.js` | 模型列表、聊天、流式聊天、会话管理和手动记忆压缩 |
 | `adminApi.js` | Dashboard、知识库、文档上传、分块、失败任务管理 |
 | `http.js` | 统一解析响应和错误，429 会触发全局错误弹窗 |
 

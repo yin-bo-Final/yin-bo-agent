@@ -9,6 +9,7 @@
 | [docs/gateway-structure.md](docs/gateway-structure.md)       | 网关模块、路由转发、真实 IP、限流、并发控制和统一错误响应          |
 | [docs/ai-infra-structure.md](docs/ai-infra-structure.md)     | AI 基础设施服务、模型路由、供应商客户端和 HTTP 契约       |
 | [docs/backend-structure.md](docs/backend-structure.md)       | 后端包结构、RAG ingestion、Flyway、数据表和常见改动入口 |
+| [docs/conversation-memory-compression-flow.md](docs/conversation-memory-compression-flow.md) | 会话记忆压缩触发、摘要水位线和 Prompt 组装流程 |
 | [docs/frontend-structure.md](docs/frontend-structure.md)     | 前端页面结构、API 封装、后台管理 UI 和路由状态           |
 | [docs/frontend-style-guide.md](docs/frontend-style-guide.md) | 前端视觉风格、按钮、弹窗、下拉栏、tooltip 等样式约定        |
 | [codex.md](codex.md)                                         | 项目提示词、协作习惯、本地中间件位置和 Git 提交习惯          |
@@ -60,7 +61,7 @@ ConversationPage
 -> ChatController
 -> ChatService
 -> ConversationFlowExecutor 编排 chat/flow 子包阶段服务
--> 生命周期、加载记忆、查询改写、意图识别、歧义引导、检索占位和响应输出
+-> 生命周期、加载记忆、保存用户消息、按预算压缩 Prompt 记忆、查询改写、意图识别、歧义引导、检索占位和响应输出
 -> AiInfraClient
 -> ai-infra /internal/ai/chat 或 /internal/ai/chat/stream
 -> ModelSelector / ModelRoutingExecutor / 供应商 ChatClient
@@ -100,6 +101,7 @@ ConversationPage
 | `auth_user`              | `auth`                    | 用户、密码哈希、角色、状态                 |
 | `chat_conversation`      | `chat`                    | 会话、模型、置顶、最近消息时间               |
 | `chat_message`           | `chat`                    | 消息内容、耗时、token                 |
+| `conversation_memory_summary` | `chat`               | 会话记忆摘要、覆盖消息水位线、压缩触发来源        |
 | `knowledge_base`         | `knowledge`               | 知识库名称、collection、Embedding 模型 |
 | `knowledge_document`     | `ingestion` / `knowledge` | 文档元数据、RustFS 对象信息、状态、耗时       |
 | `knowledge_chunk`        | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数、向量 ID     |
@@ -115,6 +117,7 @@ ConversationPage
 | 网关路由、统一入口、真实 IP、限流、鉴权前置 | [docs/gateway-structure.md](docs/gateway-structure.md) |
 | 模型路由、供应商接入、AI HTTP 契约 | [docs/ai-infra-structure.md](docs/ai-infra-structure.md) |
 | 后端接口、数据库、RAG、RocketMQ、RustFS | [docs/backend-structure.md](docs/backend-structure.md) |
+| 会话记忆压缩、summary 水位线、Prompt 记忆视图 | [docs/conversation-memory-compression-flow.md](docs/conversation-memory-compression-flow.md) |
 | 前端页面、后台管理、会话 UI | [docs/frontend-structure.md](docs/frontend-structure.md) |
 | 只改样式 | [docs/frontend-style-guide.md](docs/frontend-style-guide.md) |
 | 新对话交接、工作习惯、提交规范 | [codex.md](codex.md) |
@@ -124,7 +127,7 @@ ConversationPage
 - 网关包名根路径是 `com.yinbo.gateway`，后端业务服务包名根路径是 `com.yinbo.agent`，AI 基础设施服务包名根路径是 `com.yinbo.ai.infra`。
 - 前端 `/api` 请求默认先进入 gateway，再由 gateway 转发到后端业务服务。
 - backend 通过 `AiInfraClient` 远程调用 ai-infra，HTTP 契约放在 `ai-api`，不要让 backend 反向依赖 ai-infra 实现类。
-- 会话生成入口由 `ChatService` 接收，阶段化处理放在 `chat/flow`；`ConversationFlowExecutor` 只负责编排，生命周期、记忆、消息持久化、LLM 调用、查询改写、意图识别、歧义引导、RAG 检索和工具调用分别扩展对应子包服务。
+- 会话生成入口由 `ChatService` 接收，阶段化处理放在 `chat/flow`；`ConversationFlowExecutor` 只负责编排，生命周期、记忆加载、记忆压缩、消息持久化、LLM 调用、查询改写、意图识别、歧义引导、RAG 检索和工具调用分别扩展对应子包服务。
 - 后台接口路径统一放在 `/api/admin/**`。
 - 业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本。

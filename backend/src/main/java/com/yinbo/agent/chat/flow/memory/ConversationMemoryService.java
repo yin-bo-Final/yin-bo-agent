@@ -28,6 +28,7 @@ public class ConversationMemoryService {
     // 为当前会话执行上下文加载历史记忆。
     public void load(ChatExecutionContext ctx) {
         ctx.setConversationMessages(load(ctx.authUser().getId(), ctx.conversation().getId()));
+        ctx.setPromptConversationMessages(ctx.conversationMessages());
     }
 
     // 加载指定用户指定会话的历史消息。

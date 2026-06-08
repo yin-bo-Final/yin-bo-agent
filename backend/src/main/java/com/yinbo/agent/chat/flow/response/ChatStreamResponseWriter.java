@@ -1,6 +1,7 @@
 package com.yinbo.agent.chat.flow.response;
 
 import com.yinbo.agent.chat.dto.ChatStreamEvent;
+import com.yinbo.agent.chat.dto.ConversationMemorySummaryResponse;
 import com.yinbo.agent.chat.flow.context.ChatExecutionContext;
 import java.io.IOException;
 import org.slf4j.Logger;
@@ -16,7 +17,11 @@ public class ChatStreamResponseWriter {
 
     // 发送流式开始事件。
     public void sendStart(ChatExecutionContext ctx) {
-        sendEvent(ctx.emitter(), "start", ChatStreamEvent.start(ctx.conversation().getConversationNo(), ctx.model().id()));
+        sendEvent(ctx.emitter(), "start", ChatStreamEvent.start(
+                ctx.conversation().getConversationNo(),
+                ctx.model().id(),
+                ConversationMemorySummaryResponse.from(ctx.memorySummary())
+        ));
     }
 
     // 发送模型增量内容。

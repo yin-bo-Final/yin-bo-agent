@@ -23,7 +23,8 @@ backend/src/main/
       ├─ V1__init_schema.sql
       ├─ V2__create_ingestion_task.sql
       ├─ V3__add_chat_message_created_index.sql
-      └─ V4__add_dashboard_trend_indexes.sql
+      ├─ V4__add_dashboard_trend_indexes.sql
+      └─ V5__create_conversation_memory_summary.sql
 ```
 
 ## `resources` 配置模块
@@ -48,6 +49,7 @@ backend/src/main/
 | `management` | 收口 Actuator，只启用和暴露 `health`、`info` |
 | `logging` | 配置 service 日志文件、日志格式和日志滚动策略 |
 | `app.logging` | 配置慢请求阈值 |
+| `app.chat.memory` | 配置会话记忆上下文预算、自动压缩阈值、最近窗口和摘要版本 |
 | `app.concurrency` | 配置 service 上传兜底并发和 ingestion 消费并发 |
 | `app.ai-infra` | 配置 backend 远程调用 ai-infra 的 baseUrl 和超时时间 |
 | `app.ai.rag` | 配置 RAG 模型、向量表、分块参数、源文件大小和 MQ topic |
@@ -102,6 +104,19 @@ Flyway Dashboard 多趋势索引迁移脚本。
 | 会话时间索引 | 为 `chat_conversation(created_at DESC)` 创建索引，支撑会话趋势 |
 | 最近登录索引 | 为 `auth_user(last_login_at DESC)` 创建索引，支撑 Dashboard 最近 24 小时活跃用户指标 |
 
+### `db/migration/V5__create_conversation_memory_summary.sql`
+
+Flyway 会话记忆摘要迁移脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 摘要表 | 创建 `conversation_memory_summary` 保存会话压缩摘要 |
+| 水位线 | 保存 `covered_start_message_id` 和 `covered_end_message_id`，用于后续只加载摘要之后的消息 |
+| 触发追踪 | 保存 `trigger_type`、`compression_model_id`、`compression_version` 和 `status` |
+| 查询索引 | 为会话活跃摘要和水位线查询创建索引 |
+
 当前业务表边界：
 
 | 表 | 主要模块 | 功能 |
@@ -109,6 +124,7 @@ Flyway Dashboard 多趋势索引迁移脚本。
 | `auth_user` | `auth` | 用户、密码哈希、角色、状态和最近登录时间 |
 | `chat_conversation` | `chat` | 会话编号、标题、模型、置顶时间和最近消息时间 |
 | `chat_message` | `chat` | 消息角色、内容、模型、响应耗时和 token 统计 |
+| `conversation_memory_summary` | `chat` | 会话记忆摘要、覆盖消息水位线、压缩模型和触发来源 |
 | `knowledge_base` | `knowledge` | 知识库编号、名称、Embedding 模型、collection 和状态 |
 | `knowledge_document` | `ingestion` / `knowledge` | 文档来源、对象存储信息、解析状态、分块参数和耗时 |
 | `knowledge_chunk` | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数和向量文档 ID |
@@ -126,7 +142,7 @@ Flyway Dashboard 多趋势索引迁移脚本。
 | 功能 | 说明 |
 | --- | --- |
 | 启动 Spring Boot | 调用 `SpringApplication.run(...)` 启动 service |
-| 加载配置属性 | 启用 `AiInfraProperties`、`AuthProperties`、`ConcurrencyLimitProperties`、`ObjectStorageProperties`、`RagProperties` |
+| 加载配置属性 | 启用 `AiInfraProperties`、`AuthProperties`、`ChatMemoryProperties`、`ConcurrencyLimitProperties`、`ObjectStorageProperties`、`RagProperties` |
 | 扫描 Mapper | 扫描 `auth`、`chat`、`ingestion`、`knowledge` 模块的 MyBatis Mapper |
 
 核心方法：
@@ -429,12 +445,15 @@ chat/
 │  ├─ ChatResponse.java
 │  ├─ ChatStreamEvent.java
 │  ├─ ConversationDetailResponse.java
+│  ├─ ConversationMemoryCompressionResponse.java
+│  ├─ ConversationMemorySummaryResponse.java
 │  ├─ ConversationMessageResponse.java
 │  ├─ ConversationSummaryResponse.java
 │  └─ PinConversationRequest.java
 ├─ entity/
 │  ├─ ChatConversation.java
-│  └─ ChatMessageEntity.java
+│  ├─ ChatMessageEntity.java
+│  └─ ConversationMemorySummary.java
 ├─ flow/
 │  ├─ ConversationFlowExecutor.java
 │  ├─ clarification/
@@ -445,11 +464,14 @@ chat/
 │  ├─ intent/
 │  │  └─ IntentResolutionService.java
 │  ├─ lifecycle/
-│  │  └─ ConversationLifecycleService.java
+│  │  ├─ ConversationLifecycleService.java
+│  │  └─ ConversationStreamRegistry.java
 │  ├─ llm/
 │  │  └─ DirectChatService.java
 │  ├─ memory/
-│  │  └─ ConversationMemoryService.java
+│  │  ├─ ConversationMemoryCompressionService.java
+│  │  ├─ ConversationMemoryService.java
+│  │  └─ ConversationTokenEstimator.java
 │  ├─ message/
 │  │  ├─ AssistantResponseResult.java
 │  │  └─ ChatMessagePersistenceService.java
@@ -464,7 +486,8 @@ chat/
 │     └─ RetrievalExecuteService.java
 ├─ mapper/
 │  ├─ ChatConversationMapper.java
-│  └─ ChatMessageMapper.java
+│  ├─ ChatMessageMapper.java
+│  └─ ConversationMemorySummaryMapper.java
 └─ service/
    ├─ ChatMessageCacheService.java
    └─ ChatService.java
@@ -483,6 +506,7 @@ AI 对话和会话管理接口。
 | `POST` | `/api/chat/stream` | 发起 SSE 流式 AI 对话 |
 | `GET` | `/api/conversations` | 查询当前用户的会话列表 |
 | `GET` | `/api/conversations/{conversationId}` | 查询指定会话详情和消息列表 |
+| `POST` | `/api/conversations/{conversationId}/memory/compress` | 手动压缩指定会话的历史记忆 |
 | `POST/PATCH` | `/api/conversations/{conversationId}/pin` | 更新会话置顶状态 |
 | `POST` | `/api/conversations/{conversationId}/unpin` | 取消会话置顶 |
 | `DELETE` | `/api/conversations/{conversationId}` | 删除指定会话及其消息 |
@@ -496,6 +520,7 @@ AI 对话和会话管理接口。
 | `streamChat(...)` | 校验登录用户并创建 SSE 对话 |
 | `conversations(...)` | 查询当前用户会话列表 |
 | `conversationDetail(...)` | 查询当前用户指定会话详情 |
+| `compressConversationMemory(...)` | 手动触发当前用户指定会话的记忆压缩 |
 | `updateConversationPin(...)` | 更新会话置顶状态 |
 | `unpinConversation(...)` | 取消会话置顶 |
 | `deleteConversation(...)` | 删除会话 |
@@ -511,6 +536,7 @@ AI 对话入口和会话管理服务。
 | 对话入口 | 普通对话和流式对话委托给 `ConversationFlowExecutor` |
 | 会话管理 | 查询、置顶、取消置顶、删除会话 |
 | 详情恢复 | 从 Redis 缓存或 PostgreSQL 加载历史消息 |
+| 手动压缩 | 校验会话归属后调用 `ConversationMemoryCompressionService` 压缩历史记忆 |
 | 缓存清理 | 删除会话后清理 Redis 会话消息缓存 |
 
 核心方法：
@@ -521,6 +547,7 @@ AI 对话入口和会话管理服务。
 | `streamChat(AuthUser authUser, ChatRequest request)` | 创建流式对话上下文并交给会话流水线执行 |
 | `listConversations(AuthUser authUser)` | 查询当前用户会话列表 |
 | `getConversationDetail(...)` | 查询会话详情和消息 |
+| `compressConversationMemory(...)` | 手动压缩会话记忆 |
 | `updateConversationPin(...)` | 更新置顶状态 |
 | `unpinConversation(...)` | 取消置顶 |
 | `deleteConversation(...)` | 删除会话和消息 |
@@ -538,6 +565,7 @@ AI 对话入口和会话管理服务。
 | 准备会话 | `ConversationLifecycleService.prepare(...)` | 解析模型、取最新用户消息、创建或恢复会话 |
 | 加载记忆 | `ConversationMemoryService.load(...)` | 从 Redis 缓存或 PostgreSQL 加载历史会话消息 |
 | 保存用户消息 | `ChatMessagePersistenceService.persistCurrentUserMessage(...)` | 保存本轮 user 消息并写入上下文记忆 |
+| 准备 Prompt 记忆 | `ConversationMemoryCompressionService.preparePromptMemory(...)` | 按上下文预算自动压缩，并生成摘要加最近窗口的 Prompt 记忆视图 |
 | 查询改写 | `QueryRewriteService.rewrite(...)` | 当前占位，默认使用原始问题 |
 | 意图识别 | `IntentResolutionService.resolve(...)` | 当前占位，默认 `DIRECT_CHAT` |
 | 歧义引导 | `ClarificationService.guidanceMessage(...)` | 当前占位，只有上下文显式标记歧义时才短路 |
@@ -546,7 +574,7 @@ AI 对话入口和会话管理服务。
 | 空检索兜底 | `RetrievalExecuteService.emptyRetrievalMessage(...)` | 检索为空时输出未检索到相关文档 |
 | Prompt 组装 | `PromptAssemblyService.buildDirectRequest(...)` / `buildGroundedRequest(...)` | 组装发给 ai-infra 的 `LLMRequest` |
 | assistant 落库 | `ChatMessagePersistenceService.completeAssistantMessage(...)` | 保存 assistant 消息、更新会话时间和刷新消息缓存 |
-| SSE 写出 | `ChatStreamResponseWriter` | 统一发送 `start`、`delta`、`done`、`error` 事件 |
+| SSE 写出 | `ChatStreamResponseWriter` | 统一发送 `start`、`delta`、`done`、`error` 事件，`start` 会携带当前活跃摘要水位线 |
 | RAG 响应 | `ConversationFlowExecutor.streamGroundedResponse(...)` / `generateGroundedResponse(...)` | 当前占位，后续组装检索 prompt 并输出 |
 
 辅助文件：
@@ -556,7 +584,10 @@ AI 对话入口和会话管理服务。
 | `flow/context/ChatExecutionContext.java` | 单次会话执行过程中跨阶段传递用户、请求、会话、记忆、意图和 SSE 信息 |
 | `flow/context/ChatIntentType.java` | 会话意图枚举，包含 `DIRECT_CHAT`、`KNOWLEDGE_RAG`、`TOOL_CALL`、`RAG_AND_TOOL`、`CLARIFICATION` |
 | `flow/lifecycle/ConversationLifecycleService.java` | 会话创建、恢复、模型解析和最近消息信息维护 |
+| `flow/lifecycle/ConversationStreamRegistry.java` | 当前 service 实例内登记正在流式输出的会话，手动压缩时避免并发写摘要 |
+| `flow/memory/ConversationMemoryCompressionService.java` | 会话记忆自动压缩、手动压缩、摘要水位线维护和 Prompt 记忆视图构建 |
 | `flow/memory/ConversationMemoryService.java` | 历史会话记忆加载阶段，统一处理 Redis 缓存读取和 PostgreSQL 回源 |
+| `flow/memory/ConversationTokenEstimator.java` | 会话消息和摘要 token 粗略估算 |
 | `flow/message/ChatMessagePersistenceService.java` | user/assistant 消息持久化、会话更新和缓存刷新 |
 | `flow/message/AssistantResponseResult.java` | assistant 响应内容、模型和 token 统计的统一结果 |
 | `flow/llm/DirectChatService.java` | 普通直聊和流式直聊模型调用 |
@@ -571,6 +602,8 @@ AI 对话入口和会话管理服务。
 ### `ChatMessageCacheService.java`
 
 会话消息 Redis 缓存服务。
+
+缓存结构包含消息 `id`，用于会话记忆摘要按 `coveredEndMessageId` 水位线筛选后续消息。
 
 核心方法：
 
@@ -589,15 +622,19 @@ AI 对话入口和会话管理服务。
 | `dto/ChatMessage.java` | 前端提交的单条聊天消息 |
 | `dto/ChatRequest.java` | 对话请求，包含消息、模型、会话 ID、think 模式 |
 | `dto/ChatResponse.java` | 普通对话响应 |
-| `dto/ChatStreamEvent.java` | SSE 事件结构，提供 `start`、`delta`、`done`、`error` 工厂方法 |
-| `dto/ConversationDetailResponse.java` | 会话详情和消息列表响应 |
-| `dto/ConversationMessageResponse.java` | 单条会话消息响应 |
+| `dto/ChatStreamEvent.java` | SSE 事件结构，提供 `start`、`delta`、`done`、`error` 工厂方法，`start` 可返回活跃摘要 |
+| `dto/ConversationDetailResponse.java` | 会话详情、消息列表和活跃摘要响应 |
+| `dto/ConversationMemoryCompressionResponse.java` | 手动压缩会话记忆后的响应，返回覆盖水位线和摘要 token |
+| `dto/ConversationMemorySummaryResponse.java` | 会话活跃摘要响应，供前端恢复压缩状态和 token 估算 |
+| `dto/ConversationMessageResponse.java` | 单条会话消息响应，包含 `messageId` 供前端按摘要水位线估算上下文 |
 | `dto/ConversationSummaryResponse.java` | 会话列表摘要响应 |
 | `dto/PinConversationRequest.java` | 置顶状态请求，`pinnedEnabled()` 处理空值 |
 | `entity/ChatConversation.java` | 映射 `chat_conversation` 表 |
 | `entity/ChatMessageEntity.java` | 映射 `chat_message` 表 |
+| `entity/ConversationMemorySummary.java` | 映射 `conversation_memory_summary` 表 |
 | `mapper/ChatConversationMapper.java` | `BaseMapper<ChatConversation>` |
 | `mapper/ChatMessageMapper.java` | `BaseMapper<ChatMessageEntity>` |
+| `mapper/ConversationMemorySummaryMapper.java` | `BaseMapper<ConversationMemorySummary>` |
 
 ## `common` 模块
 
@@ -707,6 +744,7 @@ Spring Bean 和配置属性模块。
 config/
 ├─ AiInfraProperties.java
 ├─ AuthProperties.java
+├─ ChatMemoryProperties.java
 ├─ ConcurrencyLimitProperties.java
 ├─ MybatisPlusAutoFillConfig.java
 ├─ ObjectStorageProperties.java
@@ -721,6 +759,7 @@ config/
 | --- | --- | --- |
 | `AiInfraProperties.java` | `app.ai-infra` | 保存 ai-infra baseUrl 和远程调用超时时间 |
 | `AuthProperties.java` | `app.auth` | 保存种子管理员用户名和密码 |
+| `ChatMemoryProperties.java` | `app.chat.memory` | 保存会话记忆上下文预算、压缩窗口、最近窗口和摘要版本 |
 | `ConcurrencyLimitProperties.java` | `app.concurrency` | 保存上传兜底并发和 ingestion 消费并发配置 |
 | `ObjectStorageProperties.java` | `app.storage` | 保存 RustFS / S3 provider、endpoint、accessKey、secretKey、bucket |
 | `RagProperties.java` | `app.ai.rag` | 保存 RAG 模型、维度、向量表、分块默认值、源文件大小和 MQ topic |
@@ -733,6 +772,23 @@ config/
 | --- | --- | --- |
 | `upload` | service 上传兜底并发限制 | `10 / 10m` |
 | `ingestion` | RocketMQ 分块 / 向量化消费并发限制 | `5 / 30m` |
+
+### `ChatMemoryProperties.java`
+
+会话记忆压缩配置。
+
+主要配置：
+
+| 配置项 | 功能 | 默认值 |
+| --- | --- | --- |
+| `contextMaxTokens` | 当前会话模型最大上下文预算 | `100000` |
+| `outputReserveTokens` | 给模型输出预留的 token | `8000` |
+| `ragReserveTokens` | 给 RAG 上下文预留的 token | `12000` |
+| `toolReserveTokens` | 给工具调用结果预留的 token | `4000` |
+| `safetyMarginTokens` | 安全余量 | `4000` |
+| `recentWindowMessageCount` | 最近原文消息保留数量 | `20` |
+| `headMessageCount` | 首轮锚点原文消息保留数量 | `4` |
+| `autoCompressThresholdRatio` | 自动压缩触发比例 | `0.9` |
 
 ### `RagProperties.java`
 
@@ -1319,7 +1375,8 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | 后台仪表盘 | `AdminDashboardController`、`AdminDashboardService`、`AdminDashboardTrendService` |
 | 普通 AI 对话 | `ChatController`、`ChatService.chat(...)`、`ConversationFlowExecutor.executeSync(...)` |
 | SSE 流式 AI 对话 | `ChatController`、`ChatService.streamChat(...)`、`ConversationFlowExecutor.executeStream(...)` |
-| 会话处理流水线 | `ConversationFlowExecutor`、`ChatExecutionContext`、`ConversationLifecycleService`、`ConversationMemoryService`、`ChatMessagePersistenceService`、`DirectChatService`、`QueryRewriteService`、`IntentResolutionService`、`ClarificationService`、`RetrievalExecuteService`、`PromptAssemblyService`、`ChatStreamResponseWriter` |
+| 会话处理流水线 | `ConversationFlowExecutor`、`ChatExecutionContext`、`ConversationLifecycleService`、`ConversationMemoryService`、`ConversationMemoryCompressionService`、`ChatMessagePersistenceService`、`DirectChatService`、`QueryRewriteService`、`IntentResolutionService`、`ClarificationService`、`RetrievalExecuteService`、`PromptAssemblyService`、`ChatStreamResponseWriter` |
+| 会话记忆压缩 | `ConversationMemoryCompressionService`、`ConversationTokenEstimator`、`ConversationMemorySummary`、`ConversationMemorySummaryMapper`、`conversation_memory_summary` |
 | 会话管理 | `ChatController`、`ChatService`、`ChatMessageCacheService` |
 | 统一业务异常 | `BusinessException`、`GlobalExceptionHandler`、`ApiErrorResponse` |
 | requestId 链路日志 | `RequestIdFilter` |
@@ -1338,5 +1395,5 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | 向量写入和重建 | `DocumentIngestionService`、`PgVectorRepository`、`AiInfraClient` |
 | 知识库管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
 | 文档和分块管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
-| 数据库迁移 | `resources/db/migration/V1__init_schema.sql`、`resources/db/migration/V2__create_ingestion_task.sql`、`resources/db/migration/V3__add_chat_message_created_index.sql`、`resources/db/migration/V4__add_dashboard_trend_indexes.sql` |
+| 数据库迁移 | `resources/db/migration/V1__init_schema.sql`、`resources/db/migration/V2__create_ingestion_task.sql`、`resources/db/migration/V3__add_chat_message_created_index.sql`、`resources/db/migration/V4__add_dashboard_trend_indexes.sql`、`resources/db/migration/V5__create_conversation_memory_summary.sql` |
 | Actuator 安全收口 | `application.yml` |

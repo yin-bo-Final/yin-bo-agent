@@ -5,6 +5,7 @@ import com.yinbo.agent.auth.entity.AuthUser;
 import com.yinbo.agent.chat.dto.ChatRequest;
 import com.yinbo.agent.chat.dto.ChatResponse;
 import com.yinbo.agent.chat.dto.ConversationDetailResponse;
+import com.yinbo.agent.chat.dto.ConversationMemoryCompressionResponse;
 import com.yinbo.agent.chat.dto.ConversationSummaryResponse;
 import com.yinbo.agent.chat.dto.PinConversationRequest;
 import com.yinbo.agent.chat.service.ChatService;
@@ -75,6 +76,16 @@ public class ChatController {
     ) {
         AuthUser authUser = authService.requireActiveUser(httpRequest);
         return chatService.getConversationDetail(authUser, conversationId);
+    }
+
+    @PostMapping("/conversations/{conversationId}/memory/compress")
+    // 手动压缩指定会话的历史记忆。
+    public ConversationMemoryCompressionResponse compressConversationMemory(
+            @PathVariable String conversationId,
+            HttpServletRequest httpRequest
+    ) {
+        AuthUser authUser = authService.requireActiveUser(httpRequest);
+        return chatService.compressConversationMemory(authUser, conversationId);
     }
 
     @RequestMapping(path = "/conversations/{conversationId}/pin", method = {

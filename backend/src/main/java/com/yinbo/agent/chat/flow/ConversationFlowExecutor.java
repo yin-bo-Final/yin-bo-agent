@@ -5,7 +5,9 @@ import com.yinbo.agent.chat.flow.clarification.ClarificationService;
 import com.yinbo.agent.chat.flow.context.ChatExecutionContext;
 import com.yinbo.agent.chat.flow.intent.IntentResolutionService;
 import com.yinbo.agent.chat.flow.lifecycle.ConversationLifecycleService;
+import com.yinbo.agent.chat.flow.lifecycle.ConversationStreamRegistry;
 import com.yinbo.agent.chat.flow.llm.DirectChatService;
+import com.yinbo.agent.chat.flow.memory.ConversationMemoryCompressionService;
 import com.yinbo.agent.chat.flow.memory.ConversationMemoryService;
 import com.yinbo.agent.chat.flow.message.AssistantResponseResult;
 import com.yinbo.agent.chat.flow.message.ChatMessagePersistenceService;
@@ -14,11 +16,13 @@ import com.yinbo.agent.chat.flow.response.ChatStreamResponseWriter;
 import com.yinbo.agent.chat.flow.response.ChatStreamResponseWriter.ClientDisconnectedException;
 import com.yinbo.agent.chat.flow.retrieval.RetrievalContext;
 import com.yinbo.agent.chat.flow.retrieval.RetrievalExecuteService;
+import com.yinbo.agent.common.BusinessException;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -32,6 +36,7 @@ public class ConversationFlowExecutor {
 
     private final ConversationLifecycleService conversationLifecycleService;
     private final ConversationMemoryService conversationMemoryService;
+    private final ConversationMemoryCompressionService conversationMemoryCompressionService;
     private final ChatMessagePersistenceService messagePersistenceService;
     private final QueryRewriteService queryRewriteService;
     private final IntentResolutionService intentResolutionService;
@@ -39,21 +44,25 @@ public class ConversationFlowExecutor {
     private final RetrievalExecuteService retrievalExecuteService;
     private final DirectChatService directChatService;
     private final ChatStreamResponseWriter streamResponseWriter;
+    private final ConversationStreamRegistry streamRegistry;
 
     // 注入会话流水线各阶段服务。
     public ConversationFlowExecutor(
             ConversationLifecycleService conversationLifecycleService,
             ConversationMemoryService conversationMemoryService,
+            ConversationMemoryCompressionService conversationMemoryCompressionService,
             ChatMessagePersistenceService messagePersistenceService,
             QueryRewriteService queryRewriteService,
             IntentResolutionService intentResolutionService,
             ClarificationService clarificationService,
             RetrievalExecuteService retrievalExecuteService,
             DirectChatService directChatService,
-            ChatStreamResponseWriter streamResponseWriter
+            ChatStreamResponseWriter streamResponseWriter,
+            ConversationStreamRegistry streamRegistry
     ) {
         this.conversationLifecycleService = conversationLifecycleService;
         this.conversationMemoryService = conversationMemoryService;
+        this.conversationMemoryCompressionService = conversationMemoryCompressionService;
         this.messagePersistenceService = messagePersistenceService;
         this.queryRewriteService = queryRewriteService;
         this.intentResolutionService = intentResolutionService;
@@ -61,6 +70,7 @@ public class ConversationFlowExecutor {
         this.retrievalExecuteService = retrievalExecuteService;
         this.directChatService = directChatService;
         this.streamResponseWriter = streamResponseWriter;
+        this.streamRegistry = streamRegistry;
     }
 
     @Transactional
@@ -108,9 +118,14 @@ public class ConversationFlowExecutor {
     // 执行流式会话主流程。
     private void doExecuteStream(ChatExecutionContext ctx) {
         String conversationId = null;
+        Long conversationPk = null;
+        boolean streamRegistered = false;
         try {
             prepareRequest(ctx);
             conversationId = ctx.conversation().getConversationNo();
+            conversationPk = ctx.conversation().getId();
+            streamRegistry.markStarted(conversationPk);
+            streamRegistered = true;
             streamResponseWriter.sendStart(ctx);
 
             queryRewriteService.rewrite(ctx);
@@ -145,6 +160,24 @@ public class ConversationFlowExecutor {
                     ctx.model() == null ? "-" : ctx.model().id()
             );
             streamResponseWriter.safeComplete(ctx.emitter());
+        } catch (BusinessException exception) {
+            log.warn(
+                    "event=ai_stream_business_failed conversationId={} modelId={} status={} message={}",
+                    conversationId,
+                    ctx.model() == null ? "-" : ctx.model().id(),
+                    exception.getStatus().value(),
+                    sanitizeLogValue(exception.getMessage())
+            );
+            try {
+                streamResponseWriter.sendError(ctx, exception.getMessage());
+            } catch (ClientDisconnectedException ignored) {
+                log.info(
+                        "event=ai_stream_disconnected_before_business_error conversationId={} modelId={}",
+                        conversationId,
+                        ctx.model() == null ? "-" : ctx.model().id()
+                );
+            }
+            streamResponseWriter.safeComplete(ctx.emitter());
         } catch (Exception exception) {
             log.warn(
                     "event=ai_stream_failed conversationId={} modelId={} type={} message={}",
@@ -164,14 +197,22 @@ public class ConversationFlowExecutor {
                 );
             }
             streamResponseWriter.safeComplete(ctx.emitter());
+        } finally {
+            if (streamRegistered) {
+                streamRegistry.markFinished(conversationPk);
+            }
         }
     }
 
     // 准备会话、加载记忆并保存本轮用户消息。
     private void prepareRequest(ChatExecutionContext ctx) {
         conversationLifecycleService.prepare(ctx);
+        if (conversationMemoryCompressionService.isCompressing(ctx.conversation().getId())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前会话正在压缩，结束后再发送");
+        }
         conversationMemoryService.load(ctx);
         messagePersistenceService.persistCurrentUserMessage(ctx);
+        conversationMemoryCompressionService.preparePromptMemory(ctx);
     }
 
     // 生成基于检索上下文的普通响应，后续实现。

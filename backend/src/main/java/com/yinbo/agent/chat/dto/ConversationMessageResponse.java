@@ -9,6 +9,7 @@ public record ConversationMessageResponse(
         String modelId,
         Instant createdAt,
         Long responseDurationMs,
-        Integer totalTokens
+        Integer totalTokens,
+        Long messageId
 ) {
 }
