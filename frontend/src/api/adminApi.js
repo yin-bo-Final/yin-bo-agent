@@ -133,6 +133,76 @@ export async function fetchFailedIngestionTasks() {
   return parseResponse(response, '失败任务列表加载失败');
 }
 
+export async function fetchTerminologyMappings() {
+  const response = await fetch(`${API_BASE_URL}/admin/query/terminology/mappings`, {
+    credentials: 'include'
+  });
+  return parseResponse(response, '关键词映射加载失败');
+}
+
+export async function createTerminologyMapping(payload) {
+  const response = await fetch(`${API_BASE_URL}/admin/query/terminology/mappings`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response, '关键词映射创建失败');
+}
+
+export async function updateTerminologyMapping(aliasId, payload) {
+  const response = await fetch(`${API_BASE_URL}/admin/query/terminology/mappings/${pathSegment(aliasId)}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response, '关键词映射更新失败');
+}
+
+export async function updateTerminologyMappingEnabled(aliasId, enabled) {
+  const response = await fetch(`${API_BASE_URL}/admin/query/terminology/mappings/${pathSegment(aliasId)}/enabled`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({ enabled })
+  });
+  return parseResponse(response, '关键词映射状态更新失败');
+}
+
+export async function deleteTerminologyMapping(aliasId) {
+  const response = await fetch(`${API_BASE_URL}/admin/query/terminology/mappings/${pathSegment(aliasId)}`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  return parseResponse(response, '关键词映射删除失败');
+}
+
+export async function fetchQueryPipelineConfig() {
+  const response = await fetch(`${API_BASE_URL}/admin/query/pipeline/config`, {
+    credentials: 'include'
+  });
+  return parseResponse(response, '流水线配置加载失败');
+}
+
+export async function updateQueryPipelineConfig(payload) {
+  const response = await fetch(`${API_BASE_URL}/admin/query/pipeline/config`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response, '流水线配置保存失败');
+}
+
 export async function retryIngestionTask(taskId) {
   const response = await fetch(`${API_BASE_URL}/admin/ingestion/tasks/${taskId}/retry`, {
     method: 'POST',
@@ -215,4 +285,8 @@ function appendIngestionOptions(formData, payload) {
       formData.append(key, value);
     }
   });
+}
+
+function pathSegment(value) {
+  return encodeURIComponent(String(value));
 }

@@ -7,6 +7,7 @@ import com.yinbo.agent.chat.dto.ChatResponse;
 import com.yinbo.agent.chat.entity.ChatConversation;
 import com.yinbo.agent.chat.entity.ChatMessageEntity;
 import com.yinbo.agent.chat.entity.ConversationMemorySummary;
+import com.yinbo.agent.chat.flow.query.QueryRewriteResult;
 import com.yinbo.agent.chat.service.ChatMessageCacheService.CachedChatMessage;
 import com.yinbo.ai.api.model.ModelOption;
 import java.util.ArrayList;
@@ -28,6 +29,7 @@ public class ChatExecutionContext {
     private ConversationMemorySummary memorySummary;
     private ChatMessageEntity userMessage;
     private String originalQuery;
+    private QueryRewriteResult rewriteResult;
     private String rewrittenQuery;
     private List<String> subQueries = List.of();
     private List<ChatIntentType> intents = List.of();
@@ -139,6 +141,18 @@ public class ChatExecutionContext {
 
     public String rewrittenQuery() {
         return rewrittenQuery;
+    }
+
+    public QueryRewriteResult rewriteResult() {
+        return rewriteResult;
+    }
+
+    public void setRewriteResult(QueryRewriteResult rewriteResult) {
+        this.rewriteResult = rewriteResult;
+        if (rewriteResult != null) {
+            this.rewrittenQuery = rewriteResult.rewrite();
+            this.subQueries = rewriteResult.subQuestions();
+        }
     }
 
     public void setRewrittenQuery(String rewrittenQuery) {

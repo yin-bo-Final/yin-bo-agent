@@ -24,7 +24,8 @@ backend/src/main/
       ├─ V2__create_ingestion_task.sql
       ├─ V3__add_chat_message_created_index.sql
       ├─ V4__add_dashboard_trend_indexes.sql
-      └─ V5__create_conversation_memory_summary.sql
+      ├─ V5__create_conversation_memory_summary.sql
+      └─ V6__create_query_rewrite_pipeline.sql
 ```
 
 ## `resources` 配置模块
@@ -49,6 +50,7 @@ backend/src/main/
 | `management` | 收口 Actuator，只启用和暴露 `health`、`info` |
 | `logging` | 配置 service 日志文件、日志格式和日志滚动策略 |
 | `app.logging` | 配置慢请求阈值 |
+| `app.chat.query-rewrite` | 配置术语统一、LLM 查询改写、规则拆分兜底、超时时间和 Redis 缓存 TTL |
 | `app.chat.memory` | 配置会话记忆上下文预算、自动压缩阈值、最近窗口和摘要版本 |
 | `app.concurrency` | 配置 service 上传兜底并发和 ingestion 消费并发 |
 | `app.ai-infra` | 配置 backend 远程调用 ai-infra 的 baseUrl 和超时时间 |
@@ -117,6 +119,20 @@ Flyway 会话记忆摘要迁移脚本。
 | 触发追踪 | 保存 `trigger_type`、`compression_model_id`、`compression_version` 和 `status` |
 | 查询索引 | 为会话活跃摘要和水位线查询创建索引 |
 
+### `db/migration/V6__create_query_rewrite_pipeline.sql`
+
+Flyway 查询预处理流水线迁移脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 术语标准表 | 创建 `chat_terminology_term` 保存标准术语 |
+| 术语别名表 | 创建 `chat_terminology_alias` 保存用户原始说法和关键词映射 |
+| 改写记录表 | 创建 `chat_query_rewrite_record` 保存术语统一、LLM 改写、拆分、降级和原始响应 |
+| Pipeline 配置表 | 创建 `chat_pipeline_config` 保存 LLM 改写开关、规则拆分兜底和超时配置 |
+| 默认配置 | 初始化 id = `1` 的默认 Pipeline 配置 |
+
 当前业务表边界：
 
 | 表 | 主要模块 | 功能 |
@@ -125,6 +141,10 @@ Flyway 会话记忆摘要迁移脚本。
 | `chat_conversation` | `chat` | 会话编号、标题、模型、置顶时间和最近消息时间 |
 | `chat_message` | `chat` | 消息角色、内容、模型、响应耗时和 token 统计 |
 | `conversation_memory_summary` | `chat` | 会话记忆摘要、覆盖消息水位线、压缩模型和触发来源 |
+| `chat_terminology_term` | `chat` | 查询预处理标准术语 |
+| `chat_terminology_alias` | `chat` | 查询预处理别名、关键词映射 |
+| `chat_query_rewrite_record` | `chat` | 语义改写、子问题拆分和降级记录 |
+| `chat_pipeline_config` | `chat` | 查询预处理 Pipeline 开关和降级策略 |
 | `knowledge_base` | `knowledge` | 知识库编号、名称、Embedding 模型、collection 和状态 |
 | `knowledge_document` | `ingestion` / `knowledge` | 文档来源、对象存储信息、解析状态、分块参数和耗时 |
 | `knowledge_chunk` | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数和向量文档 ID |
@@ -142,7 +162,7 @@ Flyway 会话记忆摘要迁移脚本。
 | 功能 | 说明 |
 | --- | --- |
 | 启动 Spring Boot | 调用 `SpringApplication.run(...)` 启动 service |
-| 加载配置属性 | 启用 `AiInfraProperties`、`AuthProperties`、`ChatMemoryProperties`、`ConcurrencyLimitProperties`、`ObjectStorageProperties`、`RagProperties` |
+| 加载配置属性 | 启用 `AiInfraProperties`、`AuthProperties`、`ChatMemoryProperties`、`ChatQueryRewriteProperties`、`ConcurrencyLimitProperties`、`ObjectStorageProperties`、`RagProperties` |
 | 扫描 Mapper | 扫描 `auth`、`chat`、`ingestion`、`knowledge` 模块的 MyBatis Mapper |
 
 核心方法：
@@ -159,12 +179,17 @@ Flyway 会话记忆摘要迁移脚本。
 admin/
 ├─ AdminGuard.java
 ├─ controller/
-│  └─ AdminDashboardController.java
+│  ├─ AdminDashboardController.java
+│  └─ AdminQueryPipelineController.java
 ├─ dto/
-│  └─ AdminDashboardResponse.java
+│  ├─ AdminDashboardResponse.java
+│  ├─ TerminologyMappingRequest.java
+│  ├─ TerminologyMappingResponse.java
+│  └─ UpdateQueryPipelineConfigRequest.java
 └─ service/
    ├─ AdminDashboardService.java
-   └─ AdminDashboardTrendService.java
+   ├─ AdminDashboardTrendService.java
+   └─ AdminTerminologyService.java
 ```
 
 ### `AdminGuard.java`
@@ -200,6 +225,37 @@ admin/
 | 方法 | 功能 |
 | --- | --- |
 | `dashboard(HttpServletRequest request, String messageRange)` | 校验管理员后返回仪表盘数据 |
+
+### `AdminQueryPipelineController.java`
+
+查询预处理后台管理接口。
+
+接口：
+
+| 方法 | 路径 | 功能 |
+| --- | --- | --- |
+| `GET` | `/api/admin/query/terminology/mappings` | 查询关键词映射列表 |
+| `POST` | `/api/admin/query/terminology/mappings` | 新增关键词映射 |
+| `PATCH` | `/api/admin/query/terminology/mappings/{aliasId}` | 修改关键词映射 |
+| `PATCH` | `/api/admin/query/terminology/mappings/{aliasId}/enabled` | 启用或禁用关键词映射 |
+| `DELETE` | `/api/admin/query/terminology/mappings/{aliasId}` | 删除关键词映射 |
+| `GET` | `/api/admin/query/pipeline/config` | 查询查询预处理 Pipeline 配置 |
+| `PATCH` | `/api/admin/query/pipeline/config` | 更新查询预处理 Pipeline 配置 |
+
+### `AdminTerminologyService.java`
+
+关键词映射维护服务。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 映射列表 | 查询标准术语和别名并组装后台表格 |
+| 新增映射 | 如果目标标准词不存在则创建，再新增别名 |
+| 修改映射 | 修改别名、目标标准词、类型、优先级和启用状态 |
+| 启停映射 | 更新别名启用状态 |
+| 删除映射 | 删除别名记录 |
+| 缓存清理 | 数据库事务提交后删除 Redis 术语快照缓存 |
 
 ### `AdminDashboardService.java`
 
@@ -478,7 +534,20 @@ chat/
 │  ├─ prompt/
 │  │  └─ PromptAssemblyService.java
 │  ├─ query/
-│  │  └─ QueryRewriteService.java
+│  │  ├─ QueryRewriteRecordService.java
+│  │  ├─ QueryRewriteResult.java
+│  │  ├─ QueryRewriteResultParser.java
+│  │  ├─ QueryRewriteService.java
+│  │  ├─ pipeline/
+│  │  │  ├─ QueryPipelineConfigCacheService.java
+│  │  │  ├─ QueryPipelineConfigService.java
+│  │  │  └─ QueryPipelineConfigView.java
+│  │  └─ terminology/
+│  │     ├─ TerminologyDictionaryCacheService.java
+│  │     ├─ TerminologyDictionaryService.java
+│  │     ├─ TerminologyMatch.java
+│  │     ├─ TerminologyNormalizationResult.java
+│  │     └─ TerminologyNormalizationService.java
 │  ├─ response/
 │  │  └─ ChatStreamResponseWriter.java
 │  └─ retrieval/
@@ -487,6 +556,10 @@ chat/
 ├─ mapper/
 │  ├─ ChatConversationMapper.java
 │  ├─ ChatMessageMapper.java
+│  ├─ ChatPipelineConfigMapper.java
+│  ├─ ChatQueryRewriteRecordMapper.java
+│  ├─ ChatTerminologyAliasMapper.java
+│  ├─ ChatTerminologyTermMapper.java
 │  └─ ConversationMemorySummaryMapper.java
 └─ service/
    ├─ ChatMessageCacheService.java
@@ -1376,6 +1449,9 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | 普通 AI 对话 | `ChatController`、`ChatService.chat(...)`、`ConversationFlowExecutor.executeSync(...)` |
 | SSE 流式 AI 对话 | `ChatController`、`ChatService.streamChat(...)`、`ConversationFlowExecutor.executeStream(...)` |
 | 会话处理流水线 | `ConversationFlowExecutor`、`ChatExecutionContext`、`ConversationLifecycleService`、`ConversationMemoryService`、`ConversationMemoryCompressionService`、`ChatMessagePersistenceService`、`DirectChatService`、`QueryRewriteService`、`IntentResolutionService`、`ClarificationService`、`RetrievalExecuteService`、`PromptAssemblyService`、`ChatStreamResponseWriter` |
+| 查询改写和问题拆分 | `QueryRewriteService`、`QueryRewriteResultParser`、`QueryRewriteRecordService`、`chat_query_rewrite_record` |
+| 术语统一 | `TerminologyNormalizationService`、`TerminologyDictionaryService`、`TerminologyDictionaryCacheService`、`chat_terminology_term`、`chat_terminology_alias` |
+| 查询预处理配置 | `QueryPipelineConfigService`、`QueryPipelineConfigCacheService`、`chat_pipeline_config` |
 | 会话记忆压缩 | `ConversationMemoryCompressionService`、`ConversationTokenEstimator`、`ConversationMemorySummary`、`ConversationMemorySummaryMapper`、`conversation_memory_summary` |
 | 会话管理 | `ChatController`、`ChatService`、`ChatMessageCacheService` |
 | 统一业务异常 | `BusinessException`、`GlobalExceptionHandler`、`ApiErrorResponse` |

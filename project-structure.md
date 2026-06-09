@@ -61,7 +61,7 @@ ConversationPage
 -> ChatController
 -> ChatService
 -> ConversationFlowExecutor 编排 chat/flow 子包阶段服务
--> 生命周期、加载记忆、保存用户消息、按预算压缩 Prompt 记忆、查询改写、意图识别、歧义引导、检索占位和响应输出
+-> 生命周期、加载记忆、保存用户消息、按预算压缩 Prompt 记忆、术语统一、查询改写和问题拆分、意图识别、歧义引导、检索占位和响应输出
 -> AiInfraClient
 -> ai-infra /internal/ai/chat 或 /internal/ai/chat/stream
 -> ModelSelector / ModelRoutingExecutor / 供应商 ChatClient
@@ -102,6 +102,10 @@ ConversationPage
 | `chat_conversation`      | `chat`                    | 会话、模型、置顶、最近消息时间               |
 | `chat_message`           | `chat`                    | 消息内容、耗时、token                 |
 | `conversation_memory_summary` | `chat`               | 会话记忆摘要、覆盖消息水位线、压缩触发来源        |
+| `chat_terminology_term` | `chat`               | 查询预处理标准术语                         |
+| `chat_terminology_alias` | `chat`              | 查询预处理别名、关键词映射                    |
+| `chat_query_rewrite_record` | `chat`          | 查询改写、拆分、降级和模型原始响应记录             |
+| `chat_pipeline_config` | `chat`              | 查询预处理 Pipeline 开关和降级策略             |
 | `knowledge_base`         | `knowledge`               | 知识库名称、collection、Embedding 模型 |
 | `knowledge_document`     | `ingestion` / `knowledge` | 文档元数据、RustFS 对象信息、状态、耗时       |
 | `knowledge_chunk`        | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数、向量 ID     |

@@ -89,6 +89,15 @@ app:
   logging:
     slow-request-threshold-ms: ${APP_SLOW_REQUEST_THRESHOLD_MS:3000}
   chat:
+    query-rewrite:
+      terminology-enabled: ${CHAT_QUERY_REWRITE_TERMINOLOGY_ENABLED:true}
+      llm-rewrite-enabled: ${CHAT_QUERY_REWRITE_LLM_ENABLED:true}
+      rule-split-enabled: ${CHAT_QUERY_REWRITE_RULE_SPLIT_ENABLED:true}
+      fallback-policy: ${CHAT_QUERY_REWRITE_FALLBACK_POLICY:TERM_ONLY}
+      rewrite-timeout-ms: ${CHAT_QUERY_REWRITE_TIMEOUT_MS:3000}
+      rewrite-context-turns: ${CHAT_QUERY_REWRITE_CONTEXT_TURNS:3}
+      terminology-cache-ttl: ${CHAT_TERMINOLOGY_CACHE_TTL:60m}
+      pipeline-config-cache-ttl: ${CHAT_PIPELINE_CONFIG_CACHE_TTL:10m}
     memory:
       context-max-tokens: ${CHAT_MEMORY_CONTEXT_MAX_TOKENS:100000}
       output-reserve-tokens: ${CHAT_MEMORY_OUTPUT_RESERVE_TOKENS:8000}

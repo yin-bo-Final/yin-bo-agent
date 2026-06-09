@@ -6,10 +6,12 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   createKnowledgeBase,
+  createTerminologyMapping,
   deleteChunk,
   deleteIngestionTask,
   deleteKnowledgeBase,
   deleteKnowledgeDocument,
+  deleteTerminologyMapping,
   fetchAdminDashboard,
   fetchDocumentChunks,
   fetchFailedIngestionTasks,
@@ -18,6 +20,8 @@ import {
   fetchKnowledgeDocument,
   fetchKnowledgeDocuments,
   fetchKnowledgeOverview,
+  fetchQueryPipelineConfig,
+  fetchTerminologyMappings,
   ingestKnowledgeUrl,
   rebuildDocumentVectors,
   rechunkKnowledgeDocument,
@@ -26,6 +30,9 @@ import {
   updateChunkEnabled,
   updateDocumentChunksEnabled,
   updateKnowledgeBase,
+  updateQueryPipelineConfig,
+  updateTerminologyMapping,
+  updateTerminologyMappingEnabled,
   uploadKnowledgeDocument
 } from '../api/adminApi';
 import { createQuietReveal } from '../utils/quietMotion';
@@ -49,19 +56,26 @@ const documents = ref([]);
 const uploadingDocuments = ref([]);
 const chunks = ref([]);
 const failedTasks = ref([]);
+const terminologyMappings = ref([]);
+const queryPipelineConfig = ref(null);
 const selectedKnowledgeBase = ref(null);
 const selectedDocument = ref(null);
 const selectedChunkIds = ref(new Set());
 const isLoadingDashboard = ref(false);
 const isLoadingKnowledge = ref(false);
 const isLoadingTasks = ref(false);
+const isLoadingMappings = ref(false);
+const isLoadingPipeline = ref(false);
 const isCreatingKnowledgeBase = ref(false);
+const isSavingMapping = ref(false);
+const isSavingPipeline = ref(false);
 const isIngesting = ref(false);
 const isRechunking = ref(false);
 const isRebuildingVectors = ref(false);
 const isDeletingKnowledgeBase = ref(false);
 const isDeletingDocument = ref(false);
 const isDeletingChunk = ref(false);
+const isDeletingMapping = ref(false);
 const isUpdatingChunk = ref(false);
 const retryingTaskId = ref('');
 const deletingTaskId = ref('');
@@ -74,12 +88,14 @@ const rechunkFormError = ref('');
 const baseKeyword = ref('');
 const documentKeyword = ref('');
 const taskKeyword = ref('');
+const mappingKeyword = ref('');
 const documentStatusFilter = ref('ALL');
 const taskStatusFilter = ref('ALL');
 const chunkStatusFilter = ref('ALL');
 const messageTrendRange = ref('day');
 const activeTrendType = ref('message');
 const isCreateModalOpen = ref(false);
+const isMappingModalOpen = ref(false);
 const isEditModalOpen = ref(false);
 const detailKnowledgeBase = ref(null);
 const deleteKnowledgeBaseDialog = ref({
@@ -102,6 +118,11 @@ const deleteTaskDialog = ref({
   task: null
 });
 const deleteTaskError = ref('');
+const deleteMappingDialog = ref({
+  open: false,
+  mapping: null
+});
+const deleteMappingError = ref('');
 const isIngestionModalOpen = ref(false);
 const isRechunkModalOpen = ref(false);
 const detailDocument = ref(null);
@@ -134,6 +155,11 @@ const editKnowledgeBase = ref(null);
 const editForm = ref({
   name: ''
 });
+const mappingForm = ref(defaultMappingForm());
+const editingMapping = ref(null);
+const mappingFormError = ref('');
+const pipelineForm = ref(defaultPipelineForm());
+const pipelineFormError = ref('');
 const floatingTooltip = ref({
   visible: false,
   text: '',
@@ -166,6 +192,12 @@ const currentHeader = computed(() => {
   if (activeModule.value === 'tasks') {
     return { label: '入库任务', title: '失败任务', icon: 'tasks' };
   }
+  if (activeModule.value === 'mappings') {
+    return { label: '查询预处理', title: '关键词映射', icon: 'mappings' };
+  }
+  if (activeModule.value === 'pipeline') {
+    return { label: '会话流水线', title: 'Pipeline 配置', icon: 'pipeline' };
+  }
   if (currentView.value === 'documents') {
     return { label: '文档资产', title: '文档管理', icon: 'documents' };
   }
@@ -186,6 +218,37 @@ const canIngest = computed(() => {
     return false;
   }
   return ingestionMode.value === 'upload' ? Boolean(selectedFile.value) : Boolean(urlForm.value.url.trim());
+});
+const filteredTerminologyMappings = computed(() => {
+  const keyword = mappingKeyword.value.trim().toLowerCase();
+  if (!keyword) {
+    return terminologyMappings.value;
+  }
+  return terminologyMappings.value.filter((mapping) => {
+    return [
+      mapping.aliasName,
+      mapping.canonicalName,
+      mapping.termType,
+      mapping.description
+    ]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword));
+  });
+});
+const enabledMappingCount = computed(() => terminologyMappings.value.filter((mapping) => mapping.enabled).length);
+const terminologyTermCount = computed(() => new Set(
+  terminologyMappings.value
+    .map((mapping) => mapping.canonicalName)
+    .filter(Boolean)
+).size);
+const canSubmitMapping = computed(() => {
+  return mappingForm.value.aliasName.trim() && mappingForm.value.canonicalName.trim() && !isSavingMapping.value;
+});
+const isPipelineDirty = computed(() => {
+  if (!queryPipelineConfig.value) {
+    return false;
+  }
+  return JSON.stringify(normalizePipelinePayload(pipelineForm.value)) !== JSON.stringify(normalizePipelinePayload(queryPipelineConfig.value));
 });
 
 function toggleAdminSidebar() {
@@ -303,6 +366,166 @@ function openCreateKnowledgeBaseModal() {
 function closeCreateKnowledgeBaseModal() {
   createFormError.value = '';
   isCreateModalOpen.value = false;
+}
+
+function defaultMappingForm() {
+  return {
+    aliasName: '',
+    canonicalName: '',
+    termType: 'TECH',
+    description: '',
+    priority: 100,
+    enabled: true
+  };
+}
+
+function defaultPipelineForm() {
+  return {
+    terminologyEnabled: true,
+    llmRewriteEnabled: true,
+    ruleSplitEnabled: true,
+    fallbackPolicy: 'TERM_ONLY',
+    rewriteTimeoutMs: 3000,
+    rewriteContextTurns: 3
+  };
+}
+
+function normalizePipelinePayload(value) {
+  return {
+    terminologyEnabled: value?.terminologyEnabled !== false,
+    llmRewriteEnabled: value?.llmRewriteEnabled !== false,
+    ruleSplitEnabled: value?.ruleSplitEnabled !== false,
+    fallbackPolicy: value?.fallbackPolicy || 'TERM_ONLY',
+    rewriteTimeoutMs: Number(value?.rewriteTimeoutMs || 3000),
+    rewriteContextTurns: Number(value?.rewriteContextTurns || 3)
+  };
+}
+
+function openCreateMappingModal() {
+  editingMapping.value = null;
+  mappingFormError.value = '';
+  mappingForm.value = defaultMappingForm();
+  isMappingModalOpen.value = true;
+}
+
+function openEditMappingModal(mapping) {
+  editingMapping.value = mapping;
+  mappingFormError.value = '';
+  mappingForm.value = {
+    aliasName: mapping.aliasName || '',
+    canonicalName: mapping.canonicalName || '',
+    termType: mapping.termType || 'TECH',
+    description: mapping.description || '',
+    priority: mapping.priority ?? 0,
+    enabled: mapping.enabled !== false
+  };
+  isMappingModalOpen.value = true;
+}
+
+function closeMappingModal() {
+  if (isSavingMapping.value) {
+    return;
+  }
+  isMappingModalOpen.value = false;
+  mappingFormError.value = '';
+  editingMapping.value = null;
+}
+
+async function submitMappingForm() {
+  if (!canSubmitMapping.value) {
+    return;
+  }
+  isSavingMapping.value = true;
+  mappingFormError.value = '';
+  try {
+    const payload = {
+      aliasName: mappingForm.value.aliasName.trim(),
+      canonicalName: mappingForm.value.canonicalName.trim(),
+      termType: mappingForm.value.termType || 'TECH',
+      description: mappingForm.value.description.trim(),
+      priority: Number(mappingForm.value.priority || 0),
+      enabled: mappingForm.value.enabled
+    };
+    if (editingMapping.value?.aliasId) {
+      await updateTerminologyMapping(editingMapping.value.aliasId, payload);
+    } else {
+      await createTerminologyMapping(payload);
+    }
+    await loadTerminologyMappings();
+    isMappingModalOpen.value = false;
+    editingMapping.value = null;
+  } catch (error) {
+    mappingFormError.value = error.message || '关键词映射保存失败';
+  } finally {
+    isSavingMapping.value = false;
+  }
+}
+
+async function toggleMappingEnabled(mapping) {
+  try {
+    await updateTerminologyMappingEnabled(mapping.aliasId, !mapping.enabled);
+    await loadTerminologyMappings();
+  } catch (error) {
+    handleAdminError(error);
+  }
+}
+
+function openDeleteMappingDialog(mapping) {
+  deleteMappingError.value = '';
+  deleteMappingDialog.value = {
+    open: true,
+    mapping
+  };
+}
+
+function closeDeleteMappingDialog() {
+  if (isDeletingMapping.value) {
+    return;
+  }
+  deleteMappingDialog.value = {
+    open: false,
+    mapping: null
+  };
+  deleteMappingError.value = '';
+}
+
+async function confirmDeleteMapping() {
+  const mapping = deleteMappingDialog.value.mapping;
+  if (!mapping?.aliasId) {
+    return;
+  }
+  isDeletingMapping.value = true;
+  deleteMappingError.value = '';
+  try {
+    await deleteTerminologyMapping(mapping.aliasId);
+    await loadTerminologyMappings();
+    deleteMappingDialog.value = {
+      open: false,
+      mapping: null
+    };
+  } catch (error) {
+    deleteMappingError.value = error.message || '关键词映射删除失败';
+  } finally {
+    isDeletingMapping.value = false;
+  }
+}
+
+async function submitPipelineConfig() {
+  isSavingPipeline.value = true;
+  pipelineFormError.value = '';
+  try {
+    const payload = normalizePipelinePayload(pipelineForm.value);
+    const response = await updateQueryPipelineConfig(payload);
+    queryPipelineConfig.value = response;
+    pipelineForm.value = {
+      ...defaultPipelineForm(),
+      ...normalizePipelinePayload(response || {})
+    };
+  } catch (error) {
+    pipelineFormError.value = error.message || '流水线配置保存失败';
+  } finally {
+    isSavingPipeline.value = false;
+  }
 }
 const filteredKnowledgeBases = computed(() => {
   const keyword = baseKeyword.value.trim().toLowerCase();
@@ -428,7 +651,7 @@ onMounted(async () => {
   window.addEventListener('popstate', handleRouteChange);
   window.addEventListener('resize', resizeDashboardTrendChart);
   knowledgePollTimer = window.setInterval(pollProcessingDocuments, 3000);
-  await Promise.all([loadDashboard(), loadKnowledge(), loadFailedTasks()]);
+  await Promise.all([loadDashboard(), loadKnowledge(), loadFailedTasks(), loadQueryAdmin()]);
   await runAdminReveal();
   await renderDashboardTrendChart();
 });
@@ -469,6 +692,12 @@ function parseAdminRoute() {
   if (segments[1] === 'tasks') {
     return { module: 'tasks', view: 'failed-tasks' };
   }
+  if (segments[1] === 'mappings') {
+    return { module: 'mappings', view: 'mappings' };
+  }
+  if (segments[1] === 'pipeline') {
+    return { module: 'pipeline', view: 'pipeline' };
+  }
   if (segments[1] !== 'knowledge') {
     return { module: 'dashboard', view: 'dashboard' };
   }
@@ -498,6 +727,12 @@ async function handleRouteChange() {
   }
   if (activeModule.value === 'tasks') {
     await loadFailedTasks();
+  }
+  if (activeModule.value === 'mappings') {
+    await loadTerminologyMappings();
+  }
+  if (activeModule.value === 'pipeline') {
+    await loadPipelineConfig();
   }
   await runAdminReveal();
   await renderDashboardTrendChart();
@@ -854,6 +1089,38 @@ async function loadFailedTasks() {
   }
 }
 
+async function loadQueryAdmin() {
+  await Promise.all([loadTerminologyMappings(), loadPipelineConfig()]);
+}
+
+async function loadTerminologyMappings() {
+  isLoadingMappings.value = true;
+  try {
+    const response = await fetchTerminologyMappings();
+    terminologyMappings.value = Array.isArray(response) ? response : [];
+  } catch (error) {
+    handleAdminError(error);
+  } finally {
+    isLoadingMappings.value = false;
+  }
+}
+
+async function loadPipelineConfig() {
+  isLoadingPipeline.value = true;
+  try {
+    const response = await fetchQueryPipelineConfig();
+    queryPipelineConfig.value = response;
+    pipelineForm.value = {
+      ...defaultPipelineForm(),
+      ...normalizePipelinePayload(response || {})
+    };
+  } catch (error) {
+    handleAdminError(error);
+  } finally {
+    isLoadingPipeline.value = false;
+  }
+}
+
 async function hydrateKnowledgeRoute() {
   if (currentView.value === 'bases') {
     documents.value = [];
@@ -895,6 +1162,14 @@ async function refreshCurrentView() {
     }
     if (activeModule.value === 'tasks') {
       await loadFailedTasks();
+      return;
+    }
+    if (activeModule.value === 'mappings') {
+      await loadTerminologyMappings();
+      return;
+    }
+    if (activeModule.value === 'pipeline') {
+      await loadPipelineConfig();
       return;
     }
     await loadKnowledge();
@@ -1778,6 +2053,25 @@ function documentChunkActionLabel(document) {
           <path d="M21 15l-4 4" />
         </svg>
       </button>
+      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'mappings' }" data-tooltip="关键词映射" @click="navigateTo('/admin/mappings')">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h7" />
+          <path d="M4 17h7" />
+          <path d="M15 7h5" />
+          <path d="M15 17h5" />
+          <path d="M11 7l4 10" />
+        </svg>
+      </button>
+      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'pipeline' }" data-tooltip="流水线配置" @click="navigateTo('/admin/pipeline')">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 6h5" />
+          <path d="M15 6h5" />
+          <path d="M9 6h6" />
+          <path d="M4 18h5" />
+          <path d="M15 18h5" />
+          <path d="M12 9v6" />
+        </svg>
+      </button>
       <button class="admin-rail-button admin-rail-bottom" type="button" data-tooltip="返回会话" @click="emit('back-to-chat')">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M15 18l-6-6 6-6" />
@@ -1837,6 +2131,27 @@ function documentChunkActionLabel(document) {
           </svg>
           <span>失败任务</span>
         </button>
+        <button type="button" :class="{ active: activeModule === 'mappings' }" @click="navigateTo('/admin/mappings')">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h7" />
+            <path d="M4 17h7" />
+            <path d="M15 7h5" />
+            <path d="M15 17h5" />
+            <path d="M11 7l4 10" />
+          </svg>
+          <span>关键词映射</span>
+        </button>
+        <button type="button" :class="{ active: activeModule === 'pipeline' }" @click="navigateTo('/admin/pipeline')">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 6h5" />
+            <path d="M15 6h5" />
+            <path d="M9 6h6" />
+            <path d="M4 18h5" />
+            <path d="M15 18h5" />
+            <path d="M12 9v6" />
+          </svg>
+          <span>流水线配置</span>
+        </button>
       </nav>
 
       <button class="admin-back-button" type="button" @click="emit('back-to-chat')">
@@ -1877,6 +2192,21 @@ function documentChunkActionLabel(document) {
                 <path d="M4 19h7" />
                 <path d="M17 15l4 4" />
                 <path d="M21 15l-4 4" />
+              </svg>
+              <svg v-else-if="currentHeader.icon === 'mappings'" viewBox="0 0 24 24">
+                <path d="M4 7h7" />
+                <path d="M4 17h7" />
+                <path d="M15 7h5" />
+                <path d="M15 17h5" />
+                <path d="M11 7l4 10" />
+              </svg>
+              <svg v-else-if="currentHeader.icon === 'pipeline'" viewBox="0 0 24 24">
+                <path d="M4 6h5" />
+                <path d="M15 6h5" />
+                <path d="M9 6h6" />
+                <path d="M4 18h5" />
+                <path d="M15 18h5" />
+                <path d="M12 9v6" />
               </svg>
               <svg v-else viewBox="0 0 24 24">
                 <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
@@ -2105,6 +2435,173 @@ function documentChunkActionLabel(document) {
           </div>
           <p v-if="!isLoadingTasks && filteredFailedTasks.length === 0" class="kc-empty">当前没有失败入库任务。</p>
         </section>
+      </section>
+
+      <section v-else-if="activeModule === 'mappings'" class="admin-section kc-content">
+        <div class="kc-metric-grid knowledge-metrics">
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h7" />
+                <path d="M15 7h5" />
+                <path d="M11 7l4 10" />
+              </svg>
+            </span>
+            <span>映射数</span>
+            <strong>{{ isLoadingMappings ? '...' : metricText(terminologyMappings.length) }}</strong>
+          </article>
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12h14" />
+                <path d="M12 5v14" />
+              </svg>
+            </span>
+            <span>标准术语</span>
+            <strong>{{ metricText(terminologyTermCount) }}</strong>
+          </article>
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+            </span>
+            <span>启用映射</span>
+            <strong>{{ metricText(enabledMappingCount) }}</strong>
+          </article>
+        </div>
+
+        <section class="kc-table-card">
+          <div class="kc-card-toolbar">
+            <div>
+              <strong>关键词映射列表</strong>
+              <small>共 {{ filteredTerminologyMappings.length }} 条</small>
+            </div>
+            <div class="kc-toolbar-actions">
+              <input v-model="mappingKeyword" type="search" placeholder="搜索原始词、目标词或备注" />
+              <button type="button" class="kc-primary-button" @click="openCreateMappingModal">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14" />
+                  <path d="M5 12h14" />
+                </svg>
+                <span>新增映射</span>
+              </button>
+            </div>
+          </div>
+          <div class="kc-table-head mapping-grid">
+            <span>原始词</span>
+            <span>目标词</span>
+            <span>类型</span>
+            <span>优先级</span>
+            <span>状态</span>
+            <span>备注</span>
+            <span>更新时间</span>
+            <span>操作</span>
+          </div>
+          <div class="kc-table-body">
+            <div v-for="mapping in filteredTerminologyMappings" :key="mapping.aliasId" class="kc-table-row mapping-grid">
+              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, mapping.aliasName)" @mouseleave="clearOverflowTooltip">
+                <span class="kc-tooltip-content">{{ mapping.aliasName }}</span>
+              </span>
+              <span class="kc-tag">{{ mapping.canonicalName }}</span>
+              <span>{{ mapping.termType || 'TECH' }}</span>
+              <span>{{ mapping.priority ?? 0 }}</span>
+              <span class="kc-status" :class="mapping.enabled ? 'success' : 'muted'">{{ mapping.enabled ? '启用' : '禁用' }}</span>
+              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, mapping.description || '-')" @mouseleave="clearOverflowTooltip">
+                <span class="kc-tooltip-content">{{ mapping.description || '-' }}</span>
+              </span>
+              <span>{{ formatDate(mapping.updatedAt || mapping.createdAt) }}</span>
+              <span class="kc-row-actions compact">
+                <button type="button" @click="openEditMappingModal(mapping)">编辑</button>
+                <button type="button" @click="toggleMappingEnabled(mapping)">{{ mapping.enabled ? '禁用' : '启用' }}</button>
+                <button type="button" class="danger" @click="openDeleteMappingDialog(mapping)">删除</button>
+              </span>
+            </div>
+          </div>
+          <p v-if="!isLoadingMappings && filteredTerminologyMappings.length === 0" class="kc-empty">还没有关键词映射。</p>
+        </section>
+      </section>
+
+      <section v-else-if="activeModule === 'pipeline'" class="admin-section kc-content">
+        <div class="pipeline-layout">
+          <section class="pipeline-card">
+            <header>
+              <div>
+                <strong>查询预处理策略</strong>
+                <small>控制术语统一、LLM 改写和降级方式</small>
+              </div>
+              <span class="kc-status" :class="pipelineForm.llmRewriteEnabled ? 'success' : 'muted'">
+                {{ pipelineForm.llmRewriteEnabled ? '改写开启' : '改写关闭' }}
+              </span>
+            </header>
+            <form class="pipeline-form" @submit.prevent="submitPipelineConfig">
+              <p v-if="pipelineFormError" class="kc-form-error">{{ pipelineFormError }}</p>
+              <label class="pipeline-switch-row locked">
+                <span>
+                  <strong>术语统一</strong>
+                  <small>始终先执行，使用 Redis 缓存后的术语表快照</small>
+                </span>
+                <input v-model="pipelineForm.terminologyEnabled" type="checkbox" disabled />
+                <i class="pipeline-switch" aria-hidden="true"></i>
+              </label>
+              <label class="pipeline-switch-row">
+                <span>
+                  <strong>LLM 语义改写</strong>
+                  <small>关闭后只保留术语统一和单问题兜底</small>
+                </span>
+                <input v-model="pipelineForm.llmRewriteEnabled" type="checkbox" />
+                <i class="pipeline-switch" aria-hidden="true"></i>
+              </label>
+              <label class="pipeline-switch-row">
+                <span>
+                  <strong>规则拆分兜底</strong>
+                  <small>只按问号、分号、换行等明确分隔符拆分</small>
+                </span>
+                <input v-model="pipelineForm.ruleSplitEnabled" type="checkbox" />
+                <i class="pipeline-switch" aria-hidden="true"></i>
+              </label>
+              <div class="pipeline-field-grid">
+                <label>
+                  <span>降级策略</span>
+                  <select v-model="pipelineForm.fallbackPolicy">
+                    <option value="TERM_ONLY">只保留术语统一</option>
+                    <option value="RULE_SPLIT">术语统一 + 规则拆分</option>
+                    <option value="BYPASS">跳过预处理</option>
+                  </select>
+                </label>
+                <label>
+                  <span>改写超时 ms</span>
+                  <input v-model.number="pipelineForm.rewriteTimeoutMs" type="number" min="500" max="30000" />
+                </label>
+                <label>
+                  <span>最近上下文轮数</span>
+                  <input v-model.number="pipelineForm.rewriteContextTurns" type="number" min="1" max="10" />
+                </label>
+              </div>
+              <footer>
+                <button type="button" class="kc-ghost-button" :disabled="isLoadingPipeline || isSavingPipeline" @click="loadPipelineConfig">恢复当前配置</button>
+                <button type="submit" class="kc-primary-button" :disabled="isSavingPipeline || !isPipelineDirty">
+                  {{ isSavingPipeline ? '保存中...' : '保存配置' }}
+                </button>
+              </footer>
+            </form>
+          </section>
+
+          <section class="pipeline-card muted">
+            <header>
+              <div>
+                <strong>当前降级链路</strong>
+                <small>服务发生异常时按这里继续执行</small>
+              </div>
+            </header>
+            <ol class="pipeline-flow-list">
+              <li><span>1</span><strong>术语统一</strong><small>先根据关键词映射表生成 normalizedQuery</small></li>
+              <li><span>2</span><strong>LLM 改写</strong><small>开启时读取摘要和最近 {{ pipelineForm.rewriteContextTurns }} 轮对话</small></li>
+              <li><span>3</span><strong>容错解析</strong><small>解析 JSON，失败进入 fallbackPolicy</small></li>
+              <li><span>4</span><strong>写入 ctx</strong><small>rewriteResult 交给意图识别阶段</small></li>
+            </ol>
+          </section>
+        </div>
       </section>
 
       <section v-else class="admin-section kc-content">
@@ -2375,6 +2872,138 @@ function documentChunkActionLabel(document) {
         </template>
       </section>
     </section>
+
+    <div v-if="isMappingModalOpen" class="kc-modal-backdrop" @click.self="closeMappingModal">
+      <section class="kc-modal">
+        <header>
+          <div>
+            <h2>{{ editingMapping ? '编辑关键词映射' : '新增关键词映射' }}</h2>
+            <p>用于查询改写前的术语统一</p>
+          </div>
+          <button type="button" class="kc-icon-button" aria-label="关闭" :disabled="isSavingMapping" @click="closeMappingModal">×</button>
+        </header>
+        <form class="kc-form" @submit.prevent="submitMappingForm">
+          <p v-if="mappingFormError" class="kc-form-error">{{ mappingFormError }}</p>
+          <label>
+            <span>原始词</span>
+            <input v-model="mappingForm.aliasName" type="text" placeholder="例如 网关 / gateway / kb" />
+          </label>
+          <label>
+            <span>目标词</span>
+            <input v-model="mappingForm.canonicalName" type="text" placeholder="例如 Gateway / RAG" />
+          </label>
+          <label>
+            <span>术语类型</span>
+            <select v-model="mappingForm.termType">
+              <option value="TECH">TECH</option>
+              <option value="MODULE">MODULE</option>
+              <option value="CAPABILITY">CAPABILITY</option>
+              <option value="BUSINESS">BUSINESS</option>
+            </select>
+          </label>
+          <label>
+            <span>优先级</span>
+            <input v-model.number="mappingForm.priority" type="number" />
+          </label>
+          <label>
+            <span>备注</span>
+            <textarea v-model="mappingForm.description" rows="3" placeholder="可选，说明这个映射的使用场景"></textarea>
+          </label>
+          <label class="pipeline-switch-row compact">
+            <span>
+              <strong>启用映射</strong>
+              <small>禁用后不会参与术语统一</small>
+            </span>
+            <input v-model="mappingForm.enabled" type="checkbox" />
+            <i class="pipeline-switch" aria-hidden="true"></i>
+          </label>
+          <footer>
+            <button type="button" class="kc-ghost-button" :disabled="isSavingMapping" @click="closeMappingModal">取消</button>
+            <button type="submit" class="kc-primary-button" :disabled="!canSubmitMapping">
+              {{ isSavingMapping ? '保存中...' : '保存映射' }}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+
+    <Teleport to="body">
+      <Transition name="delete-dialog">
+        <div
+          v-if="deleteMappingDialog.open"
+          class="delete-dialog-backdrop"
+          @click.self="closeDeleteMappingDialog"
+        >
+          <section
+            class="delete-dialog-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mapping-delete-dialog-title"
+            aria-describedby="mapping-delete-dialog-description"
+          >
+            <button
+              type="button"
+              class="delete-dialog-close"
+              aria-label="关闭删除确认"
+              :disabled="isDeletingMapping"
+              @click="closeDeleteMappingDialog"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6l12 12" />
+                <path d="M18 6L6 18" />
+              </svg>
+            </button>
+
+            <div class="delete-dialog-hero" aria-hidden="true">
+              <span class="delete-dialog-icon">
+                <svg viewBox="0 0 24 24">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4h8v2" />
+                  <path d="M19 6l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                </svg>
+              </span>
+            </div>
+
+            <div class="delete-dialog-copy">
+              <p class="delete-dialog-eyebrow">危险操作</p>
+              <h2 id="mapping-delete-dialog-title">删除这个关键词映射？</h2>
+              <p id="mapping-delete-dialog-description">
+                删除后该原始词不会再被统一到目标词，后续查询改写会立即按新缓存重建。
+              </p>
+            </div>
+
+            <div class="delete-dialog-target">
+              <span>将被删除</span>
+              <strong>{{ deleteMappingDialog.mapping?.aliasName }} -> {{ deleteMappingDialog.mapping?.canonicalName }}</strong>
+            </div>
+
+            <p v-if="deleteMappingError" class="delete-dialog-error">
+              {{ deleteMappingError }}
+            </p>
+
+            <div class="delete-dialog-actions">
+              <button
+                type="button"
+                class="delete-dialog-secondary"
+                :disabled="isDeletingMapping"
+                autofocus
+                @click="closeDeleteMappingDialog"
+              >
+                先留着
+              </button>
+              <button
+                type="button"
+                class="delete-dialog-danger"
+                :disabled="isDeletingMapping"
+                @click="confirmDeleteMapping"
+              >
+                {{ isDeletingMapping ? '删除中...' : '删除映射' }}
+              </button>
+            </div>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
 
     <div v-if="isCreateModalOpen" class="kc-modal-backdrop" @click.self="closeCreateKnowledgeBaseModal">
       <section class="kc-modal">

@@ -95,7 +95,7 @@ DELETE /api/conversations/{conversationId}
 
 ## `pages/AdminPage.vue`
 
-后台管理页，目前包含 Dashboard、知识库管理和失败任务管理。
+后台管理页，目前包含 Dashboard、知识库管理、失败任务管理、关键词映射和 Pipeline 配置。
 
 - 后台侧边栏和折叠状态
 - Dashboard 指标
@@ -104,8 +104,10 @@ DELETE /api/conversations/{conversationId}
 - 分块列表、查看、编辑、删除、启用、禁用、批量操作
 - 失败任务列表、失败原因查看、重试次数展示和手动重试
 - 失败任务支持删除，便于清理后台噪声数据
+- 关键词映射列表、新增、编辑、启用、禁用、删除
+- Pipeline 配置支持关闭 LLM 语义改写、调整降级策略、超时和最近上下文轮数
 - 自定义弹窗、下拉栏、tooltip
-- 根据 `/admin/knowledge/...` 和 `/admin/tasks/failed` 解析内部视图
+- 根据 `/admin/knowledge/...`、`/admin/tasks/failed`、`/admin/mappings` 和 `/admin/pipeline` 解析内部视图
 - 文档处于 `UPLOADING` 或 `PROCESSING` 时轮询刷新
 - 使用 `utils/quietMotion.js` + GSAP ScrollTrigger 做后台内容进入 reveal
 
@@ -117,6 +119,8 @@ DELETE /api/conversations/{conversationId}
 /admin/knowledge/{knowledgeBaseId}
 /admin/knowledge/{knowledgeBaseId}/docs/{documentId}
 /admin/tasks/failed
+/admin/mappings
+/admin/pipeline
 ```
 
 后台主要接口：
@@ -139,6 +143,13 @@ DELETE /api/admin/knowledge/chunks/{chunkId}
 GET    /api/admin/ingestion/tasks/failed
 POST   /api/admin/ingestion/tasks/{taskId}/retry
 DELETE /api/admin/ingestion/tasks/{taskId}
+GET    /api/admin/query/terminology/mappings
+POST   /api/admin/query/terminology/mappings
+PATCH  /api/admin/query/terminology/mappings/{aliasId}
+PATCH  /api/admin/query/terminology/mappings/{aliasId}/enabled
+DELETE /api/admin/query/terminology/mappings/{aliasId}
+GET    /api/admin/query/pipeline/config
+PATCH  /api/admin/query/pipeline/config
 ```
 
 ## `api/`
@@ -147,7 +158,7 @@ DELETE /api/admin/ingestion/tasks/{taskId}
 | --- | --- |
 | `authApi.js` | 注册、登录、当前用户、退出、注销 |
 | `chatApi.js` | 模型列表、聊天、流式聊天、会话管理和手动记忆压缩 |
-| `adminApi.js` | Dashboard、知识库、文档上传、分块、失败任务管理 |
+| `adminApi.js` | Dashboard、知识库、文档上传、分块、失败任务、关键词映射和 Pipeline 配置 |
 | `http.js` | 统一解析响应和错误，429 会触发全局错误弹窗 |
 
 所有需要登录态的请求都带 `credentials: 'include'`。
@@ -182,6 +193,7 @@ Minimalist redesign token 覆盖层
 用户菜单和确认弹窗
 后台布局
 知识库 / 文档 / 分块表格
+关键词映射和 Pipeline 配置
 通用按钮、弹窗、状态、下拉栏、tooltip
 响应式规则
 动画 keyframes

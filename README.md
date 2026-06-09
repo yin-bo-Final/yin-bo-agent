@@ -83,7 +83,8 @@ RAG 文档入库链路：
 - 前端 Chat 模型选择
 - Chat / Embedding / Rerank 模型由 ai-infra 的 `app.ai` 配置驱动，支持供应商、候选模型、优先级、熔断和故障转移
 - 普通响应和 SSE 流式响应
-- 会话生成已拆成 `ConversationFlowExecutor` 编排器和 `chat/flow` 分层阶段服务，当前保留直接 LLM 生成，查询改写、意图识别、歧义引导、RAG 检索和工具调用为后续扩展点
+- 会话生成已拆成 `ConversationFlowExecutor` 编排器和 `chat/flow` 分层阶段服务，查询改写已接入“术语统一 + LLM 改写/问题拆分 + 容错解析 + 降级记录”，意图识别、歧义引导、RAG 检索和工具调用继续作为后续扩展点
+- 查询改写前会先使用术语表进行关键词映射，术语表由 PostgreSQL 维护并通过 Redis 旁路缓存整份启用快照；管理员可在后台维护关键词映射并开关 LLM 语义改写
 - 会话记忆支持自动上下文压缩和手动压缩，Prompt 使用“头部原文 + 历史摘要 + 最近窗口原文”，原始消息仍完整保存在 `chat_message`
 - 前端输入框显示上下文 token 使用圆环，并提供手动压缩按钮；压缩中消息列表显示分割线且禁止继续发送，接近 90% 上下文时会展示自动压缩提示，最终以服务端返回的摘要水位线为准
 - 会话列表、搜索、置顶、取消置顶、删除
@@ -100,6 +101,7 @@ RAG 文档入库链路：
 - 文档支持上传、URL 录入、分块、重新分块、重建向量、详情、删除
 - 分块支持查看、编辑、删除、启用、禁用、批量启用、批量禁用
 - 失败入库任务支持查看失败原因、重试次数和手动重试
+- 查询预处理后台支持关键词映射管理和 Pipeline 配置，可关闭 LLM 语义改写并保留术语统一兜底
 - 后台导航栏支持折叠，整体样式遵循项目自己的灰色工程风格
 
 后台路由：
@@ -110,6 +112,8 @@ RAG 文档入库链路：
 /admin/knowledge/{knowledgeBaseId}
 /admin/knowledge/{knowledgeBaseId}/docs/{documentId}
 /admin/tasks/failed
+/admin/mappings
+/admin/pipeline
 ```
 
 ### Ingestion 流水线
@@ -263,6 +267,14 @@ CHAT_MEMORY_COMPRESSION_WINDOW_TOKENS: 24000
 CHAT_MEMORY_MAX_SUMMARY_TOKENS: 4000
 CHAT_MEMORY_AUTO_COMPRESS_THRESHOLD_RATIO: 0.9
 CHAT_MEMORY_COMPRESSION_VERSION: v1
+CHAT_QUERY_REWRITE_TERMINOLOGY_ENABLED: true
+CHAT_QUERY_REWRITE_LLM_ENABLED: true
+CHAT_QUERY_REWRITE_RULE_SPLIT_ENABLED: true
+CHAT_QUERY_REWRITE_FALLBACK_POLICY: TERM_ONLY
+CHAT_QUERY_REWRITE_TIMEOUT_MS: 3000
+CHAT_QUERY_REWRITE_CONTEXT_TURNS: 3
+CHAT_TERMINOLOGY_CACHE_TTL: 60m
+CHAT_PIPELINE_CONFIG_CACHE_TTL: 10m
 UPLOAD_GATEWAY_RATE_REPLENISH: 20
 UPLOAD_GATEWAY_RATE_BURST: 240
 UPLOAD_GATEWAY_RATE_REQUESTED: 60
@@ -430,6 +442,13 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 | `GET` | `/api/admin/ingestion/tasks/failed` | 查询失败入库任务 |
 | `POST` | `/api/admin/ingestion/tasks/{taskId}/retry` | 手动重试失败入库任务 |
 | `DELETE` | `/api/admin/ingestion/tasks/{taskId}` | 删除失败入库任务 |
+| `GET` | `/api/admin/query/terminology/mappings` | 查询关键词映射 |
+| `POST` | `/api/admin/query/terminology/mappings` | 新增关键词映射 |
+| `PATCH` | `/api/admin/query/terminology/mappings/{aliasId}` | 修改关键词映射 |
+| `PATCH` | `/api/admin/query/terminology/mappings/{aliasId}/enabled` | 启用或禁用关键词映射 |
+| `DELETE` | `/api/admin/query/terminology/mappings/{aliasId}` | 删除关键词映射 |
+| `GET` | `/api/admin/query/pipeline/config` | 查询查询预处理 Pipeline 配置 |
+| `PATCH` | `/api/admin/query/pipeline/config` | 更新查询预处理 Pipeline 配置 |
 
 ## 数据表
 
@@ -443,6 +462,10 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 | `chat_conversation` | 会话信息、置顶时间、最近消息时间 |
 | `chat_message` | 消息内容、模型、响应耗时、token 统计 |
 | `conversation_memory_summary` | 会话记忆压缩摘要、水位线、压缩模型和触发方式 |
+| `chat_terminology_term` | 查询预处理标准术语 |
+| `chat_terminology_alias` | 查询预处理术语别名和关键词映射 |
+| `chat_query_rewrite_record` | 语义改写、子问题拆分和降级记录 |
+| `chat_pipeline_config` | 查询预处理 Pipeline 开关和降级策略 |
 | `knowledge_base` | 知识库、Embedding 模型、collection |
 | `knowledge_document` | 文档元数据、RustFS 对象信息、状态、耗时 |
 | `knowledge_chunk` | 分块内容、启用状态、token 数、字符数、向量文档 ID |
@@ -462,6 +485,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 - 关键业务日志使用 `event=...`：登录注册、知识库变更、文档上传、AI 调用、RocketMQ 投递消费、ingestion 完成或失败都会有明确事件。
 - 模型调用不要散落在业务 Service 中，backend 只通过 `AiInfraClient` 调 ai-infra；HTTP 契约放在 `ai-api`，模型供应商实现只放在 `ai-infra`。
 - 会话编排不要继续堆进 `ChatService`，新增查询改写、意图识别、歧义引导、RAG 检索或工具调用时优先扩展 `chat/flow` 下对应子包服务，并通过 `ChatExecutionContext` 传递阶段结果。
+- 查询改写结果写入 `ctx.rewriteResult`，只作为当前流水线中间产物，不写入 `chat_message`；如需评估和回放，写入 `chat_query_rewrite_record`。
 - RAG 会话流水线和记忆压缩流程见 [docs/rag-conversation-pipeline-flow.md](docs/rag-conversation-pipeline-flow.md)，压缩只写 `conversation_memory_summary`，不要删除或覆盖 `chat_message` 原始消息。
 - 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本。

@@ -1,6 +1,6 @@
 # RAG 会话流水线流程
 
-这份文档统一说明 AI 会话从前端发起到后端生成响应的完整流水线，并把会话记忆压缩流程放在同一条链路里。当前代码已经完成直聊、会话记忆加载、自动 / 手动压缩、空检索兜底和流式输出；查询改写、意图识别、RAG 检索、MCP 工具调用和 grounded prompt 生成仍是后续扩展点。
+这份文档统一说明 AI 会话从前端发起到后端生成响应的完整流水线，并把会话记忆压缩流程放在同一条链路里。当前代码已经完成直聊、会话记忆加载、自动 / 手动压缩、查询改写、空检索兜底和流式输出；意图识别、RAG 检索、MCP 工具调用和 grounded prompt 生成仍是后续扩展点。
 
 ## 总体链路
 
@@ -28,7 +28,7 @@ ConversationPage
 | 3 | 加载完整历史 | 从 Redis 缓存读取，缓存缺失回源 `chat_message` | `ConversationMemoryService`、`ChatMessageCacheService` |
 | 4 | 保存本轮 user 消息 | 当前问题先落库，再加入上下文消息列表 | `ChatMessagePersistenceService` |
 | 5 | 准备 Prompt 记忆 | 判断是否自动压缩，生成 `promptConversationMessages` | `ConversationMemoryCompressionService` |
-| 6 | 查询改写 | 当前占位，默认使用原始问题 | `QueryRewriteService` |
+| 6 | 查询改写 | 术语统一、LLM 语义改写、问题拆分、容错解析、降级和记录 | `QueryRewriteService`、`TerminologyNormalizationService`、`QueryRewriteResultParser` |
 | 7 | 意图识别 | 当前占位，默认 `DIRECT_CHAT` | `IntentResolutionService` |
 | 8 | 歧义引导 | 如果需要澄清，短路返回引导语 | `ClarificationService` |
 | 9 | 直聊短路 | `DIRECT_CHAT` 不进入 RAG，直接调用 LLM | `DirectChatService` |
@@ -101,6 +101,92 @@ toolResults
 ```
 
 后续可以扩展为包含 `documentId`、`chunkId`、`score`、`sourceTitle`、`toolName`、`metadata` 等结构化字段。
+
+## 查询改写和问题拆分
+
+查询改写发生在会话记忆压缩之后、意图识别之前。它不是回答用户问题，而是把本轮问题转换成后续意图识别和 RAG 检索更稳定的结构化查询。
+
+```text
+originalQuery
+-> 术语统一 normalizeTerms
+-> LLM 语义改写 + 问题拆分
+-> 容错解析 JSON
+-> 降级为 normalizedQuery
+-> 写入 ctx.rewriteResult
+-> 写入 chat_query_rewrite_record
+-> resolve intents
+```
+
+### 术语统一
+
+术语统一使用两张表维护：
+
+| 表 | 说明 |
+| --- | --- |
+| `chat_terminology_term` | 标准术语，例如 `Gateway`、`RAG`、`ConversationMemory` |
+| `chat_terminology_alias` | 用户说法和别名，例如 `网关`、`gateway`、`知识库`、`kb` |
+
+读取时使用 Redis 旁路缓存：
+
+```text
+查询 Redis String: yinbo:agent:chat:terminology:enabled:v1
+-> 命中：反序列化启用术语快照
+-> 未命中：查 PostgreSQL term + alias
+-> 组装整份启用术语 JSON 快照
+-> 写回 Redis
+```
+
+写入时先更新数据库，事务提交后删除缓存。下次读取会重建术语快照。匹配时先把所有 alias 拉平成候选列表，按别名长度、标准词优先级、别名优先级排序，再在 JVM 内存中扫描本轮问题；英文别名会检查单词边界，中文别名直接按片段匹配，重叠命中保留最长优先。
+
+术语统一只改写当前查询内部使用的 `normalizedQuery`，不会覆盖用户原始输入。
+
+### 语义改写和问题拆分
+
+语义改写和问题拆分通过一次 LLM 调用完成。输入包含：
+
+```text
+当前改写任务 system prompt
++ 当前会话 active summary，如果存在
++ 最近 N 轮 user/assistant 对话，默认 3 轮
++ 本轮 normalizedQuery
+```
+
+历史 `system` 消息不会进入改写上下文，避免挤占 token 或影响改写任务。当前改写调用会使用自己的 system prompt，并要求模型严格返回：
+
+```json
+{
+  "rewrite": "改写后的查询",
+  "should_split": false,
+  "sub_questions": ["改写后的查询"]
+}
+```
+
+解析器会依次处理普通 JSON、Markdown 代码块 JSON、前后带额外文本的 JSON；字段缺失或结构异常时进入降级。
+
+### 降级策略
+
+Pipeline 配置来自 `chat_pipeline_config`，后台可以通过 `/admin/pipeline` 修改。关键字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `terminology_enabled` | 是否启用术语统一，默认开启 |
+| `llm_rewrite_enabled` | 是否调用 LLM 做语义改写和拆分 |
+| `rule_split_enabled` | 是否允许规则拆分兜底 |
+| `fallback_policy` | `TERM_ONLY`、`RULE_SPLIT` 或 `BYPASS` |
+| `rewrite_timeout_ms` | 改写调用超时时间 |
+| `rewrite_context_turns` | 改写上下文最近轮数 |
+
+LLM 关闭、调用超时、模型异常或 JSON 解析失败时，不中断会话主流程。默认降级为：
+
+```json
+{
+  "rewrite": "术语统一后的问题",
+  "should_split": false,
+  "sub_questions": ["术语统一后的问题"]
+}
+```
+
+最终结果写入 `ctx.rewriteResult`，供后续意图识别、检索和工具路由使用。中间产物会写入 `chat_query_rewrite_record`，用于后续 RAG 命中率评估、Prompt 调优和问题回放；它不会写入 `chat_message`，不会污染真实会话历史。
 
 ## 会话记忆压缩
 

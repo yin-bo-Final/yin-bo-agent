@@ -1,6 +1,7 @@
 package com.yinbo.agent.chat.flow.prompt;
 
 import com.yinbo.agent.chat.flow.context.ChatExecutionContext;
+import com.yinbo.agent.chat.flow.query.QueryRewriteResult;
 import com.yinbo.agent.chat.flow.retrieval.RetrievalContext;
 import com.yinbo.agent.chat.service.ChatMessageCacheService.CachedChatMessage;
 import com.yinbo.ai.api.chat.LLMMessage;
@@ -50,7 +51,7 @@ public class PromptAssemblyService {
 
     // 构造普通直聊请求。
     public LLMRequest buildDirectRequest(ChatExecutionContext ctx) {
-        return buildRequest(ctx.promptConversationMessages(), ctx.model().id(), ctx.request().thinkModeEnabled());
+        return buildRequest(promptMessagesWithRewrittenCurrentQuery(ctx), ctx.model().id(), ctx.request().thinkModeEnabled());
     }
 
     // 构造带检索上下文的请求，当前先复用普通直聊请求。
@@ -68,6 +69,101 @@ public class PromptAssemblyService {
                 .forEach(promptMessages::add);
 
         return new LLMRequest(modelId, thinkMode, promptMessages);
+    }
+
+    // 使用查询改写结果替换本轮用户消息的 Prompt 视图，消息落库仍保留用户原文。
+    private List<CachedChatMessage> promptMessagesWithRewrittenCurrentQuery(ChatExecutionContext ctx) {
+        String currentPromptContent = rewrittenCurrentPromptContent(ctx);
+        if (currentPromptContent == null) {
+            return ctx.promptConversationMessages();
+        }
+
+        Long currentUserMessageId = ctx.userMessage() == null ? null : ctx.userMessage().getId();
+        List<CachedChatMessage> messages = ctx.promptConversationMessages();
+        List<CachedChatMessage> rewrittenMessages = new ArrayList<>(messages.size());
+        boolean replaced = false;
+        for (CachedChatMessage message : messages) {
+            if (!replaced && isCurrentUserMessage(message, currentUserMessageId)) {
+                rewrittenMessages.add(withContent(message, currentPromptContent));
+                replaced = true;
+            } else {
+                rewrittenMessages.add(message);
+            }
+        }
+        if (replaced) {
+            return rewrittenMessages;
+        }
+        return replaceLastUserMessage(messages, currentPromptContent);
+    }
+
+    // 构造本轮用户消息在 Prompt 中使用的改写文本。
+    private String rewrittenCurrentPromptContent(ChatExecutionContext ctx) {
+        QueryRewriteResult rewriteResult = ctx.rewriteResult();
+        if (rewriteResult == null || rewriteResult.rewrite() == null || rewriteResult.rewrite().isBlank()) {
+            return null;
+        }
+        String rewrite = rewriteResult.rewrite().trim();
+        boolean queryChanged = ctx.originalQuery() == null || !rewrite.equals(ctx.originalQuery().trim());
+        boolean split = rewriteResult.shouldSplit() && rewriteResult.subQuestions().size() > 1;
+        if (!queryChanged && !split) {
+            return null;
+        }
+        if (!split) {
+            return rewrite;
+        }
+        return """
+                用户当前问题（已做术语统一和语义改写，请以此为准回答）：
+                %s
+
+                拆分后的子问题：
+                %s
+                """.formatted(rewrite, formatSubQuestions(rewriteResult.subQuestions())).trim();
+    }
+
+    // 判断是否为本轮刚保存的用户消息。
+    private boolean isCurrentUserMessage(CachedChatMessage message, Long currentUserMessageId) {
+        return currentUserMessageId != null
+                && message != null
+                && currentUserMessageId.equals(message.id())
+                && "user".equalsIgnoreCase(message.role());
+    }
+
+    // 兜底替换最后一条用户消息，避免缺少消息 ID 时改写结果完全失效。
+    private List<CachedChatMessage> replaceLastUserMessage(List<CachedChatMessage> messages, String content) {
+        List<CachedChatMessage> rewrittenMessages = new ArrayList<>(messages);
+        for (int index = rewrittenMessages.size() - 1; index >= 0; index--) {
+            CachedChatMessage message = rewrittenMessages.get(index);
+            if (message != null && "user".equalsIgnoreCase(message.role())) {
+                rewrittenMessages.set(index, withContent(message, content));
+                return rewrittenMessages;
+            }
+        }
+        return messages;
+    }
+
+    // 复制缓存消息并替换内容。
+    private CachedChatMessage withContent(CachedChatMessage message, String content) {
+        return new CachedChatMessage(
+                message.id(),
+                message.role(),
+                content,
+                message.modelId(),
+                message.createdAt(),
+                message.responseDurationMs(),
+                message.totalTokens()
+        );
+    }
+
+    // 格式化拆分后的子问题。
+    private String formatSubQuestions(List<String> subQuestions) {
+        StringBuilder builder = new StringBuilder();
+        for (int index = 0; index < subQuestions.size(); index++) {
+            if (index > 0) {
+                builder.append('\n');
+            }
+            builder.append(index + 1).append(". ").append(subQuestions.get(index));
+        }
+        return builder.toString();
     }
 
     // 根据模式构造系统提示词。
