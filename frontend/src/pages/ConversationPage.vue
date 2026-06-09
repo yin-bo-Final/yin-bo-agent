@@ -57,7 +57,6 @@ const fallbackModels = [
 ];
 
 const CHAT_MEMORY_CONTEXT_MAX_TOKENS = positiveNumber(import.meta.env.VITE_CHAT_MEMORY_CONTEXT_MAX_TOKENS, 100000);
-const CHAT_MEMORY_RECENT_WINDOW_MESSAGE_COUNT = positiveNumber(import.meta.env.VITE_CHAT_MEMORY_RECENT_WINDOW_MESSAGE_COUNT, 20);
 const CHAT_MEMORY_WARNING_RATIO = 0.72;
 const CHAT_MEMORY_DANGER_RATIO = 0.9;
 
@@ -963,7 +962,7 @@ function promptMessagesAfterCompression(contentMessages, summary) {
   const coveredStartMessageId = Number(summary.coveredStartMessageId);
   const coveredEndMessageId = Number(summary.coveredEndMessageId);
   if (!Number.isFinite(coveredStartMessageId) || !Number.isFinite(coveredEndMessageId)) {
-    return contentMessages.slice(-CHAT_MEMORY_RECENT_WINDOW_MESSAGE_COUNT);
+    return contentMessages;
   }
 
   return contentMessages.filter((message) => {

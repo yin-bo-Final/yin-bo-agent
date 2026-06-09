@@ -330,19 +330,27 @@ public class ConversationMemoryCompressionService {
             return CompressPlan.skipped("当前会话暂无可压缩消息");
         }
 
-        Long recentWindowStartId = recentWindowStartId(messagesWithId);
+        Long coveredEndMessageId = activeSummary == null ? null : activeSummary.getCoveredEndMessageId();
+        RecentWindow recentWindow = buildRecentWindow(messagesWithId, coveredEndMessageId);
+        if (recentWindow.startMessageId() == null) {
+            return CompressPlan.skipped("当前会话暂无需要压缩的历史消息");
+        }
         List<CachedChatMessage> compressMessages;
         Long coveredStartMessageId;
-        if (activeSummary != null && activeSummary.getCoveredEndMessageId() != null) {
-            Long coveredEndMessageId = activeSummary.getCoveredEndMessageId();
+        if (coveredEndMessageId != null) {
             compressMessages = messagesWithId.stream()
                     .filter(message -> message.id() > coveredEndMessageId)
-                    .filter(message -> message.id() < recentWindowStartId)
+                    .filter(message -> message.id() < recentWindow.startMessageId())
                     .toList();
-            coveredStartMessageId = activeSummary.getCoveredStartMessageId();
+            if (compressMessages.isEmpty()) {
+                return CompressPlan.skipped("当前会话暂无需要压缩的历史消息");
+            }
+            coveredStartMessageId = activeSummary.getCoveredStartMessageId() != null
+                    ? activeSummary.getCoveredStartMessageId()
+                    : compressMessages.get(0).id();
         } else {
             int startIndex = Math.min(memoryProperties.headMessageCount(), messagesWithId.size());
-            int endExclusive = messagesWithId.size() - Math.min(memoryProperties.recentWindowMessageCount(), messagesWithId.size());
+            int endExclusive = indexOfMessageId(messagesWithId, recentWindow.startMessageId());
             if (startIndex >= endExclusive) {
                 return CompressPlan.skipped("当前会话暂无需要压缩的历史消息");
             }
@@ -354,42 +362,63 @@ public class ConversationMemoryCompressionService {
             return CompressPlan.skipped("当前会话暂无足够多的可压缩历史消息");
         }
 
-        Long coveredEndMessageId = compressMessages.get(compressMessages.size() - 1).id();
+        Long newCoveredEndMessageId = compressMessages.get(compressMessages.size() - 1).id();
         int previousSourceCount = activeSummary == null || activeSummary.getSourceMessageCount() == null
                 ? 0
                 : activeSummary.getSourceMessageCount();
         return CompressPlan.ready(
                 coveredStartMessageId,
-                coveredEndMessageId,
+                newCoveredEndMessageId,
                 previousSourceCount + compressMessages.size(),
                 compressMessages
         );
     }
 
-    // 计算最近窗口起始消息 ID。
-    private Long recentWindowStartId(List<CachedChatMessage> messagesWithId) {
-        int recentWindowSize = Math.min(memoryProperties.recentWindowMessageCount(), messagesWithId.size());
-        if (recentWindowSize <= 0) {
-            return Long.MAX_VALUE;
+    // 从尾部按 token 反向收集最近窗口，并尽量保持完整轮次。
+    private RecentWindow buildRecentWindow(List<CachedChatMessage> messagesWithId, Long coveredEndMessageId) {
+        List<CachedChatMessage> tailMessages = messagesWithId.stream()
+                .filter(message -> coveredEndMessageId == null || message.id() > coveredEndMessageId)
+                .toList();
+        List<MessageTurn> turns = buildConversationTurns(tailMessages);
+        if (turns.isEmpty()) {
+            return RecentWindow.empty();
         }
-        return messagesWithId.get(messagesWithId.size() - recentWindowSize).id();
+
+        List<CachedChatMessage> recentMessages = new ArrayList<>();
+        int recentTokens = 0;
+        int recentTokenBudget = memoryProperties.recentWindowTokens();
+        for (int index = turns.size() - 1; index >= 0; index--) {
+            MessageTurn turn = turns.get(index);
+            if (!recentMessages.isEmpty() && recentTokens + turn.tokens() > recentTokenBudget) {
+                break;
+            }
+            recentMessages.addAll(0, turn.messages());
+            recentTokens += turn.tokens();
+        }
+
+        if (recentMessages.isEmpty()) {
+            MessageTurn lastTurn = turns.get(turns.size() - 1);
+            recentMessages.addAll(lastTurn.messages());
+            recentTokens = lastTurn.tokens();
+        }
+
+        return new RecentWindow(recentMessages.get(0).id(), recentTokens, List.copyOf(recentMessages));
     }
 
-    // 将消息按压缩窗口 token 预算切分。
+    // 将消息按压缩窗口 token 预算切分，并尽量保持完整轮次。
     private List<List<CachedChatMessage>> splitWindows(List<CachedChatMessage> messages) {
         List<List<CachedChatMessage>> windows = new ArrayList<>();
         List<CachedChatMessage> currentWindow = new ArrayList<>();
         int currentTokens = 0;
         int windowBudget = memoryProperties.compressionWindowTokens();
-        for (CachedChatMessage message : messages) {
-            int messageTokens = tokenEstimator.estimateMessages(List.of(message));
-            if (!currentWindow.isEmpty() && currentTokens + messageTokens > windowBudget) {
+        for (MessageTurn turn : buildConversationTurns(messages)) {
+            if (!currentWindow.isEmpty() && currentTokens + turn.tokens() > windowBudget) {
                 windows.add(List.copyOf(currentWindow));
                 currentWindow.clear();
                 currentTokens = 0;
             }
-            currentWindow.add(message);
-            currentTokens += messageTokens;
+            currentWindow.addAll(turn.messages());
+            currentTokens += turn.tokens();
         }
         if (!currentWindow.isEmpty()) {
             windows.add(List.copyOf(currentWindow));
@@ -545,6 +574,55 @@ public class ConversationMemoryCompressionService {
         return sanitized.length() <= 256 ? sanitized : sanitized.substring(0, 256);
     }
 
+    // 按完整轮次构造消息分组，默认按 user + assistant 配对。
+    private List<MessageTurn> buildConversationTurns(List<CachedChatMessage> messages) {
+        List<MessageTurn> turns = new ArrayList<>();
+        int index = 0;
+        while (index < messages.size()) {
+            CachedChatMessage current = messages.get(index);
+            List<CachedChatMessage> turnMessages = new ArrayList<>();
+            turnMessages.add(current);
+            int turnTokens = tokenEstimator.estimateMessage(current);
+
+            if (isUserMessage(current)
+                    && index + 1 < messages.size()
+                    && isAssistantMessage(messages.get(index + 1))) {
+                CachedChatMessage assistantMessage = messages.get(index + 1);
+                turnMessages.add(assistantMessage);
+                turnTokens += tokenEstimator.estimateMessage(assistantMessage);
+                index += 2;
+            } else {
+                index++;
+            }
+
+            turns.add(new MessageTurn(List.copyOf(turnMessages), turnTokens));
+        }
+        return turns;
+    }
+
+    // 判断消息是否为用户消息。
+    private boolean isUserMessage(CachedChatMessage message) {
+        return message != null && "user".equalsIgnoreCase(message.role());
+    }
+
+    // 判断消息是否为 assistant 消息。
+    private boolean isAssistantMessage(CachedChatMessage message) {
+        return message != null && "assistant".equalsIgnoreCase(message.role());
+    }
+
+    // 根据消息 ID 找到最近窗口的起始索引。
+    private int indexOfMessageId(List<CachedChatMessage> messages, Long messageId) {
+        if (messageId == null) {
+            return messages.size();
+        }
+        for (int index = 0; index < messages.size(); index++) {
+            if (messageId <= messages.get(index).id()) {
+                return index;
+            }
+        }
+        return messages.size();
+    }
+
     // 压缩范围计划。
     private record CompressPlan(
             boolean compressible,
@@ -576,6 +654,18 @@ public class ConversationMemoryCompressionService {
         private static CompressPlan skipped(String message) {
             return new CompressPlan(false, null, null, 0, List.of(), message);
         }
+    }
+
+    // 最近窗口信息，记录起始 messageId 和 token 总量。
+    private record RecentWindow(Long startMessageId, int tokens, List<CachedChatMessage> messages) {
+
+        private static RecentWindow empty() {
+            return new RecentWindow(null, 0, List.of());
+        }
+    }
+
+    // 会话轮次信息，尽量保持 user / assistant 成对。
+    private record MessageTurn(List<CachedChatMessage> messages, int tokens) {
     }
 
     // 压缩执行结果。

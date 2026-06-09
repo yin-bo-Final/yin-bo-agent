@@ -759,7 +759,7 @@ config/
 | --- | --- | --- |
 | `AiInfraProperties.java` | `app.ai-infra` | 保存 ai-infra baseUrl 和远程调用超时时间 |
 | `AuthProperties.java` | `app.auth` | 保存种子管理员用户名和密码 |
-| `ChatMemoryProperties.java` | `app.chat.memory` | 保存会话记忆上下文预算、压缩窗口、最近窗口和摘要版本 |
+| `ChatMemoryProperties.java` | `app.chat.memory` | 保存会话记忆上下文预算、压缩窗口、最近 token 窗口和摘要版本 |
 | `ConcurrencyLimitProperties.java` | `app.concurrency` | 保存上传兜底并发和 ingestion 消费并发配置 |
 | `ObjectStorageProperties.java` | `app.storage` | 保存 RustFS / S3 provider、endpoint、accessKey、secretKey、bucket |
 | `RagProperties.java` | `app.ai.rag` | 保存 RAG 模型、维度、向量表、分块默认值、源文件大小和 MQ topic |
@@ -786,7 +786,7 @@ config/
 | `ragReserveTokens` | 给 RAG 上下文预留的 token | `12000` |
 | `toolReserveTokens` | 给工具调用结果预留的 token | `4000` |
 | `safetyMarginTokens` | 安全余量 | `4000` |
-| `recentWindowMessageCount` | 最近原文消息保留数量 | `20` |
+| `recentWindowTokens` | 最近原文 token 预算 | `20000` |
 | `headMessageCount` | 首轮锚点原文消息保留数量 | `4` |
 | `autoCompressThresholdRatio` | 自动压缩触发比例 | `0.9` |
 

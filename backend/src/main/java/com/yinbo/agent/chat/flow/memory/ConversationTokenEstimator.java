@@ -17,9 +17,17 @@ public class ConversationTokenEstimator {
         }
         int total = 0;
         for (CachedChatMessage message : messages) {
-            total += MESSAGE_OVERHEAD_TOKENS + estimateText(message.role()) + estimateText(message.content());
+            total += estimateMessage(message);
         }
         return total;
+    }
+
+    // 估算单条缓存消息的 token 数。
+    public int estimateMessage(CachedChatMessage message) {
+        if (message == null) {
+            return 0;
+        }
+        return MESSAGE_OVERHEAD_TOKENS + estimateText(message.role()) + estimateText(message.content());
     }
 
     // 粗略估算文本 token 数。

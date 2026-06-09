@@ -10,7 +10,7 @@ public record ChatMemoryProperties(
         Integer ragReserveTokens,
         Integer toolReserveTokens,
         Integer safetyMarginTokens,
-        Integer recentWindowMessageCount,
+        Integer recentWindowTokens,
         Integer headMessageCount,
         Integer minCompressMessageCount,
         Integer compressionWindowTokens,
@@ -26,7 +26,7 @@ public record ChatMemoryProperties(
         ragReserveTokens = nonNegativeOrDefault(ragReserveTokens, 12_000);
         toolReserveTokens = nonNegativeOrDefault(toolReserveTokens, 4_000);
         safetyMarginTokens = nonNegativeOrDefault(safetyMarginTokens, 4_000);
-        recentWindowMessageCount = positiveOrDefault(recentWindowMessageCount, 20);
+        recentWindowTokens = positiveOrDefault(recentWindowTokens, 20_000);
         headMessageCount = nonNegativeOrDefault(headMessageCount, 4);
         minCompressMessageCount = positiveOrDefault(minCompressMessageCount, 8);
         compressionWindowTokens = positiveOrDefault(compressionWindowTokens, 24_000);

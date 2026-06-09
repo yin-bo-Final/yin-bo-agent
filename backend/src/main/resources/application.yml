@@ -95,7 +95,7 @@ app:
       rag-reserve-tokens: ${CHAT_MEMORY_RAG_RESERVE_TOKENS:12000}
       tool-reserve-tokens: ${CHAT_MEMORY_TOOL_RESERVE_TOKENS:4000}
       safety-margin-tokens: ${CHAT_MEMORY_SAFETY_MARGIN_TOKENS:4000}
-      recent-window-message-count: ${CHAT_MEMORY_RECENT_WINDOW_MESSAGE_COUNT:20}
+      recent-window-tokens: ${CHAT_MEMORY_RECENT_WINDOW_TOKENS:20000}
       head-message-count: ${CHAT_MEMORY_HEAD_MESSAGE_COUNT:4}
       min-compress-message-count: ${CHAT_MEMORY_MIN_COMPRESS_MESSAGE_COUNT:8}
       compression-window-tokens: ${CHAT_MEMORY_COMPRESSION_WINDOW_TOKENS:24000}

@@ -190,7 +190,7 @@ SpringAI-Program/
 │  ├─ gateway-structure.md          # 网关模块边界和路由
 │  ├─ ai-infra-structure.md         # AI 基础设施服务和 HTTP 契约
 │  ├─ backend-structure.md          # 后端模块边界
-│  ├─ conversation-memory-compression-flow.md # 会话记忆压缩流程
+│  ├─ rag-conversation-pipeline-flow.md # RAG 会话流水线和记忆压缩流程
 │  ├─ frontend-structure.md         # 前端模块边界
 │  └─ frontend-style-guide.md       # 前端样式约定
 ├─ local-secrets.example.yml        # 本地私密配置模板
@@ -203,7 +203,7 @@ AI / Codex 协作规则见 [codex.md](codex.md)。
 网关模块说明见 [docs/gateway-structure.md](docs/gateway-structure.md)，
 AI 基础设施说明见 [docs/ai-infra-structure.md](docs/ai-infra-structure.md)，
 后端模块说明见 [docs/backend-structure.md](docs/backend-structure.md)，
-会话记忆压缩流程见 [docs/conversation-memory-compression-flow.md](docs/conversation-memory-compression-flow.md)，
+RAG 会话流水线和记忆压缩流程见 [docs/rag-conversation-pipeline-flow.md](docs/rag-conversation-pipeline-flow.md)，
 前端模块说明见 [docs/frontend-structure.md](docs/frontend-structure.md)。
 前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
@@ -256,7 +256,7 @@ CHAT_MEMORY_OUTPUT_RESERVE_TOKENS: 8000
 CHAT_MEMORY_RAG_RESERVE_TOKENS: 12000
 CHAT_MEMORY_TOOL_RESERVE_TOKENS: 4000
 CHAT_MEMORY_SAFETY_MARGIN_TOKENS: 4000
-CHAT_MEMORY_RECENT_WINDOW_MESSAGE_COUNT: 20
+CHAT_MEMORY_RECENT_WINDOW_TOKENS: 20000
 CHAT_MEMORY_HEAD_MESSAGE_COUNT: 4
 CHAT_MEMORY_MIN_COMPRESS_MESSAGE_COUNT: 8
 CHAT_MEMORY_COMPRESSION_WINDOW_TOKENS: 24000
@@ -462,7 +462,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 - 关键业务日志使用 `event=...`：登录注册、知识库变更、文档上传、AI 调用、RocketMQ 投递消费、ingestion 完成或失败都会有明确事件。
 - 模型调用不要散落在业务 Service 中，backend 只通过 `AiInfraClient` 调 ai-infra；HTTP 契约放在 `ai-api`，模型供应商实现只放在 `ai-infra`。
 - 会话编排不要继续堆进 `ChatService`，新增查询改写、意图识别、歧义引导、RAG 检索或工具调用时优先扩展 `chat/flow` 下对应子包服务，并通过 `ChatExecutionContext` 传递阶段结果。
-- 会话记忆压缩流程见 [docs/conversation-memory-compression-flow.md](docs/conversation-memory-compression-flow.md)，压缩只写 `conversation_memory_summary`，不要删除或覆盖 `chat_message` 原始消息。
+- RAG 会话流水线和记忆压缩流程见 [docs/rag-conversation-pipeline-flow.md](docs/rag-conversation-pipeline-flow.md)，压缩只写 `conversation_memory_summary`，不要删除或覆盖 `chat_message` 原始消息。
 - 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本。
 - 上传文件大小默认限制为单文件 `200MB`；gateway 会先拦截超过 `200MB` 的上传请求，service multipart 和前端 Nginx 单请求默认上限为 `220MB`。

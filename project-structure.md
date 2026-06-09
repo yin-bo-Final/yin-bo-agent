@@ -9,7 +9,7 @@
 | [docs/gateway-structure.md](docs/gateway-structure.md)       | 网关模块、路由转发、真实 IP、限流、并发控制和统一错误响应          |
 | [docs/ai-infra-structure.md](docs/ai-infra-structure.md)     | AI 基础设施服务、模型路由、供应商客户端和 HTTP 契约       |
 | [docs/backend-structure.md](docs/backend-structure.md)       | 后端包结构、RAG ingestion、Flyway、数据表和常见改动入口 |
-| [docs/conversation-memory-compression-flow.md](docs/conversation-memory-compression-flow.md) | 会话记忆压缩触发、摘要水位线和 Prompt 组装流程 |
+| [docs/rag-conversation-pipeline-flow.md](docs/rag-conversation-pipeline-flow.md) | RAG 会话流水线、短路点、记忆压缩和后续检索接入点 |
 | [docs/frontend-structure.md](docs/frontend-structure.md)     | 前端页面结构、API 封装、后台管理 UI 和路由状态           |
 | [docs/frontend-style-guide.md](docs/frontend-style-guide.md) | 前端视觉风格、按钮、弹窗、下拉栏、tooltip 等样式约定        |
 | [codex.md](codex.md)                                         | 项目提示词、协作习惯、本地中间件位置和 Git 提交习惯          |
@@ -117,7 +117,7 @@ ConversationPage
 | 网关路由、统一入口、真实 IP、限流、鉴权前置 | [docs/gateway-structure.md](docs/gateway-structure.md) |
 | 模型路由、供应商接入、AI HTTP 契约 | [docs/ai-infra-structure.md](docs/ai-infra-structure.md) |
 | 后端接口、数据库、RAG、RocketMQ、RustFS | [docs/backend-structure.md](docs/backend-structure.md) |
-| 会话记忆压缩、summary 水位线、Prompt 记忆视图 | [docs/conversation-memory-compression-flow.md](docs/conversation-memory-compression-flow.md) |
+| RAG 会话流水线、记忆压缩、summary 水位线、Prompt 记忆视图 | [docs/rag-conversation-pipeline-flow.md](docs/rag-conversation-pipeline-flow.md) |
 | 前端页面、后台管理、会话 UI | [docs/frontend-structure.md](docs/frontend-structure.md) |
 | 只改样式 | [docs/frontend-style-guide.md](docs/frontend-style-guide.md) |
 | 新对话交接、工作习惯、提交规范 | [codex.md](codex.md) |
