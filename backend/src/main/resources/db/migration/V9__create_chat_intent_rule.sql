@@ -1,0 +1,161 @@
+CREATE TABLE IF NOT EXISTS chat_intent_rule (
+    id BIGINT PRIMARY KEY,
+    rule_code VARCHAR(128) NOT NULL UNIQUE,
+    name VARCHAR(128) NOT NULL,
+    description VARCHAR(512) NULL,
+    target_node_code VARCHAR(128) NOT NULL,
+    rule_type VARCHAR(32) NOT NULL DEFAULT 'STRONG',
+    include_keywords_json TEXT NULL,
+    include_match_mode VARCHAR(16) NOT NULL DEFAULT 'ANY',
+    require_keywords_json TEXT NULL,
+    require_match_mode VARCHAR(16) NOT NULL DEFAULT 'ANY',
+    exclude_keywords_json TEXT NULL,
+    score NUMERIC(4, 3) NOT NULL DEFAULT 0.900,
+    priority INTEGER NOT NULL DEFAULT 0,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_intent_rule_enabled
+ON chat_intent_rule (enabled, priority DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_chat_intent_rule_target
+ON chat_intent_rule (target_node_code);
+
+INSERT INTO chat_intent_rule (
+    id, rule_code, name, description, target_node_code, rule_type,
+    include_keywords_json, include_match_mode,
+    require_keywords_json, require_match_mode,
+    exclude_keywords_json,
+    score, priority, enabled
+) VALUES
+    (
+        820000000000000001,
+        'system-greeting-strong',
+        '问候强命中',
+        '用户打招呼、感谢、简单寒暄时直接进入系统问候节点',
+        'system-greeting',
+        'STRONG',
+        '["你好","您好","hi","hello","在吗","谢谢","感谢"]',
+        'ANY',
+        '[]',
+        'ANY',
+        '[]',
+        0.980,
+        1000,
+        TRUE
+    ),
+    (
+        820000000000000002,
+        'system-about-strong',
+        '助手介绍强命中',
+        '询问助手身份和能力时直接进入关于助手节点',
+        'system-about',
+        'STRONG',
+        '["你是谁","你是干嘛","你能做什么","你的能力","介绍一下你"]',
+        'ANY',
+        '[]',
+        'ANY',
+        '[]',
+        0.960,
+        990,
+        TRUE
+    ),
+    (
+        820000000000000003,
+        'logistics-tracking-strong',
+        '物流轨迹强命中',
+        '用户询问个人包裹位置、物流轨迹和配送进度时直接进入物流轨迹 MCP',
+        'logistics-tracking',
+        'STRONG',
+        '["快递","包裹","物流"]',
+        'ANY',
+        '["到哪","哪里","在哪","进度","轨迹","状态","查"]',
+        'ANY',
+        '["运费","清关","配送规则","快递公司"]',
+        0.950,
+        980,
+        TRUE
+    ),
+    (
+        820000000000000004,
+        'order-query-strong',
+        '订单查询强命中',
+        '用户询问个人订单状态、订单详情和支付记录时直接进入订单查询 MCP',
+        'order-query',
+        'STRONG',
+        '["订单"]',
+        'ANY',
+        '["查询","查","状态","详情","支付","到哪","进度"]',
+        'ANY',
+        '["退货政策","退款规则","订单规则"]',
+        0.940,
+        970,
+        TRUE
+    ),
+    (
+        820000000000000005,
+        'product-weak',
+        '商品服务弱路由',
+        '商品、售后、维修、退换货等表达缩小到商品服务域',
+        'product',
+        'WEAK',
+        '["退货","退款","换货","售后","维修","保修","商品","参数","规格","耳机","手机"]',
+        'ANY',
+        '[]',
+        'ANY',
+        '[]',
+        0.600,
+        800,
+        TRUE
+    ),
+    (
+        820000000000000006,
+        'logistics-weak',
+        '物流配送弱路由',
+        '物流、配送、运费、清关、跨境等表达缩小到物流域',
+        'logistics',
+        'WEAK',
+        '["物流","快递","配送","运费","包邮","清关","跨境","海外仓","包裹"]',
+        'ANY',
+        '[]',
+        'ANY',
+        '[]',
+        0.600,
+        790,
+        TRUE
+    ),
+    (
+        820000000000000007,
+        'order-weak',
+        '订单管理弱路由',
+        '订单和支付相关表达缩小到订单域',
+        'order',
+        'WEAK',
+        '["订单","支付","付款"]',
+        'ANY',
+        '[]',
+        'ANY',
+        '[]',
+        0.600,
+        780,
+        TRUE
+    ),
+    (
+        820000000000000008,
+        'system-weak',
+        '系统交互弱路由',
+        '问候、感谢、助手能力相关表达缩小到系统交互域',
+        'system',
+        'WEAK',
+        '["你好","您好","谢谢","感谢","你是谁","你能做什么"]',
+        'ANY',
+        '[]',
+        'ANY',
+        '[]',
+        0.600,
+        770,
+        TRUE
+    )
+ON CONFLICT (rule_code) DO NOTHING;

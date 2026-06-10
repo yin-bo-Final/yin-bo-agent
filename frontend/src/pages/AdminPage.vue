@@ -6,15 +6,22 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   createKnowledgeBase,
+  createIntentNode,
+  createIntentRule,
   createTerminologyMapping,
   deleteChunk,
   deleteIngestionTask,
+  deleteIntentNode,
+  deleteIntentRule,
   deleteKnowledgeBase,
   deleteKnowledgeDocument,
   deleteTerminologyMapping,
   fetchAdminDashboard,
   fetchDocumentChunks,
   fetchFailedIngestionTasks,
+  fetchIntentNodes,
+  fetchIntentRules,
+  fetchIntentTree,
   fetchKnowledgeBase,
   fetchKnowledgeBases,
   fetchKnowledgeDocument,
@@ -29,6 +36,10 @@ import {
   updateChunk,
   updateChunkEnabled,
   updateDocumentChunksEnabled,
+  updateIntentNode,
+  updateIntentNodeEnabled,
+  updateIntentRule,
+  updateIntentRuleEnabled,
   updateKnowledgeBase,
   updateQueryPipelineConfig,
   updateTerminologyMapping,
@@ -58,6 +69,9 @@ const chunks = ref([]);
 const failedTasks = ref([]);
 const terminologyMappings = ref([]);
 const queryPipelineConfig = ref(null);
+const intentTree = ref([]);
+const intentNodes = ref([]);
+const intentRules = ref([]);
 const selectedKnowledgeBase = ref(null);
 const selectedDocument = ref(null);
 const selectedChunkIds = ref(new Set());
@@ -66,9 +80,12 @@ const isLoadingKnowledge = ref(false);
 const isLoadingTasks = ref(false);
 const isLoadingMappings = ref(false);
 const isLoadingPipeline = ref(false);
+const isLoadingIntents = ref(false);
 const isCreatingKnowledgeBase = ref(false);
 const isSavingMapping = ref(false);
 const isSavingPipeline = ref(false);
+const isSavingIntentNode = ref(false);
+const isSavingIntentRule = ref(false);
 const isIngesting = ref(false);
 const isRechunking = ref(false);
 const isRebuildingVectors = ref(false);
@@ -76,6 +93,8 @@ const isDeletingKnowledgeBase = ref(false);
 const isDeletingDocument = ref(false);
 const isDeletingChunk = ref(false);
 const isDeletingMapping = ref(false);
+const isDeletingIntentNode = ref(false);
+const isDeletingIntentRule = ref(false);
 const isUpdatingChunk = ref(false);
 const retryingTaskId = ref('');
 const deletingTaskId = ref('');
@@ -89,6 +108,11 @@ const baseKeyword = ref('');
 const documentKeyword = ref('');
 const taskKeyword = ref('');
 const mappingKeyword = ref('');
+const intentKeyword = ref('');
+const intentRuleKeyword = ref('');
+const intentKindFilter = ref('ALL');
+const intentLevelFilter = ref('ALL');
+const intentRuleTypeFilter = ref('ALL');
 const documentStatusFilter = ref('ALL');
 const taskStatusFilter = ref('ALL');
 const chunkStatusFilter = ref('ALL');
@@ -96,6 +120,8 @@ const messageTrendRange = ref('day');
 const activeTrendType = ref('message');
 const isCreateModalOpen = ref(false);
 const isMappingModalOpen = ref(false);
+const isIntentNodeModalOpen = ref(false);
+const isIntentRuleModalOpen = ref(false);
 const isEditModalOpen = ref(false);
 const detailKnowledgeBase = ref(null);
 const deleteKnowledgeBaseDialog = ref({
@@ -123,6 +149,16 @@ const deleteMappingDialog = ref({
   mapping: null
 });
 const deleteMappingError = ref('');
+const deleteIntentNodeDialog = ref({
+  open: false,
+  node: null
+});
+const deleteIntentNodeError = ref('');
+const deleteIntentRuleDialog = ref({
+  open: false,
+  rule: null
+});
+const deleteIntentRuleError = ref('');
 const isIngestionModalOpen = ref(false);
 const isRechunkModalOpen = ref(false);
 const detailDocument = ref(null);
@@ -158,6 +194,13 @@ const editForm = ref({
 const mappingForm = ref(defaultMappingForm());
 const editingMapping = ref(null);
 const mappingFormError = ref('');
+const selectedIntentNode = ref(null);
+const editingIntentNode = ref(null);
+const intentNodeForm = ref(defaultIntentNodeForm());
+const intentNodeFormError = ref('');
+const editingIntentRule = ref(null);
+const intentRuleForm = ref(defaultIntentRuleForm());
+const intentRuleFormError = ref('');
 const pipelineForm = ref(defaultPipelineForm());
 const pipelineFormError = ref('');
 const floatingTooltip = ref({
@@ -197,6 +240,15 @@ const currentHeader = computed(() => {
   }
   if (activeModule.value === 'pipeline') {
     return { label: '会话流水线', title: 'Pipeline 配置', icon: 'pipeline' };
+  }
+  if (activeModule.value === 'intent-tree') {
+    return { label: '意图管理', title: '意图树配置', icon: 'intentTree' };
+  }
+  if (activeModule.value === 'intent-list') {
+    return { label: '意图管理', title: '意图列表', icon: 'intentList' };
+  }
+  if (activeModule.value === 'intent-rules') {
+    return { label: '意图管理', title: '规则配置', icon: 'intentRules' };
   }
   if (currentView.value === 'documents') {
     return { label: '文档资产', title: '文档管理', icon: 'documents' };
@@ -249,6 +301,62 @@ const isPipelineDirty = computed(() => {
     return false;
   }
   return JSON.stringify(normalizePipelinePayload(pipelineForm.value)) !== JSON.stringify(normalizePipelinePayload(queryPipelineConfig.value));
+});
+const filteredIntentNodes = computed(() => {
+  const keyword = intentKeyword.value.trim().toLowerCase();
+  return intentNodes.value.filter((node) => {
+    const keywordMatched = !keyword || [
+      node.name,
+      node.nodeCode,
+      node.parentCode,
+      node.fullPath,
+      node.description,
+      node.collectionName,
+      node.mcpToolId
+    ]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword));
+    const kindMatched = intentKindFilter.value === 'ALL' || node.kind === intentKindFilter.value;
+    const levelMatched = intentLevelFilter.value === 'ALL' || node.level === intentLevelFilter.value;
+    return keywordMatched && kindMatched && levelMatched;
+  });
+});
+const filteredIntentRules = computed(() => {
+  const keyword = intentRuleKeyword.value.trim().toLowerCase();
+  return intentRules.value.filter((rule) => {
+    const keywordMatched = !keyword || [
+      rule.name,
+      rule.ruleCode,
+      rule.description,
+      rule.targetNodeCode,
+      rule.targetNodeName,
+      rule.targetNodePath,
+      ...(rule.includeKeywords || []),
+      ...(rule.requireKeywords || []),
+      ...(rule.excludeKeywords || [])
+    ]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword));
+    const typeMatched = intentRuleTypeFilter.value === 'ALL' || rule.ruleType === intentRuleTypeFilter.value;
+    return keywordMatched && typeMatched;
+  });
+});
+const intentLeafCount = computed(() => intentNodes.value.filter((node) => node.leaf).length);
+const intentEnabledCount = computed(() => intentNodes.value.filter((node) => node.enabled).length);
+const intentRuleEnabledCount = computed(() => intentRules.value.filter((rule) => rule.enabled).length);
+const canSubmitIntentNode = computed(() => {
+  return intentNodeForm.value.nodeCode.trim()
+    && intentNodeForm.value.name.trim()
+    && intentNodeForm.value.level
+    && intentNodeForm.value.kind
+    && !isSavingIntentNode.value;
+});
+const canSubmitIntentRule = computed(() => {
+  return intentRuleForm.value.ruleCode.trim()
+    && intentRuleForm.value.name.trim()
+    && intentRuleForm.value.targetNodeCode.trim()
+    && (intentRuleForm.value.includeKeywordsText.trim() || intentRuleForm.value.requireKeywordsText.trim())
+    && !isSavingIntentRule.value;
 });
 
 function toggleAdminSidebar() {
@@ -388,6 +496,381 @@ function defaultPipelineForm() {
     rewriteTimeoutMs: 3000,
     rewriteContextTurns: 3
   };
+}
+
+function defaultIntentNodeForm() {
+  return {
+    nodeCode: '',
+    parentCode: '',
+    name: '',
+    description: '',
+    level: 'CATEGORY',
+    kind: 'KB',
+    examplesText: '',
+    knowledgeBaseNo: '',
+    collectionName: '',
+    mcpToolId: '',
+    promptSnippet: '',
+    promptTemplate: '',
+    paramPromptTemplate: '',
+    topK: '',
+    minScore: '',
+    sortOrder: 0,
+    enabled: true
+  };
+}
+
+function defaultIntentRuleForm() {
+  return {
+    ruleCode: '',
+    name: '',
+    description: '',
+    targetNodeCode: '',
+    ruleType: 'STRONG',
+    includeKeywordsText: '',
+    includeMatchMode: 'ANY',
+    requireKeywordsText: '',
+    requireMatchMode: 'ANY',
+    excludeKeywordsText: '',
+    score: 0.9,
+    enabled: true
+  };
+}
+
+function intentKindLabel(value) {
+  if (value === 'MCP') {
+    return 'MCP 工具';
+  }
+  if (value === 'SYSTEM') {
+    return '系统直答';
+  }
+  return '知识库';
+}
+
+function intentLevelLabel(value) {
+  if (value === 'DOMAIN') {
+    return '领域';
+  }
+  if (value === 'TOPIC') {
+    return '主题';
+  }
+  return '分类';
+}
+
+function intentRuleTypeLabel(value) {
+  return value === 'WEAK' ? '弱规则' : '强规则';
+}
+
+function intentMatchModeLabel(value) {
+  return value === 'ALL' ? '全部命中' : '任一命中';
+}
+
+function intentExamplesText(examples) {
+  return Array.isArray(examples) ? examples.join('\n') : '';
+}
+
+function keywordText(keywords) {
+  return Array.isArray(keywords) ? keywords.join('\n') : '';
+}
+
+function keywordArray(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function openCreateIntentNodeModal(parentNode = null) {
+  editingIntentNode.value = null;
+  intentNodeFormError.value = '';
+  const form = defaultIntentNodeForm();
+  if (parentNode?.nodeCode) {
+    form.parentCode = parentNode.nodeCode;
+    form.level = parentNode.level === 'DOMAIN' ? 'CATEGORY' : 'TOPIC';
+    form.kind = parentNode.kind || 'KB';
+  }
+  intentNodeForm.value = form;
+  isIntentNodeModalOpen.value = true;
+}
+
+function openEditIntentNodeModal(node) {
+  editingIntentNode.value = node;
+  intentNodeFormError.value = '';
+  intentNodeForm.value = {
+    nodeCode: node.nodeCode || '',
+    parentCode: node.parentCode || '',
+    name: node.name || '',
+    description: node.description || '',
+    level: node.level || 'CATEGORY',
+    kind: node.kind || 'KB',
+    examplesText: intentExamplesText(node.examples),
+    knowledgeBaseNo: node.knowledgeBaseNo || '',
+    collectionName: node.collectionName || '',
+    mcpToolId: node.mcpToolId || '',
+    promptSnippet: node.promptSnippet || '',
+    promptTemplate: node.promptTemplate || '',
+    paramPromptTemplate: node.paramPromptTemplate || '',
+    topK: node.topK ?? '',
+    minScore: node.minScore ?? '',
+    sortOrder: node.sortOrder ?? 0,
+    enabled: node.enabled !== false
+  };
+  isIntentNodeModalOpen.value = true;
+}
+
+function closeIntentNodeModal() {
+  if (isSavingIntentNode.value) {
+    return;
+  }
+  isIntentNodeModalOpen.value = false;
+  editingIntentNode.value = null;
+  intentNodeFormError.value = '';
+}
+
+async function submitIntentNodeForm() {
+  if (!canSubmitIntentNode.value) {
+    return;
+  }
+  isSavingIntentNode.value = true;
+  intentNodeFormError.value = '';
+  try {
+    const payload = normalizeIntentNodePayload(intentNodeForm.value);
+    if (editingIntentNode.value?.id) {
+      await updateIntentNode(editingIntentNode.value.id, payload);
+    } else {
+      await createIntentNode(payload);
+    }
+    await loadIntentAdmin();
+    isIntentNodeModalOpen.value = false;
+    editingIntentNode.value = null;
+  } catch (error) {
+    intentNodeFormError.value = error.message || '意图节点保存失败';
+  } finally {
+    isSavingIntentNode.value = false;
+  }
+}
+
+function normalizeIntentNodePayload(form) {
+  const examples = String(form.examplesText || '')
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return {
+    nodeCode: form.nodeCode.trim(),
+    parentCode: form.parentCode.trim(),
+    name: form.name.trim(),
+    description: form.description.trim(),
+    level: form.level,
+    kind: form.kind,
+    examples,
+    knowledgeBaseNo: form.knowledgeBaseNo.trim(),
+    collectionName: form.collectionName.trim(),
+    mcpToolId: form.mcpToolId.trim(),
+    promptSnippet: form.promptSnippet.trim(),
+    promptTemplate: form.promptTemplate.trim(),
+    paramPromptTemplate: form.paramPromptTemplate.trim(),
+    topK: form.topK === '' ? null : Number(form.topK),
+    minScore: form.minScore === '' ? null : Number(form.minScore),
+    sortOrder: Number(form.sortOrder || 0),
+    enabled: form.enabled !== false
+  };
+}
+
+function selectIntentNode(node) {
+  selectedIntentNode.value = node;
+}
+
+async function toggleIntentNodeEnabled(node) {
+  try {
+    await updateIntentNodeEnabled(node.id, !node.enabled);
+    await loadIntentAdmin();
+  } catch (error) {
+    handleAdminError(error);
+  }
+}
+
+function openDeleteIntentNodeDialog(node) {
+  deleteIntentNodeError.value = '';
+  deleteIntentNodeDialog.value = {
+    open: true,
+    node
+  };
+}
+
+function closeDeleteIntentNodeDialog() {
+  if (isDeletingIntentNode.value) {
+    return;
+  }
+  deleteIntentNodeDialog.value = {
+    open: false,
+    node: null
+  };
+  deleteIntentNodeError.value = '';
+}
+
+async function confirmDeleteIntentNode() {
+  const node = deleteIntentNodeDialog.value.node;
+  if (!node?.id || isDeletingIntentNode.value) {
+    return;
+  }
+  isDeletingIntentNode.value = true;
+  deleteIntentNodeError.value = '';
+  try {
+    await deleteIntentNode(node.id);
+    await loadIntentAdmin();
+    deleteIntentNodeDialog.value = {
+      open: false,
+      node: null
+    };
+    if (selectedIntentNode.value?.id === node.id) {
+      selectedIntentNode.value = null;
+    }
+  } catch (error) {
+    if (isSessionError(error)) {
+      emit('session-expired');
+      return;
+    }
+    deleteIntentNodeError.value = error.message || '意图节点删除失败';
+  } finally {
+    isDeletingIntentNode.value = false;
+  }
+}
+
+function openCreateIntentRuleModal(targetNode = null) {
+  editingIntentRule.value = null;
+  intentRuleFormError.value = '';
+  const form = defaultIntentRuleForm();
+  if (targetNode?.nodeCode) {
+    form.targetNodeCode = targetNode.nodeCode;
+    form.ruleCode = `${targetNode.nodeCode}-rule`;
+    form.name = `${targetNode.name}规则`;
+    form.ruleType = targetNode.leaf ? 'STRONG' : 'WEAK';
+    form.score = targetNode.leaf ? 0.9 : 0.6;
+  }
+  intentRuleForm.value = form;
+  isIntentRuleModalOpen.value = true;
+}
+
+function openEditIntentRuleModal(rule) {
+  editingIntentRule.value = rule;
+  intentRuleFormError.value = '';
+  intentRuleForm.value = {
+    ruleCode: rule.ruleCode || '',
+    name: rule.name || '',
+    description: rule.description || '',
+    targetNodeCode: rule.targetNodeCode || '',
+    ruleType: rule.ruleType || 'STRONG',
+    includeKeywordsText: keywordText(rule.includeKeywords),
+    includeMatchMode: rule.includeMatchMode || 'ANY',
+    requireKeywordsText: keywordText(rule.requireKeywords),
+    requireMatchMode: rule.requireMatchMode || 'ANY',
+    excludeKeywordsText: keywordText(rule.excludeKeywords),
+    score: rule.score ?? 0.9,
+    enabled: rule.enabled !== false
+  };
+  isIntentRuleModalOpen.value = true;
+}
+
+function closeIntentRuleModal() {
+  if (isSavingIntentRule.value) {
+    return;
+  }
+  isIntentRuleModalOpen.value = false;
+  editingIntentRule.value = null;
+  intentRuleFormError.value = '';
+}
+
+async function submitIntentRuleForm() {
+  if (!canSubmitIntentRule.value) {
+    return;
+  }
+  isSavingIntentRule.value = true;
+  intentRuleFormError.value = '';
+  try {
+    const payload = normalizeIntentRulePayload(intentRuleForm.value);
+    if (editingIntentRule.value?.id) {
+      await updateIntentRule(editingIntentRule.value.id, payload);
+    } else {
+      await createIntentRule(payload);
+    }
+    await loadIntentAdmin();
+    isIntentRuleModalOpen.value = false;
+    editingIntentRule.value = null;
+  } catch (error) {
+    intentRuleFormError.value = error.message || '意图规则保存失败';
+  } finally {
+    isSavingIntentRule.value = false;
+  }
+}
+
+function normalizeIntentRulePayload(form) {
+  return {
+    ruleCode: form.ruleCode.trim(),
+    name: form.name.trim(),
+    description: form.description.trim(),
+    targetNodeCode: form.targetNodeCode.trim(),
+    ruleType: form.ruleType,
+    includeKeywords: keywordArray(form.includeKeywordsText),
+    includeMatchMode: form.includeMatchMode || 'ANY',
+    requireKeywords: keywordArray(form.requireKeywordsText),
+    requireMatchMode: form.requireMatchMode || 'ANY',
+    excludeKeywords: keywordArray(form.excludeKeywordsText),
+    score: form.score === '' ? null : Number(form.score),
+    enabled: form.enabled !== false
+  };
+}
+
+async function toggleIntentRuleEnabled(rule) {
+  try {
+    await updateIntentRuleEnabled(rule.id, !rule.enabled);
+    await loadIntentAdmin();
+  } catch (error) {
+    handleAdminError(error);
+  }
+}
+
+function openDeleteIntentRuleDialog(rule) {
+  deleteIntentRuleError.value = '';
+  deleteIntentRuleDialog.value = {
+    open: true,
+    rule
+  };
+}
+
+function closeDeleteIntentRuleDialog() {
+  if (isDeletingIntentRule.value) {
+    return;
+  }
+  deleteIntentRuleDialog.value = {
+    open: false,
+    rule: null
+  };
+  deleteIntentRuleError.value = '';
+}
+
+async function confirmDeleteIntentRule() {
+  const rule = deleteIntentRuleDialog.value.rule;
+  if (!rule?.id || isDeletingIntentRule.value) {
+    return;
+  }
+  isDeletingIntentRule.value = true;
+  deleteIntentRuleError.value = '';
+  try {
+    await deleteIntentRule(rule.id);
+    await loadIntentAdmin();
+    deleteIntentRuleDialog.value = {
+      open: false,
+      rule: null
+    };
+  } catch (error) {
+    if (isSessionError(error)) {
+      emit('session-expired');
+      return;
+    }
+    deleteIntentRuleError.value = error.message || '意图规则删除失败';
+  } finally {
+    isDeletingIntentRule.value = false;
+  }
 }
 
 function normalizePipelinePayload(value) {
@@ -651,7 +1134,7 @@ onMounted(async () => {
   window.addEventListener('popstate', handleRouteChange);
   window.addEventListener('resize', resizeDashboardTrendChart);
   knowledgePollTimer = window.setInterval(pollProcessingDocuments, 3000);
-  await Promise.all([loadDashboard(), loadKnowledge(), loadFailedTasks(), loadQueryAdmin()]);
+  await Promise.all([loadDashboard(), loadKnowledge(), loadFailedTasks(), loadQueryAdmin(), loadIntentAdmin()]);
   await runAdminReveal();
   await renderDashboardTrendChart();
 });
@@ -698,6 +1181,15 @@ function parseAdminRoute() {
   if (segments[1] === 'pipeline') {
     return { module: 'pipeline', view: 'pipeline' };
   }
+  if (segments[1] === 'intent-tree') {
+    return { module: 'intent-tree', view: 'intent-tree' };
+  }
+  if (segments[1] === 'intent-list') {
+    return { module: 'intent-list', view: 'intent-list' };
+  }
+  if (segments[1] === 'intent-rules') {
+    return { module: 'intent-rules', view: 'intent-rules' };
+  }
   if (segments[1] !== 'knowledge') {
     return { module: 'dashboard', view: 'dashboard' };
   }
@@ -733,6 +1225,9 @@ async function handleRouteChange() {
   }
   if (activeModule.value === 'pipeline') {
     await loadPipelineConfig();
+  }
+  if (activeModule.value === 'intent-tree' || activeModule.value === 'intent-list' || activeModule.value === 'intent-rules') {
+    await loadIntentAdmin();
   }
   await runAdminReveal();
   await renderDashboardTrendChart();
@@ -1121,6 +1616,30 @@ async function loadPipelineConfig() {
   }
 }
 
+async function loadIntentAdmin() {
+  isLoadingIntents.value = true;
+  try {
+    const [treeResponse, nodesResponse, rulesResponse] = await Promise.all([
+      fetchIntentTree(),
+      fetchIntentNodes(),
+      fetchIntentRules()
+    ]);
+    intentTree.value = Array.isArray(treeResponse) ? treeResponse : [];
+    intentNodes.value = Array.isArray(nodesResponse) ? nodesResponse : [];
+    intentRules.value = Array.isArray(rulesResponse) ? rulesResponse : [];
+    if (selectedIntentNode.value?.id) {
+      selectedIntentNode.value = intentNodes.value.find((node) => node.id === selectedIntentNode.value.id) || null;
+    }
+    if (!selectedIntentNode.value && intentNodes.value.length > 0) {
+      selectedIntentNode.value = intentNodes.value[0];
+    }
+  } catch (error) {
+    handleAdminError(error);
+  } finally {
+    isLoadingIntents.value = false;
+  }
+}
+
 async function hydrateKnowledgeRoute() {
   if (currentView.value === 'bases') {
     documents.value = [];
@@ -1170,6 +1689,10 @@ async function refreshCurrentView() {
     }
     if (activeModule.value === 'pipeline') {
       await loadPipelineConfig();
+      return;
+    }
+    if (activeModule.value === 'intent-tree' || activeModule.value === 'intent-list' || activeModule.value === 'intent-rules') {
+      await loadIntentAdmin();
       return;
     }
     await loadKnowledge();
@@ -2072,6 +2595,43 @@ function documentChunkActionLabel(document) {
           <path d="M12 9v6" />
         </svg>
       </button>
+      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'intent-tree' }" data-tooltip="意图树配置" @click="navigateTo('/admin/intent-tree')">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 5v4" />
+          <path d="M6.5 13h11" />
+          <path d="M6.5 13v4" />
+          <path d="M12 9v8" />
+          <path d="M17.5 13v4" />
+          <rect x="9.5" y="3" width="5" height="4" rx="1.4" />
+          <rect x="4" y="17" width="5" height="4" rx="1.4" />
+          <rect x="9.5" y="17" width="5" height="4" rx="1.4" />
+          <rect x="15" y="17" width="5" height="4" rx="1.4" />
+        </svg>
+      </button>
+      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'intent-list' }" data-tooltip="意图列表" @click="navigateTo('/admin/intent-list')">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="4" y="4" width="16" height="16" rx="3" />
+          <path d="M8 8h.01" />
+          <path d="M11 8h5" />
+          <path d="M8 12h.01" />
+          <path d="M11 12h5" />
+          <path d="M8 16h.01" />
+          <path d="M11 16h5" />
+        </svg>
+      </button>
+      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'intent-rules' }" data-tooltip="规则配置" @click="navigateTo('/admin/intent-rules')">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h10" />
+          <path d="M18 7h2" />
+          <path d="M4 12h3" />
+          <path d="M11 12h9" />
+          <path d="M4 17h8" />
+          <path d="M16 17h4" />
+          <circle cx="16" cy="7" r="2" />
+          <circle cx="9" cy="12" r="2" />
+          <circle cx="14" cy="17" r="2" />
+        </svg>
+      </button>
       <button class="admin-rail-button admin-rail-bottom" type="button" data-tooltip="返回会话" @click="emit('back-to-chat')">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M15 18l-6-6 6-6" />
@@ -2152,6 +2712,49 @@ function documentChunkActionLabel(document) {
           </svg>
           <span>流水线配置</span>
         </button>
+        <div class="admin-nav-group">
+          <small>意图管理</small>
+          <button type="button" :class="{ active: activeModule === 'intent-tree' }" @click="navigateTo('/admin/intent-tree')">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v4" />
+              <path d="M6.5 13h11" />
+              <path d="M6.5 13v4" />
+              <path d="M12 9v8" />
+              <path d="M17.5 13v4" />
+              <rect x="9.5" y="3" width="5" height="4" rx="1.4" />
+              <rect x="4" y="17" width="5" height="4" rx="1.4" />
+              <rect x="9.5" y="17" width="5" height="4" rx="1.4" />
+              <rect x="15" y="17" width="5" height="4" rx="1.4" />
+            </svg>
+            <span>意图树配置</span>
+          </button>
+          <button type="button" :class="{ active: activeModule === 'intent-list' }" @click="navigateTo('/admin/intent-list')">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="4" width="16" height="16" rx="3" />
+              <path d="M8 8h.01" />
+              <path d="M11 8h5" />
+              <path d="M8 12h.01" />
+              <path d="M11 12h5" />
+              <path d="M8 16h.01" />
+              <path d="M11 16h5" />
+            </svg>
+            <span>意图列表</span>
+          </button>
+          <button type="button" :class="{ active: activeModule === 'intent-rules' }" @click="navigateTo('/admin/intent-rules')">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 7h10" />
+              <path d="M18 7h2" />
+              <path d="M4 12h3" />
+              <path d="M11 12h9" />
+              <path d="M4 17h8" />
+              <path d="M16 17h4" />
+              <circle cx="16" cy="7" r="2" />
+              <circle cx="9" cy="12" r="2" />
+              <circle cx="14" cy="17" r="2" />
+            </svg>
+            <span>规则配置</span>
+          </button>
+        </div>
       </nav>
 
       <button class="admin-back-button" type="button" @click="emit('back-to-chat')">
@@ -2207,6 +2810,37 @@ function documentChunkActionLabel(document) {
                 <path d="M4 18h5" />
                 <path d="M15 18h5" />
                 <path d="M12 9v6" />
+              </svg>
+              <svg v-else-if="currentHeader.icon === 'intentTree'" viewBox="0 0 24 24">
+                <path d="M12 5v4" />
+                <path d="M6.5 13h11" />
+                <path d="M6.5 13v4" />
+                <path d="M12 9v8" />
+                <path d="M17.5 13v4" />
+                <rect x="9.5" y="3" width="5" height="4" rx="1.4" />
+                <rect x="4" y="17" width="5" height="4" rx="1.4" />
+                <rect x="9.5" y="17" width="5" height="4" rx="1.4" />
+                <rect x="15" y="17" width="5" height="4" rx="1.4" />
+              </svg>
+              <svg v-else-if="currentHeader.icon === 'intentList'" viewBox="0 0 24 24">
+                <rect x="4" y="4" width="16" height="16" rx="3" />
+                <path d="M8 8h.01" />
+                <path d="M11 8h5" />
+                <path d="M8 12h.01" />
+                <path d="M11 12h5" />
+                <path d="M8 16h.01" />
+                <path d="M11 16h5" />
+              </svg>
+              <svg v-else-if="currentHeader.icon === 'intentRules'" viewBox="0 0 24 24">
+                <path d="M4 7h10" />
+                <path d="M18 7h2" />
+                <path d="M4 12h3" />
+                <path d="M11 12h9" />
+                <path d="M4 17h8" />
+                <path d="M16 17h4" />
+                <circle cx="16" cy="7" r="2" />
+                <circle cx="9" cy="12" r="2" />
+                <circle cx="14" cy="17" r="2" />
               </svg>
               <svg v-else viewBox="0 0 24 24">
                 <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
@@ -2604,6 +3238,314 @@ function documentChunkActionLabel(document) {
         </div>
       </section>
 
+      <section v-else-if="activeModule === 'intent-tree'" class="admin-section kc-content intent-module intent-tree-module">
+        <div class="kc-metric-grid knowledge-metrics">
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v4" />
+                <path d="M6.5 13h11" />
+                <path d="M6.5 13v4" />
+                <path d="M12 9v8" />
+                <path d="M17.5 13v4" />
+                <rect x="9.5" y="3" width="5" height="4" rx="1.4" />
+                <rect x="4" y="17" width="5" height="4" rx="1.4" />
+                <rect x="9.5" y="17" width="5" height="4" rx="1.4" />
+                <rect x="15" y="17" width="5" height="4" rx="1.4" />
+              </svg>
+            </span>
+            <span>节点数</span>
+            <strong>{{ isLoadingIntents ? '...' : metricText(intentNodes.length) }}</strong>
+          </article>
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="5" width="16" height="14" rx="3" />
+                <path d="M8 12l2.5 2.5L16 9" />
+              </svg>
+            </span>
+            <span>启用节点</span>
+            <strong>{{ metricText(intentEnabledCount) }}</strong>
+          </article>
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v5" />
+                <path d="M8 14h8" />
+                <path d="M8 14v4" />
+                <path d="M16 14v4" />
+                <circle cx="12" cy="5" r="2" />
+                <circle cx="8" cy="19" r="2" />
+                <circle cx="16" cy="19" r="2" />
+              </svg>
+            </span>
+            <span>叶子节点</span>
+            <strong>{{ metricText(intentLeafCount) }}</strong>
+          </article>
+        </div>
+
+        <div class="intent-tree-layout">
+          <section class="kc-table-card intent-tree-panel">
+            <div class="kc-card-toolbar">
+              <div>
+                <strong>意图树</strong>
+                <small>只叶子节点参与识别</small>
+              </div>
+              <div class="kc-toolbar-actions">
+                <button type="button" class="kc-primary-button" @click="openCreateIntentNodeModal()">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
+                  <span>新增根节点</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="intent-tree-list">
+              <article v-for="root in intentTree" :key="root.id" class="intent-tree-node level-0" :class="{ active: selectedIntentNode?.id === root.id, disabled: !root.enabled }">
+                <button type="button" @click="selectIntentNode(root)">
+                  <span>{{ root.name }}</span>
+                  <small>{{ intentLevelLabel(root.level) }} · {{ intentKindLabel(root.kind) }}</small>
+                </button>
+                <div class="intent-tree-actions">
+                  <button type="button" @click="openCreateIntentNodeModal(root)">子节点</button>
+                  <button type="button" @click="openEditIntentNodeModal(root)">编辑</button>
+                </div>
+                <div v-if="root.children?.length" class="intent-tree-children">
+                  <article v-for="child in root.children" :key="child.id" class="intent-tree-node level-1" :class="{ active: selectedIntentNode?.id === child.id, disabled: !child.enabled }">
+                    <button type="button" @click="selectIntentNode(child)">
+                      <span>{{ child.name }}</span>
+                      <small>{{ child.nodeCode }}</small>
+                    </button>
+                    <div class="intent-tree-actions">
+                      <button type="button" @click="openCreateIntentNodeModal(child)">子节点</button>
+                      <button type="button" @click="openEditIntentNodeModal(child)">编辑</button>
+                    </div>
+                    <div v-if="child.children?.length" class="intent-tree-children">
+                      <article v-for="topic in child.children" :key="topic.id" class="intent-tree-node level-2" :class="{ active: selectedIntentNode?.id === topic.id, disabled: !topic.enabled }">
+                        <button type="button" @click="selectIntentNode(topic)">
+                          <span>{{ topic.name }}</span>
+                          <small>{{ topic.nodeCode }}</small>
+                        </button>
+                        <div class="intent-tree-actions">
+                          <button type="button" @click="openEditIntentNodeModal(topic)">编辑</button>
+                        </div>
+                      </article>
+                    </div>
+                  </article>
+                </div>
+              </article>
+              <p v-if="!isLoadingIntents && intentTree.length === 0" class="kc-empty">还没有意图节点。</p>
+            </div>
+          </section>
+
+          <section class="kc-table-card intent-detail-panel">
+            <div class="kc-card-toolbar">
+              <div>
+                <strong>{{ selectedIntentNode?.name || '节点详情' }}</strong>
+                <small>{{ selectedIntentNode?.fullPath || '选择一个节点查看配置' }}</small>
+              </div>
+              <div v-if="selectedIntentNode" class="kc-toolbar-actions">
+                <button type="button" class="kc-ghost-button" @click="openCreateIntentRuleModal(selectedIntentNode)">
+                  加规则
+                </button>
+                <button type="button" class="kc-ghost-button" @click="toggleIntentNodeEnabled(selectedIntentNode)">
+                  {{ selectedIntentNode.enabled ? '禁用' : '启用' }}
+                </button>
+                <button type="button" class="kc-primary-button" @click="openEditIntentNodeModal(selectedIntentNode)">编辑</button>
+                <button type="button" class="kc-danger-button" @click="openDeleteIntentNodeDialog(selectedIntentNode)">删除</button>
+              </div>
+            </div>
+            <div v-if="selectedIntentNode" class="intent-detail-grid">
+              <span>节点编码</span><strong>{{ selectedIntentNode.nodeCode }}</strong>
+              <span>父节点</span><strong>{{ selectedIntentNode.parentCode || '-' }}</strong>
+              <span>层级</span><strong>{{ intentLevelLabel(selectedIntentNode.level) }}</strong>
+              <span>类型</span><strong>{{ intentKindLabel(selectedIntentNode.kind) }}</strong>
+              <span>状态</span><strong>{{ selectedIntentNode.enabled ? '启用' : '禁用' }}</strong>
+              <span>最低分</span><strong>{{ selectedIntentNode.minScore ?? '全局默认' }}</strong>
+              <span>Collection</span><strong>{{ selectedIntentNode.collectionName || '-' }}</strong>
+              <span>MCP Tool</span><strong>{{ selectedIntentNode.mcpToolId || '-' }}</strong>
+            </div>
+            <div v-if="selectedIntentNode" class="intent-detail-text">
+              <strong>语义描述</strong>
+              <p>{{ selectedIntentNode.description || '暂无描述' }}</p>
+              <strong>示例问题</strong>
+              <div class="intent-example-list">
+                <span v-for="example in selectedIntentNode.examples" :key="example">{{ example }}</span>
+                <small v-if="!selectedIntentNode.examples?.length">暂无示例</small>
+              </div>
+            </div>
+            <p v-else class="kc-empty">从左侧选择一个节点。</p>
+          </section>
+        </div>
+      </section>
+
+      <section v-else-if="activeModule === 'intent-list'" class="admin-section kc-content intent-module intent-list-module">
+        <div class="kc-metric-grid knowledge-metrics">
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M8 8h.01" /><path d="M11 8h5" /><path d="M8 12h.01" /><path d="M11 12h5" /><path d="M8 16h.01" /><path d="M11 16h5" /></svg>
+            </span>
+            <span>意图节点</span>
+            <strong>{{ isLoadingIntents ? '...' : metricText(intentNodes.length) }}</strong>
+          </article>
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16" /><path d="M7 12h10" /><path d="M10 18h4" /><path d="M6 6l4 6v5" /><path d="M18 6l-4 6v5" /></svg>
+            </span>
+            <span>过滤结果</span>
+            <strong>{{ metricText(filteredIntentNodes.length) }}</strong>
+          </article>
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3" /><path d="M8 12l2.5 2.5L16 9" /></svg>
+            </span>
+            <span>启用节点</span>
+            <strong>{{ metricText(intentEnabledCount) }}</strong>
+          </article>
+        </div>
+
+        <section class="kc-table-card">
+          <div class="kc-card-toolbar">
+            <div>
+              <strong>意图列表</strong>
+              <small>扁平视图，适合快速维护</small>
+            </div>
+            <div class="kc-toolbar-actions">
+              <input v-model="intentKeyword" type="search" placeholder="搜索编码、名称、路径或资源" />
+              <select v-model="intentKindFilter">
+                <option value="ALL">全部类型</option>
+                <option value="KB">知识库</option>
+                <option value="MCP">MCP 工具</option>
+                <option value="SYSTEM">系统直答</option>
+              </select>
+              <select v-model="intentLevelFilter">
+                <option value="ALL">全部层级</option>
+                <option value="DOMAIN">领域</option>
+                <option value="CATEGORY">分类</option>
+                <option value="TOPIC">主题</option>
+              </select>
+              <button type="button" class="kc-primary-button" @click="openCreateIntentNodeModal()">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
+                <span>新增节点</span>
+              </button>
+            </div>
+          </div>
+          <div class="kc-table-head intent-grid">
+            <span>节点</span>
+            <span>路径</span>
+            <span>层级</span>
+            <span>类型</span>
+            <span>资源</span>
+            <span>状态</span>
+            <span>操作</span>
+          </div>
+          <div class="kc-table-body">
+            <div v-for="node in filteredIntentNodes" :key="node.id" class="kc-table-row intent-grid">
+              <span>
+                <strong>{{ node.name }}</strong>
+                <small>{{ node.nodeCode }}</small>
+              </span>
+              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, node.fullPath)" @mouseleave="clearOverflowTooltip">
+                <span class="kc-tooltip-content">{{ node.fullPath }}</span>
+              </span>
+              <span>{{ intentLevelLabel(node.level) }}</span>
+              <span class="kc-tag">{{ intentKindLabel(node.kind) }}</span>
+              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, node.collectionName || node.mcpToolId || '-')" @mouseleave="clearOverflowTooltip">
+                <span class="kc-tooltip-content">{{ node.collectionName || node.mcpToolId || '-' }}</span>
+              </span>
+              <span class="kc-status" :class="node.enabled ? 'success' : 'muted'">{{ node.enabled ? '启用' : '禁用' }}</span>
+              <span class="kc-row-actions compact">
+                <button type="button" @click="selectIntentNode(node); navigateTo('/admin/intent-tree')">查看</button>
+                <button type="button" @click="openEditIntentNodeModal(node)">编辑</button>
+                <button type="button" @click="toggleIntentNodeEnabled(node)">{{ node.enabled ? '禁用' : '启用' }}</button>
+                <button type="button" class="danger" @click="openDeleteIntentNodeDialog(node)">删除</button>
+              </span>
+            </div>
+          </div>
+          <p v-if="!isLoadingIntents && filteredIntentNodes.length === 0" class="kc-empty">没有匹配的意图节点。</p>
+        </section>
+      </section>
+
+      <section v-else-if="activeModule === 'intent-rules'" class="admin-section kc-content intent-module intent-rules-module">
+        <div class="kc-metric-grid knowledge-metrics">
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10" /><path d="M18 7h2" /><path d="M4 12h3" /><path d="M11 12h9" /><path d="M4 17h8" /><path d="M16 17h4" /><circle cx="16" cy="7" r="2" /><circle cx="9" cy="12" r="2" /><circle cx="14" cy="17" r="2" /></svg>
+            </span>
+            <span>规则数</span>
+            <strong>{{ isLoadingIntents ? '...' : metricText(intentRules.length) }}</strong>
+          </article>
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3" /><path d="M8 12l2.5 2.5L16 9" /></svg>
+            </span>
+            <span>启用规则</span>
+            <strong>{{ metricText(intentRuleEnabledCount) }}</strong>
+          </article>
+          <article class="kc-metric-card icon-card">
+            <span class="kc-metric-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16" /><path d="M7 12h10" /><path d="M10 18h4" /><path d="M6 6l4 6v5" /><path d="M18 6l-4 6v5" /></svg>
+            </span>
+            <span>过滤结果</span>
+            <strong>{{ metricText(filteredIntentRules.length) }}</strong>
+          </article>
+        </div>
+
+        <section class="kc-table-card">
+          <div class="kc-card-toolbar">
+            <div>
+              <strong>规则配置</strong>
+              <small>规则命中后进入强路由或缩小 LLM 候选范围</small>
+            </div>
+            <div class="kc-toolbar-actions">
+              <input v-model="intentRuleKeyword" type="search" placeholder="搜索规则、目标节点或关键词" />
+              <select v-model="intentRuleTypeFilter">
+                <option value="ALL">全部规则</option>
+                <option value="STRONG">强规则</option>
+                <option value="WEAK">弱规则</option>
+              </select>
+              <button type="button" class="kc-primary-button" @click="openCreateIntentRuleModal()">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
+                <span>新增规则</span>
+              </button>
+            </div>
+          </div>
+          <div class="kc-table-head intent-rule-grid">
+            <span>规则</span>
+            <span>目标节点</span>
+            <span>类型</span>
+            <span>关键词</span>
+            <span>分数</span>
+            <span>状态</span>
+            <span>操作</span>
+          </div>
+          <div class="kc-table-body">
+            <div v-for="rule in filteredIntentRules" :key="rule.id" class="kc-table-row intent-rule-grid">
+              <span>
+                <strong>{{ rule.name }}</strong>
+                <small>{{ rule.ruleCode }}</small>
+              </span>
+              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, rule.targetNodePath || rule.targetNodeCode)" @mouseleave="clearOverflowTooltip">
+                <span class="kc-tooltip-content">{{ rule.targetNodePath || rule.targetNodeCode }}</span>
+              </span>
+              <span class="kc-tag">{{ intentRuleTypeLabel(rule.ruleType) }}</span>
+              <span class="intent-rule-keywords">
+                <small>包含 {{ intentMatchModeLabel(rule.includeMatchMode) }}：{{ (rule.includeKeywords || []).join(' / ') || '-' }}</small>
+                <small>必要 {{ intentMatchModeLabel(rule.requireMatchMode) }}：{{ (rule.requireKeywords || []).join(' / ') || '-' }}</small>
+                <small>排除：{{ (rule.excludeKeywords || []).join(' / ') || '-' }}</small>
+              </span>
+              <span>{{ rule.score }}</span>
+              <span class="kc-status" :class="rule.enabled ? 'success' : 'muted'">{{ rule.enabled ? '启用' : '禁用' }}</span>
+              <span class="kc-row-actions compact">
+                <button type="button" @click="openEditIntentRuleModal(rule)">编辑</button>
+                <button type="button" @click="toggleIntentRuleEnabled(rule)">{{ rule.enabled ? '禁用' : '启用' }}</button>
+                <button type="button" class="danger" @click="openDeleteIntentRuleDialog(rule)">删除</button>
+              </span>
+            </div>
+          </div>
+          <p v-if="!isLoadingIntents && filteredIntentRules.length === 0" class="kc-empty">没有匹配的意图规则。</p>
+        </section>
+      </section>
+
       <section v-else class="admin-section kc-content">
         <template v-if="currentView === 'bases'">
           <div class="kc-metric-grid knowledge-metrics">
@@ -2927,6 +3869,187 @@ function documentChunkActionLabel(document) {
       </section>
     </div>
 
+    <div v-if="isIntentNodeModalOpen" class="kc-modal-backdrop" @click.self="closeIntentNodeModal">
+      <section class="kc-modal intent-node-modal">
+        <header>
+          <div>
+            <h2>{{ editingIntentNode ? '编辑意图节点' : '新增意图节点' }}</h2>
+            <p>{{ editingIntentNode ? editingIntentNode.fullPath : '配置一个可被规则或 LLM 路由的节点' }}</p>
+          </div>
+          <button type="button" class="kc-icon-button" aria-label="关闭" :disabled="isSavingIntentNode" @click="closeIntentNodeModal">×</button>
+        </header>
+        <form class="kc-form" @submit.prevent="submitIntentNodeForm">
+          <p v-if="intentNodeFormError" class="kc-form-error">{{ intentNodeFormError }}</p>
+          <div class="intent-form-grid">
+            <label>
+              <span>节点编码</span>
+              <input v-model="intentNodeForm.nodeCode" type="text" placeholder="logistics-tracking" />
+            </label>
+            <label>
+              <span>父节点编码</span>
+              <input v-model="intentNodeForm.parentCode" type="text" placeholder="为空表示根节点" />
+            </label>
+            <label>
+              <span>节点名称</span>
+              <input v-model="intentNodeForm.name" type="text" placeholder="物流轨迹查询" />
+            </label>
+            <label>
+              <span>排序</span>
+              <input v-model.number="intentNodeForm.sortOrder" type="number" />
+            </label>
+            <label>
+              <span>层级</span>
+              <select v-model="intentNodeForm.level">
+                <option value="DOMAIN">领域</option>
+                <option value="CATEGORY">分类</option>
+                <option value="TOPIC">主题</option>
+              </select>
+            </label>
+            <label>
+              <span>类型</span>
+              <select v-model="intentNodeForm.kind">
+                <option value="KB">知识库</option>
+                <option value="MCP">MCP 工具</option>
+                <option value="SYSTEM">系统直答</option>
+              </select>
+            </label>
+            <label>
+              <span>TopK</span>
+              <input v-model.number="intentNodeForm.topK" type="number" min="1" placeholder="全局默认" />
+            </label>
+            <label>
+              <span>最低分</span>
+              <input v-model.number="intentNodeForm.minScore" type="number" min="0" max="1" step="0.01" placeholder="0.35" />
+            </label>
+          </div>
+          <label>
+            <span>语义描述</span>
+            <textarea v-model="intentNodeForm.description" rows="3" placeholder="说明这个节点覆盖哪些问题"></textarea>
+          </label>
+          <label>
+            <span>示例问题</span>
+            <textarea v-model="intentNodeForm.examplesText" rows="3" placeholder="一行一个示例问题"></textarea>
+          </label>
+          <div class="intent-form-grid">
+            <label>
+              <span>知识库编号</span>
+              <input v-model="intentNodeForm.knowledgeBaseNo" type="text" placeholder="绑定已有知识库时填写" />
+            </label>
+            <label>
+              <span>Collection</span>
+              <input v-model="intentNodeForm.collectionName" type="text" placeholder="kb_logistics_tracking" />
+            </label>
+            <label>
+              <span>MCP Tool ID</span>
+              <input v-model="intentNodeForm.mcpToolId" type="text" placeholder="logistics-tracking-tool" />
+            </label>
+          </div>
+          <label>
+            <span>Prompt 片段</span>
+            <textarea v-model="intentNodeForm.promptSnippet" rows="2" placeholder="可选，命中后注入回答规则"></textarea>
+          </label>
+          <label>
+            <span>参数提取 Prompt</span>
+            <textarea v-model="intentNodeForm.paramPromptTemplate" rows="2" placeholder="MCP 节点可选，用于提取工具参数"></textarea>
+          </label>
+          <label class="pipeline-switch-row compact">
+            <span>
+              <strong>启用节点</strong>
+              <small>禁用后不会参与意图识别</small>
+            </span>
+            <input v-model="intentNodeForm.enabled" type="checkbox" />
+            <i class="pipeline-switch" aria-hidden="true"></i>
+          </label>
+          <footer>
+            <button type="button" class="kc-ghost-button" :disabled="isSavingIntentNode" @click="closeIntentNodeModal">取消</button>
+            <button type="submit" class="kc-primary-button" :disabled="!canSubmitIntentNode">
+              {{ isSavingIntentNode ? '保存中...' : '保存节点' }}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+
+    <div v-if="isIntentRuleModalOpen" class="kc-modal-backdrop" @click.self="closeIntentRuleModal">
+      <section class="kc-modal intent-node-modal">
+        <header>
+          <div>
+            <h2>{{ editingIntentRule ? '编辑意图规则' : '新增意图规则' }}</h2>
+            <p>配置命中关键词，替代代码中的业务 if 判断</p>
+          </div>
+          <button type="button" class="kc-icon-button" aria-label="关闭" :disabled="isSavingIntentRule" @click="closeIntentRuleModal">×</button>
+        </header>
+        <form class="kc-form" @submit.prevent="submitIntentRuleForm">
+          <p v-if="intentRuleFormError" class="kc-form-error">{{ intentRuleFormError }}</p>
+          <div class="intent-form-grid">
+            <label>
+              <span>规则编码</span>
+              <input v-model="intentRuleForm.ruleCode" type="text" placeholder="logistics-tracking-strong" />
+            </label>
+            <label>
+              <span>规则名称</span>
+              <input v-model="intentRuleForm.name" type="text" placeholder="物流轨迹强命中" />
+            </label>
+            <label>
+              <span>目标节点编码</span>
+              <input v-model="intentRuleForm.targetNodeCode" type="text" placeholder="logistics-tracking" />
+            </label>
+            <label>
+              <span>规则类型</span>
+              <select v-model="intentRuleForm.ruleType">
+                <option value="STRONG">强规则</option>
+                <option value="WEAK">弱规则</option>
+              </select>
+            </label>
+            <label>
+              <span>分数</span>
+              <input v-model.number="intentRuleForm.score" type="number" min="0" max="1" step="0.01" />
+            </label>
+          </div>
+          <label>
+            <span>规则描述</span>
+            <textarea v-model="intentRuleForm.description" rows="2" placeholder="说明这条规则覆盖什么表达"></textarea>
+          </label>
+          <div class="intent-rule-form-grid">
+            <label>
+              <span>包含关键词</span>
+              <select v-model="intentRuleForm.includeMatchMode">
+                <option value="ANY">任一命中</option>
+                <option value="ALL">全部命中</option>
+              </select>
+              <textarea v-model="intentRuleForm.includeKeywordsText" rows="5" placeholder="一行一个，例如：&#10;快递&#10;包裹&#10;物流"></textarea>
+            </label>
+            <label>
+              <span>必要关键词</span>
+              <select v-model="intentRuleForm.requireMatchMode">
+                <option value="ANY">任一命中</option>
+                <option value="ALL">全部命中</option>
+              </select>
+              <textarea v-model="intentRuleForm.requireKeywordsText" rows="5" placeholder="一行一个，例如：&#10;到哪&#10;在哪&#10;进度"></textarea>
+            </label>
+            <label>
+              <span>排除关键词</span>
+              <textarea v-model="intentRuleForm.excludeKeywordsText" rows="7" placeholder="一行一个，例如：&#10;运费&#10;清关"></textarea>
+            </label>
+          </div>
+          <label class="pipeline-switch-row compact">
+            <span>
+              <strong>启用规则</strong>
+              <small>禁用后不会参与规则路由</small>
+            </span>
+            <input v-model="intentRuleForm.enabled" type="checkbox" />
+            <i class="pipeline-switch" aria-hidden="true"></i>
+          </label>
+          <footer>
+            <button type="button" class="kc-ghost-button" :disabled="isSavingIntentRule" @click="closeIntentRuleModal">取消</button>
+            <button type="submit" class="kc-primary-button" :disabled="!canSubmitIntentRule">
+              {{ isSavingIntentRule ? '保存中...' : '保存规则' }}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+
     <Teleport to="body">
       <Transition name="delete-dialog">
         <div
@@ -2998,6 +4121,162 @@ function documentChunkActionLabel(document) {
                 @click="confirmDeleteMapping"
               >
                 {{ isDeletingMapping ? '删除中...' : '删除映射' }}
+              </button>
+            </div>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <Teleport to="body">
+      <Transition name="delete-dialog">
+        <div
+          v-if="deleteIntentNodeDialog.open"
+          class="delete-dialog-backdrop"
+          @click.self="closeDeleteIntentNodeDialog"
+        >
+          <section
+            class="delete-dialog-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="intent-delete-dialog-title"
+            aria-describedby="intent-delete-dialog-description"
+          >
+            <button
+              type="button"
+              class="delete-dialog-close"
+              aria-label="关闭删除确认"
+              :disabled="isDeletingIntentNode"
+              @click="closeDeleteIntentNodeDialog"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6l12 12" />
+                <path d="M18 6L6 18" />
+              </svg>
+            </button>
+
+            <div class="delete-dialog-hero" aria-hidden="true">
+              <span class="delete-dialog-icon">
+                <svg viewBox="0 0 24 24">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4h8v2" />
+                  <path d="M19 6l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                </svg>
+              </span>
+            </div>
+
+            <div class="delete-dialog-copy">
+              <p class="delete-dialog-eyebrow">危险操作</p>
+              <h2 id="intent-delete-dialog-title">删除这个意图节点？</h2>
+              <p id="intent-delete-dialog-description">
+                删除后该节点不会再参与路由；如果它还有子节点，服务端会拒绝这次操作。
+              </p>
+            </div>
+
+            <div class="delete-dialog-target">
+              <span>将被删除</span>
+              <strong>{{ deleteIntentNodeDialog.node?.fullPath || deleteIntentNodeDialog.node?.name }}</strong>
+            </div>
+
+            <p v-if="deleteIntentNodeError" class="delete-dialog-error">
+              {{ deleteIntentNodeError }}
+            </p>
+
+            <div class="delete-dialog-actions">
+              <button
+                type="button"
+                class="delete-dialog-secondary"
+                :disabled="isDeletingIntentNode"
+                autofocus
+                @click="closeDeleteIntentNodeDialog"
+              >
+                先留着
+              </button>
+              <button
+                type="button"
+                class="delete-dialog-danger"
+                :disabled="isDeletingIntentNode"
+                @click="confirmDeleteIntentNode"
+              >
+                {{ isDeletingIntentNode ? '删除中...' : '删除节点' }}
+              </button>
+            </div>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <Teleport to="body">
+      <Transition name="delete-dialog">
+        <div
+          v-if="deleteIntentRuleDialog.open"
+          class="delete-dialog-backdrop"
+          @click.self="closeDeleteIntentRuleDialog"
+        >
+          <section
+            class="delete-dialog-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="intent-rule-delete-dialog-title"
+            aria-describedby="intent-rule-delete-dialog-description"
+          >
+            <button
+              type="button"
+              class="delete-dialog-close"
+              aria-label="关闭删除确认"
+              :disabled="isDeletingIntentRule"
+              @click="closeDeleteIntentRuleDialog"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6l12 12" />
+                <path d="M18 6L6 18" />
+              </svg>
+            </button>
+
+            <div class="delete-dialog-hero" aria-hidden="true">
+              <span class="delete-dialog-icon">
+                <svg viewBox="0 0 24 24">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4h8v2" />
+                  <path d="M19 6l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                </svg>
+              </span>
+            </div>
+
+            <div class="delete-dialog-copy">
+              <p class="delete-dialog-eyebrow">危险操作</p>
+              <h2 id="intent-rule-delete-dialog-title">删除这条意图规则？</h2>
+              <p id="intent-rule-delete-dialog-description">
+                删除后这条规则不会再参与强路由或候选缩小，缓存会在事务提交后重建。
+              </p>
+            </div>
+
+            <div class="delete-dialog-target">
+              <span>将被删除</span>
+              <strong>{{ deleteIntentRuleDialog.rule?.name || deleteIntentRuleDialog.rule?.ruleCode }}</strong>
+            </div>
+
+            <p v-if="deleteIntentRuleError" class="delete-dialog-error">
+              {{ deleteIntentRuleError }}
+            </p>
+
+            <div class="delete-dialog-actions">
+              <button
+                type="button"
+                class="delete-dialog-secondary"
+                :disabled="isDeletingIntentRule"
+                autofocus
+                @click="closeDeleteIntentRuleDialog"
+              >
+                先留着
+              </button>
+              <button
+                type="button"
+                class="delete-dialog-danger"
+                :disabled="isDeletingIntentRule"
+                @click="confirmDeleteIntentRule"
+              >
+                {{ isDeletingIntentRule ? '删除中...' : '删除规则' }}
               </button>
             </div>
           </section>

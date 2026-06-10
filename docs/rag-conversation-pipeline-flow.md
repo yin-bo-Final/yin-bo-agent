@@ -1,6 +1,6 @@
 # RAG 会话流水线流程
 
-这份文档统一说明 AI 会话从前端发起到后端生成响应的完整流水线，并把会话记忆压缩流程放在同一条链路里。当前代码已经完成直聊、会话记忆加载、自动 / 手动压缩、查询改写、空检索兜底和流式输出；意图识别、RAG 检索、MCP 工具调用和 grounded prompt 生成仍是后续扩展点。
+这份文档统一说明 AI 会话从前端发起到后端生成响应的完整流水线，并把会话记忆压缩流程放在同一条链路里。当前代码已经完成直聊、会话记忆加载、自动 / 手动压缩、查询改写、意图识别树、歧义引导、空检索兜底和流式输出；RAG 检索、MCP 工具调用和 grounded prompt 生成仍是后续扩展点。
 
 ## 总体链路
 
@@ -29,7 +29,7 @@ ConversationPage
 | 4 | 保存本轮 user 消息 | 当前问题先落库，再加入上下文消息列表 | `ChatMessagePersistenceService` |
 | 5 | 准备 Prompt 记忆 | 判断是否自动压缩，生成 `promptConversationMessages` | `ConversationMemoryCompressionService` |
 | 6 | 查询改写 | 术语统一、LLM 语义改写、问题拆分、容错解析、降级和记录 | `QueryRewriteService`、`TerminologyNormalizationService`、`QueryRewriteResultParser` |
-| 7 | 意图识别 | 当前占位，默认 `DIRECT_CHAT` | `IntentResolutionService` |
+| 7 | 意图识别 | 规则优先命中叶子节点；弱规则缩小候选；LLM 对候选叶子打分；总量封顶并检测歧义 | `IntentResolutionService`、`RuleIntentRouter`、`IntentClassifier` |
 | 8 | 歧义引导 | 如果需要澄清，短路返回引导语 | `ClarificationService` |
 | 9 | 直聊短路 | `DIRECT_CHAT` 不进入 RAG，直接调用 LLM | `DirectChatService` |
 | 10 | 多通道检索 | 当前返回空结果占位，后续接知识库和 MCP 工具 | `RetrievalExecuteService` |
@@ -73,7 +73,7 @@ prepareRequest(ctx)
 -> 保存 assistant 消息
 ```
 
-当前 `RetrievalExecuteService.retrieve(...)` 仍返回 `RetrievalContext.empty()`，所以非直聊意图会走空检索兜底；`streamGroundedResponse(...)` 和 `generateGroundedResponse(...)` 也还是占位。
+当前 `RetrievalExecuteService.retrieve(...)` 仍返回 `RetrievalContext.empty()`，所以 KB / MCP / RAG_AND_TOOL 意图会走空检索兜底；`streamGroundedResponse(...)` 和 `generateGroundedResponse(...)` 也还是占位。
 
 ## RAG 后续接入点
 
@@ -187,6 +187,88 @@ LLM 关闭、调用超时、模型异常或 JSON 解析失败时，不中断会�
 ```
 
 最终结果写入 `ctx.rewriteResult`，供后续意图识别、检索和工具路由使用。中间产物会写入 `chat_query_rewrite_record`，用于后续 RAG 命中率评估、Prompt 调优和问题回放；它不会写入 `chat_message`，不会污染真实会话历史。
+
+## 意图识别树
+
+意图识别发生在查询改写之后、歧义引导之前。它不是简单的四分类，而是把用户问题路由到可执行的叶子节点：KB 知识库、MCP 工具或 SYSTEM 系统交互。
+
+```text
+ctx.rewriteResult.subQuestions
+-> RuleIntentRouter
+   -> 强规则命中叶子：直接返回 NodeScore，不调用 LLM
+   -> 弱规则命中领域：缩小候选叶子范围
+   -> 未命中规则：使用全部启用叶子
+-> IntentClassifier
+   -> LLM 给候选叶子节点打分
+   -> IntentClassificationParser 容错解析 JSON
+-> 分数过滤 + 单问题数量限制
+-> capTotalIntents 总量封顶
+-> detectAmbiguity 歧义检测
+-> 写入 ctx.intentResult / ctx.intents / ctx.ambiguous
+```
+
+多个子问题会提交到 `intentClassifyExecutor` 专用线程池并行识别，`classify-timeout-ms` 是本轮意图分类等待上限。超时或异常的子问题会降级为空意图，不会阻塞其他子问题；LLM 分类器本身不再使用 Java common pool，避免慢模型调用影响其他异步任务。
+
+强规则来自 `chat_intent_rule`，用于高确定性表达，例如：
+
+| 用户问题 | 结果 |
+| --- | --- |
+| `我的快递到哪了？` | 直接命中 `物流与配送 > 物流轨迹查询`，类型 `MCP` |
+| `你好` | 直接命中 `系统交互 > 欢迎与问候`，类型 `SYSTEM` |
+| `你是谁？` | 直接命中 `系统交互 > 关于助手`，类型 `SYSTEM` |
+
+弱规则只缩小范围，不直接决定最终叶子。例如 `运费怎么算` 会缩到物流相关叶子，再由 LLM 判断是国内运费规则还是跨境运费计算；如果两个高分候选分数接近，会设置 `ctx.ambiguous = true`，由 `ClarificationService` 短路返回引导问题。
+
+规则内容不写死在 Java 代码里。`RuleIntentRouter` 只负责通用匹配引擎，规则由数据库和后台维护：
+
+| 字段 | 说明 |
+| --- | --- |
+| `target_node_code` | 命中后指向的意图节点，强规则应指向叶子节点，弱规则可以指向 DOMAIN / CATEGORY |
+| `rule_type` | `STRONG` 直接返回 `NodeScore`；`WEAK` 只展开候选叶子 |
+| `include_keywords_json` | 包含词组，支持 `ANY` / `ALL` |
+| `require_keywords_json` | 必要词组，支持 `ANY` / `ALL` |
+| `exclude_keywords_json` | 排除词组，任一命中则规则失效 |
+| `score` | 强规则命中后的分数 |
+
+规则读取也使用 Redis 旁路缓存：
+
+```text
+Redis key: yinbo:agent:chat:intent-rules:v1
+-> 命中：反序列化启用规则快照
+-> 未命中：查询 chat_intent_rule enabled=true
+-> 写回 Redis
+```
+
+后台新增、修改、启停、删除规则后，会在事务提交后清理规则缓存。
+
+意图树使用 `chat_intent_node` 表持久化。数据库存扁平行，运行时通过 `parent_code` 组装树，Redis 缓存启用状态的整棵树：
+
+```text
+Redis key: yinbo:agent:chat:intent-tree:v1
+-> 命中：反序列化 IntentNode roots
+-> 未命中：查询 chat_intent_node enabled=true
+-> 组装 roots / allNodes / leafNodes / nodeById
+-> 写回 Redis
+```
+
+后台意图节点新增、修改、启停、删除后会在事务提交后清理缓存。禁用父节点时会递归禁用子节点，避免出现“父节点停用但叶子节点仍参与匹配”的不一致。
+
+如果节点已经被 `chat_intent_rule.target_node_code` 引用，后台会拒绝修改该节点的 `node_code`，也会拒绝删除该节点。这样可以避免规则仍命中旧编码、但运行时找不到目标节点的静默路由失败。
+
+关键配置位于 `app.chat.intent`：
+
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 是否启用意图识别 |
+| `llm-enabled` | `true` | 是否允许 LLM 对叶子节点打分 |
+| `min-score` | `0.35` | 代码侧最低保留分数 |
+| `ambiguity-min-score` | `0.55` | 歧义候选最低分 |
+| `ambiguity-score-gap` | `0.08` | 两个高分候选最大分差 |
+| `max-intents` | `3` | 下游最多保留的意图总数 |
+| `classify-timeout-ms` | `3000` | 意图分类 LLM 超时 |
+| `cache-ttl` | `60m` | 意图树 Redis 快照 TTL |
+
+LLM 分类失败不会触发歧义引导。异常属于系统问题，会降级为空意图或规则强命中结果；歧义引导只用于用户表达本身不明确的情况。
 
 ## 会话记忆压缩
 
@@ -407,7 +489,7 @@ POST /api/conversations/{conversationId}/memory/compress
 | `chat/flow/memory/ConversationMemoryService.java` | 加载完整历史消息 |
 | `chat/flow/memory/ConversationMemoryCompressionService.java` | 自动 / 手动压缩，构建 Prompt 记忆视图 |
 | `chat/flow/query/QueryRewriteService.java` | 查询改写和子问题拆分占位 |
-| `chat/flow/intent/IntentResolutionService.java` | 意图识别占位 |
+| `chat/flow/intent/IntentResolutionService.java` | 意图识别编排 |
 | `chat/flow/clarification/ClarificationService.java` | 歧义引导占位 |
 | `chat/flow/retrieval/RetrievalExecuteService.java` | 多通道检索占位 |
 | `chat/flow/retrieval/RetrievalContext.java` | 检索结果上下文 |

@@ -83,7 +83,7 @@ RAG 文档入库链路：
 - 前端 Chat 模型选择
 - Chat / Embedding / Rerank 模型由 ai-infra 的 `app.ai` 配置驱动，支持供应商、候选模型、优先级、熔断和故障转移
 - 普通响应和 SSE 流式响应
-- 会话生成已拆成 `ConversationFlowExecutor` 编排器和 `chat/flow` 分层阶段服务，查询改写已接入“术语统一 + LLM 改写/问题拆分 + 容错解析 + 降级记录”，意图识别、歧义引导、RAG 检索和工具调用继续作为后续扩展点
+- 会话生成已拆成 `ConversationFlowExecutor` 编排器和 `chat/flow` 分层阶段服务，查询改写已接入“术语统一 + LLM 改写/问题拆分 + 容错解析 + 降级记录”，意图识别已接入“规则优先 + 意图树叶子打分 + 总量封顶 + 歧义引导”，RAG 检索和工具调用继续作为后续扩展点
 - 查询改写前会先使用术语表进行关键词映射，术语表由 PostgreSQL 维护并通过 Redis 旁路缓存整份启用快照；管理员可在后台维护关键词映射并开关 LLM 语义改写
 - 会话记忆支持自动上下文压缩和手动压缩，Prompt 使用“头部原文 + 历史摘要 + 最近窗口原文”，原始消息仍完整保存在 `chat_message`
 - 前端输入框显示上下文 token 使用圆环，并提供手动压缩按钮；压缩中消息列表显示分割线且禁止继续发送，接近 90% 上下文时会展示自动压缩提示，最终以服务端返回的摘要水位线为准
@@ -102,6 +102,8 @@ RAG 文档入库链路：
 - 分块支持查看、编辑、删除、启用、禁用、批量启用、批量禁用
 - 失败入库任务支持查看失败原因、重试次数和手动重试
 - 查询预处理后台支持关键词映射管理和 Pipeline 配置，可关闭 LLM 语义改写并保留术语统一兜底
+- 意图管理后台支持意图树配置、扁平意图列表和规则配置，管理员可以配置 KB / MCP / SYSTEM 节点及强弱规则；节点被规则引用时禁止改编码或删除，避免规则路由静默失效
+- 意图管理三页使用独立图标区分树、列表和规则，同时复用后台现有卡片、表格、弹窗和低饱和状态样式
 - 后台导航栏支持折叠，整体样式遵循项目自己的灰色工程风格
 
 后台路由：
@@ -114,6 +116,9 @@ RAG 文档入库链路：
 /admin/tasks/failed
 /admin/mappings
 /admin/pipeline
+/admin/intent-tree
+/admin/intent-list
+/admin/intent-rules
 ```
 
 ### Ingestion 流水线
@@ -449,12 +454,25 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 | `DELETE` | `/api/admin/query/terminology/mappings/{aliasId}` | 删除关键词映射 |
 | `GET` | `/api/admin/query/pipeline/config` | 查询查询预处理 Pipeline 配置 |
 | `PATCH` | `/api/admin/query/pipeline/config` | 更新查询预处理 Pipeline 配置 |
+| `GET` | `/api/admin/intents/tree` | 查询意图树 |
+| `GET` | `/api/admin/intents/nodes` | 查询扁平意图节点列表 |
+| `POST` | `/api/admin/intents/nodes` | 新增意图节点 |
+| `PATCH` | `/api/admin/intents/nodes/{nodeId}` | 修改意图节点 |
+| `PATCH` | `/api/admin/intents/nodes/{nodeId}/enabled` | 启用或禁用意图节点 |
+| `DELETE` | `/api/admin/intents/nodes/{nodeId}` | 删除意图节点 |
+| `GET` | `/api/admin/intents/rules` | 查询意图规则 |
+| `POST` | `/api/admin/intents/rules` | 新增意图规则 |
+| `PATCH` | `/api/admin/intents/rules/{ruleId}` | 修改意图规则 |
+| `PATCH` | `/api/admin/intents/rules/{ruleId}/enabled` | 启用或禁用意图规则 |
+| `DELETE` | `/api/admin/intents/rules/{ruleId}` | 删除意图规则 |
 
 ## 数据表
 
-当前使用 Flyway 管理数据库结构，迁移脚本位于 [backend/src/main/resources/db/migration](backend/src/main/resources/db/migration)。`V1__init_schema.sql` 负责初始化业务表、pgvector 扩展、向量表和 HNSW 索引，后续 `V2` 到 `V5` 继续补充入库任务表、Dashboard 趋势查询索引和会话记忆摘要表。
+当前使用 Flyway 管理数据库结构，迁移脚本位于 [backend/src/main/resources/db/migration](backend/src/main/resources/db/migration)。`V1__init_schema.sql` 负责初始化业务表、pgvector 扩展、向量表和 HNSW 索引，后续迁移继续补充入库任务表、Dashboard 趋势查询索引、会话记忆摘要、查询预处理流水线、意图树节点表和意图规则表。
 
 为了兼容已经存在的本地数据库，`application.yml` 开启了 `spring.flyway.baseline-on-migrate=true`，并把 `baseline-version` 设置为 `0`。这样老库首次切换到 Flyway 时会先建立 `flyway_schema_history`，再执行 `V1` 中的幂等 DDL；新库则会直接从 `V1` 开始迁移。
+
+已经执行过的 Flyway 迁移文件不要再改内容。比如意图规则早期在 `V9__create_chat_intent_rule.sql` 中带过 `priority` 字段，后续删除该字段时使用 `V10__drop_chat_intent_rule_priority.sql` 演进结构，避免本地或测试数据库出现 checksum mismatch。
 
 | 表 | 说明 |
 | --- | --- |
@@ -466,6 +484,8 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 | `chat_terminology_alias` | 查询预处理术语别名和关键词映射 |
 | `chat_query_rewrite_record` | 语义改写、子问题拆分和降级记录 |
 | `chat_pipeline_config` | 查询预处理 Pipeline 开关和降级策略 |
+| `chat_intent_node` | 意图树节点、叶子路由目标、示例问题和节点级检索配置 |
+| `chat_intent_rule` | 可配置意图规则、关键词条件、目标节点和命中分数 |
 | `knowledge_base` | 知识库、Embedding 模型、collection |
 | `knowledge_document` | 文档元数据、RustFS 对象信息、状态、耗时 |
 | `knowledge_chunk` | 分块内容、启用状态、token 数、字符数、向量文档 ID |
@@ -486,9 +506,10 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 - 模型调用不要散落在业务 Service 中，backend 只通过 `AiInfraClient` 调 ai-infra；HTTP 契约放在 `ai-api`，模型供应商实现只放在 `ai-infra`。
 - 会话编排不要继续堆进 `ChatService`，新增查询改写、意图识别、歧义引导、RAG 检索或工具调用时优先扩展 `chat/flow` 下对应子包服务，并通过 `ChatExecutionContext` 传递阶段结果。
 - 查询改写结果写入 `ctx.rewriteResult`，只作为当前流水线中间产物，不写入 `chat_message`；如需评估和回放，写入 `chat_query_rewrite_record`。
+- 意图识别结果写入 `ctx.intentResult`，强规则可直接命中叶子节点，弱规则只缩小候选范围；多个子问题通过专用线程池并行分类，规则内容放在 `chat_intent_rule` 并可由后台维护。LLM 分类失败只降级，不要当成用户歧义；歧义只用于多个高分候选语义接近的情况。
 - RAG 会话流水线和记忆压缩流程见 [docs/rag-conversation-pipeline-flow.md](docs/rag-conversation-pipeline-flow.md)，压缩只写 `conversation_memory_summary`，不要删除或覆盖 `chat_message` 原始消息。
 - 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
-- 数据库结构变更必须新增 Flyway 迁移脚本。
+- 数据库结构变更必须新增 Flyway 迁移脚本；已经执行过的迁移文件不能直接改内容，否则会触发 Flyway checksum 校验失败。
 - 上传文件大小默认限制为单文件 `200MB`；gateway 会先拦截超过 `200MB` 的上传请求，service multipart 和前端 Nginx 单请求默认上限为 `220MB`。
 - 原始文件只进 RustFS，不把大文件二进制塞进 PostgreSQL。
 - 分块文本改动后必须重建向量，否则 pgvector 中仍是旧文本语义。

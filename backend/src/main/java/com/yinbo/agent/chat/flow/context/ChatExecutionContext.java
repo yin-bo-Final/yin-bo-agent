@@ -7,6 +7,7 @@ import com.yinbo.agent.chat.dto.ChatResponse;
 import com.yinbo.agent.chat.entity.ChatConversation;
 import com.yinbo.agent.chat.entity.ChatMessageEntity;
 import com.yinbo.agent.chat.entity.ConversationMemorySummary;
+import com.yinbo.agent.chat.flow.intent.model.IntentResolveResult;
 import com.yinbo.agent.chat.flow.query.QueryRewriteResult;
 import com.yinbo.agent.chat.service.ChatMessageCacheService.CachedChatMessage;
 import com.yinbo.ai.api.model.ModelOption;
@@ -33,6 +34,7 @@ public class ChatExecutionContext {
     private String rewrittenQuery;
     private List<String> subQueries = List.of();
     private List<ChatIntentType> intents = List.of();
+    private IntentResolveResult intentResult;
     private boolean ambiguous;
     private String guidanceQuestion;
     private ChatResponse chatResponse;
@@ -177,6 +179,14 @@ public class ChatExecutionContext {
 
     public boolean hasIntent(ChatIntentType intent) {
         return intents.contains(intent);
+    }
+
+    public IntentResolveResult intentResult() {
+        return intentResult;
+    }
+
+    public void setIntentResult(IntentResolveResult intentResult) {
+        this.intentResult = intentResult;
     }
 
     public boolean ambiguous() {

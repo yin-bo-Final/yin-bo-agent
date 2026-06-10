@@ -106,13 +106,15 @@ ConversationPage
 | `chat_terminology_alias` | `chat`              | 查询预处理别名、关键词映射                    |
 | `chat_query_rewrite_record` | `chat`          | 查询改写、拆分、降级和模型原始响应记录             |
 | `chat_pipeline_config` | `chat`              | 查询预处理 Pipeline 开关和降级策略             |
+| `chat_intent_node`     | `chat`              | 意图树节点、叶子路由目标、示例问题和节点级检索配置    |
+| `chat_intent_rule`     | `chat`              | 可配置意图规则、关键词条件、目标节点和命中分数       |
 | `knowledge_base`         | `knowledge`               | 知识库名称、collection、Embedding 模型 |
 | `knowledge_document`     | `ingestion` / `knowledge` | 文档元数据、RustFS 对象信息、状态、耗时       |
 | `knowledge_chunk`        | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数、向量 ID     |
 | `knowledge_chunk_vector` | `ingestion`              | pgvector 向量存储表                 |
 | `ingestion_task`         | `ingestion`               | 分块 / 重建向量任务状态、重试次数和失败原因       |
 
-数据库结构由 Flyway 接管，迁移脚本位于 `backend/src/main/resources/db/migration`。不要恢复旧的 `schema.sql`。
+数据库结构由 Flyway 接管，迁移脚本位于 `backend/src/main/resources/db/migration`。不要恢复旧的 `schema.sql`。已经执行过的迁移文件不要再改内容；表结构继续演进时新增下一个版本脚本，例如意图规则 `priority` 字段通过 `V10__drop_chat_intent_rule_priority.sql` 删除。
 
 ## 常见任务先读哪里
 
@@ -131,10 +133,11 @@ ConversationPage
 - 网关包名根路径是 `com.yinbo.gateway`，后端业务服务包名根路径是 `com.yinbo.agent`，AI 基础设施服务包名根路径是 `com.yinbo.ai.infra`。
 - 前端 `/api` 请求默认先进入 gateway，再由 gateway 转发到后端业务服务。
 - backend 通过 `AiInfraClient` 远程调用 ai-infra，HTTP 契约放在 `ai-api`，不要让 backend 反向依赖 ai-infra 实现类。
-- 会话生成入口由 `ChatService` 接收，阶段化处理放在 `chat/flow`；`ConversationFlowExecutor` 只负责编排，生命周期、记忆加载、记忆压缩、消息持久化、LLM 调用、查询改写、意图识别、歧义引导、RAG 检索和工具调用分别扩展对应子包服务。
+- 会话生成入口由 `ChatService` 接收，阶段化处理放在 `chat/flow`；`ConversationFlowExecutor` 只负责编排，生命周期、记忆加载、记忆压缩、消息持久化、LLM 调用、查询改写、意图识别树、歧义引导、RAG 检索和工具调用分别扩展对应子包服务。
+- 意图识别的多子问题分类走 `intentClassifyExecutor` 专用线程池；意图节点被规则引用时不要直接改 `nodeCode` 或删除节点，先调整规则。
 - 后台接口路径统一放在 `/api/admin/**`。
 - 业务错误优先抛 `BusinessException`。
-- 数据库结构变更必须新增 Flyway 迁移脚本。
+- 数据库结构变更必须新增 Flyway 迁移脚本，已经执行过的迁移文件不能直接改内容。
 - 原始文件进入 RustFS，数据库保存对象定位信息。
 - 向量在 pgvector，由 `vectorDocumentId` 关联业务分块。
 - 模型调用统一走独立 `ai-infra` 服务，Chat / Embedding / Rerank 供应商配置只放在 ai-infra。

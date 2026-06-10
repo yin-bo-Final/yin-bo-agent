@@ -98,6 +98,15 @@ app:
       rewrite-context-turns: ${CHAT_QUERY_REWRITE_CONTEXT_TURNS:3}
       terminology-cache-ttl: ${CHAT_TERMINOLOGY_CACHE_TTL:60m}
       pipeline-config-cache-ttl: ${CHAT_PIPELINE_CONFIG_CACHE_TTL:10m}
+    intent:
+      enabled: ${CHAT_INTENT_ENABLED:true}
+      llm-enabled: ${CHAT_INTENT_LLM_ENABLED:true}
+      min-score: ${CHAT_INTENT_MIN_SCORE:0.35}
+      ambiguity-min-score: ${CHAT_INTENT_AMBIGUITY_MIN_SCORE:0.55}
+      ambiguity-score-gap: ${CHAT_INTENT_AMBIGUITY_SCORE_GAP:0.08}
+      max-intents: ${CHAT_INTENT_MAX_INTENTS:3}
+      classify-timeout-ms: ${CHAT_INTENT_CLASSIFY_TIMEOUT_MS:3000}
+      cache-ttl: ${CHAT_INTENT_CACHE_TTL:60m}
     memory:
       context-max-tokens: ${CHAT_MEMORY_CONTEXT_MAX_TOKENS:100000}
       output-reserve-tokens: ${CHAT_MEMORY_OUTPUT_RESERVE_TOKENS:8000}

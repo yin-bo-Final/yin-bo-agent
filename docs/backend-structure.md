@@ -25,7 +25,11 @@ backend/src/main/
       ├─ V3__add_chat_message_created_index.sql
       ├─ V4__add_dashboard_trend_indexes.sql
       ├─ V5__create_conversation_memory_summary.sql
-      └─ V6__create_query_rewrite_pipeline.sql
+      ├─ V6__create_query_rewrite_pipeline.sql
+      ├─ V7__add_query_rewrite_unique_indexes.sql
+      ├─ V8__create_chat_intent_node.sql
+      ├─ V9__create_chat_intent_rule.sql
+      └─ V10__drop_chat_intent_rule_priority.sql
 ```
 
 ## `resources` 配置模块
@@ -51,6 +55,7 @@ backend/src/main/
 | `logging` | 配置 service 日志文件、日志格式和日志滚动策略 |
 | `app.logging` | 配置慢请求阈值 |
 | `app.chat.query-rewrite` | 配置术语统一、LLM 查询改写、规则拆分兜底、超时时间和 Redis 缓存 TTL |
+| `app.chat.intent` | 配置意图识别开关、LLM 打分开关、分数阈值、歧义阈值、总量封顶和意图树缓存 TTL |
 | `app.chat.memory` | 配置会话记忆上下文预算、自动压缩阈值、最近窗口和摘要版本 |
 | `app.concurrency` | 配置 service 上传兜底并发和 ingestion 消费并发 |
 | `app.ai-infra` | 配置 backend 远程调用 ai-infra 的 baseUrl 和超时时间 |
@@ -133,6 +138,53 @@ Flyway 查询预处理流水线迁移脚本。
 | Pipeline 配置表 | 创建 `chat_pipeline_config` 保存 LLM 改写开关、规则拆分兜底和超时配置 |
 | 默认配置 | 初始化 id = `1` 的默认 Pipeline 配置 |
 
+### `db/migration/V7__add_query_rewrite_unique_indexes.sql`
+
+Flyway 查询预处理唯一索引补强脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 术语唯一约束 | 保证标准术语和别名不重复，避免同一个用户说法映射到多个目标词 |
+
+### `db/migration/V8__create_chat_intent_node.sql`
+
+Flyway 意图树迁移脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 意图节点表 | 创建 `chat_intent_node`，用 `node_code` 和 `parent_code` 保存扁平意图树 |
+| 路由字段 | 保存 `kind`、`collection_name`、`mcp_tool_id`、`top_k`、`min_score` 等叶子路由信息 |
+| Prompt 字段 | 保存 `prompt_snippet`、`prompt_template`、`param_prompt_template` |
+| 默认电商树 | 初始化系统交互、商品服务、物流与配送、订单管理等电商客服意图节点 |
+
+### `db/migration/V9__create_chat_intent_rule.sql`
+
+Flyway 意图规则迁移脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 意图规则表 | 创建 `chat_intent_rule`，保存可配置的强规则和弱规则 |
+| 关键词条件 | 保存包含词、必要词、排除词及 ANY / ALL 匹配模式 |
+| 默认规则 | 初始化问候、助手介绍、物流轨迹、订单查询和领域缩小弱规则 |
+
+### `db/migration/V10__drop_chat_intent_rule_priority.sql`
+
+Flyway 意图规则字段收敛迁移脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 删除优先级字段 | 从 `chat_intent_rule` 删除早期的 `priority` 字段，避免和规则命中 `score` 形成重复概念 |
+| 重建规则索引 | 删除旧的 `enabled + priority` 索引，改为 `enabled + score + id`，让启用规则按命中分数排序 |
+| 兼容已执行 V9 | 保持 `V9` 文件内容稳定，通过新增 `V10` 演进结构，避免 Flyway checksum mismatch |
+
 当前业务表边界：
 
 | 表 | 主要模块 | 功能 |
@@ -145,6 +197,8 @@ Flyway 查询预处理流水线迁移脚本。
 | `chat_terminology_alias` | `chat` | 查询预处理别名、关键词映射 |
 | `chat_query_rewrite_record` | `chat` | 语义改写、子问题拆分和降级记录 |
 | `chat_pipeline_config` | `chat` | 查询预处理 Pipeline 开关和降级策略 |
+| `chat_intent_node` | `chat` | 意图树节点、叶子路由目标、示例问题和节点级检索配置 |
+| `chat_intent_rule` | `chat` | 可配置意图规则、关键词条件、目标节点和命中分数 |
 | `knowledge_base` | `knowledge` | 知识库编号、名称、Embedding 模型、collection 和状态 |
 | `knowledge_document` | `ingestion` / `knowledge` | 文档来源、对象存储信息、解析状态、分块参数和耗时 |
 | `knowledge_chunk` | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数和向量文档 ID |
@@ -162,7 +216,7 @@ Flyway 查询预处理流水线迁移脚本。
 | 功能 | 说明 |
 | --- | --- |
 | 启动 Spring Boot | 调用 `SpringApplication.run(...)` 启动 service |
-| 加载配置属性 | 启用 `AiInfraProperties`、`AuthProperties`、`ChatMemoryProperties`、`ChatQueryRewriteProperties`、`ConcurrencyLimitProperties`、`ObjectStorageProperties`、`RagProperties` |
+| 加载配置属性 | 启用 `AiInfraProperties`、`AuthProperties`、`ChatIntentProperties`、`ChatMemoryProperties`、`ChatQueryRewriteProperties`、`ConcurrencyLimitProperties`、`ObjectStorageProperties`、`RagProperties` |
 | 扫描 Mapper | 扫描 `auth`、`chat`、`ingestion`、`knowledge` 模块的 MyBatis Mapper |
 
 核心方法：
@@ -180,15 +234,24 @@ admin/
 ├─ AdminGuard.java
 ├─ controller/
 │  ├─ AdminDashboardController.java
+│  ├─ AdminIntentController.java
 │  └─ AdminQueryPipelineController.java
 ├─ dto/
 │  ├─ AdminDashboardResponse.java
+│  ├─ IntentNodeEnabledRequest.java
+│  ├─ IntentNodeRequest.java
+│  ├─ IntentNodeResponse.java
+│  ├─ IntentRuleEnabledRequest.java
+│  ├─ IntentRuleRequest.java
+│  ├─ IntentRuleResponse.java
 │  ├─ TerminologyMappingRequest.java
 │  ├─ TerminologyMappingResponse.java
 │  └─ UpdateQueryPipelineConfigRequest.java
 └─ service/
    ├─ AdminDashboardService.java
    ├─ AdminDashboardTrendService.java
+   ├─ AdminIntentRuleService.java
+   ├─ AdminIntentService.java
    └─ AdminTerminologyService.java
 ```
 
@@ -241,6 +304,26 @@ admin/
 | `DELETE` | `/api/admin/query/terminology/mappings/{aliasId}` | 删除关键词映射 |
 | `GET` | `/api/admin/query/pipeline/config` | 查询查询预处理 Pipeline 配置 |
 | `PATCH` | `/api/admin/query/pipeline/config` | 更新查询预处理 Pipeline 配置 |
+
+### `AdminIntentController.java`
+
+意图树后台管理接口。
+
+接口：
+
+| 方法 | 路径 | 功能 |
+| --- | --- | --- |
+| `GET` | `/api/admin/intents/tree` | 查询完整意图树 |
+| `GET` | `/api/admin/intents/nodes` | 查询扁平意图节点列表 |
+| `POST` | `/api/admin/intents/nodes` | 创建意图节点 |
+| `PATCH` | `/api/admin/intents/nodes/{nodeId}` | 修改意图节点 |
+| `PATCH` | `/api/admin/intents/nodes/{nodeId}/enabled` | 启用或禁用意图节点，禁用父节点时递归禁用子节点 |
+| `DELETE` | `/api/admin/intents/nodes/{nodeId}` | 删除意图节点，有子节点或规则引用时拒绝删除 |
+| `GET` | `/api/admin/intents/rules` | 查询意图规则列表 |
+| `POST` | `/api/admin/intents/rules` | 创建意图规则 |
+| `PATCH` | `/api/admin/intents/rules/{ruleId}` | 修改意图规则 |
+| `PATCH` | `/api/admin/intents/rules/{ruleId}/enabled` | 启用或禁用意图规则 |
+| `DELETE` | `/api/admin/intents/rules/{ruleId}` | 删除意图规则 |
 
 ### `AdminTerminologyService.java`
 
@@ -639,8 +722,8 @@ AI 对话入口和会话管理服务。
 | 加载记忆 | `ConversationMemoryService.load(...)` | 从 Redis 缓存或 PostgreSQL 加载历史会话消息 |
 | 保存用户消息 | `ChatMessagePersistenceService.persistCurrentUserMessage(...)` | 保存本轮 user 消息并写入上下文记忆 |
 | 准备 Prompt 记忆 | `ConversationMemoryCompressionService.preparePromptMemory(...)` | 按上下文预算自动压缩，并生成摘要加最近窗口的 Prompt 记忆视图 |
-| 查询改写 | `QueryRewriteService.rewrite(...)` | 当前占位，默认使用原始问题 |
-| 意图识别 | `IntentResolutionService.resolve(...)` | 当前占位，默认 `DIRECT_CHAT` |
+| 查询改写 | `QueryRewriteService.rewrite(...)` | 术语统一、LLM 语义改写、问题拆分、容错解析和降级记录 |
+| 意图识别 | `IntentResolutionService.resolve(...)` | 规则优先命中、子问题并行分类、LLM 叶子打分、分数过滤、总量封顶和歧义检测 |
 | 歧义引导 | `ClarificationService.guidanceMessage(...)` | 当前占位，只有上下文显式标记歧义时才短路 |
 | 普通直聊 | `DirectChatService.generate(...)` / `stream(...)` | 不需要 RAG 或工具时直接调用 LLM |
 | 多通道检索 | `RetrievalExecuteService.retrieve(...)` | 当前占位，后续接知识库检索和 MCP 工具 |
@@ -665,7 +748,12 @@ AI 对话入口和会话管理服务。
 | `flow/message/AssistantResponseResult.java` | assistant 响应内容、模型和 token 统计的统一结果 |
 | `flow/llm/DirectChatService.java` | 普通直聊和流式直聊模型调用 |
 | `flow/query/QueryRewriteService.java` | 查询改写和子问题拆分阶段 |
-| `flow/intent/IntentResolutionService.java` | 意图识别阶段 |
+| `flow/intent/IntentResolutionService.java` | 意图识别编排阶段 |
+| `flow/intent/IntentTreeService.java` | 从数据库和 Redis 加载意图树，并构建叶子节点索引 |
+| `flow/intent/RuleIntentRouter.java` | 规则优先路由，读取可配置规则，强规则直接命中，弱规则缩小候选叶子 |
+| `flow/intent/IntentRuleService.java` | 从数据库和 Redis 加载启用意图规则 |
+| `flow/intent/IntentClassifier.java` | 调用 LLM 对候选叶子节点打分 |
+| `flow/intent/IntentClassificationParser.java` | 容错解析 LLM 返回的意图分数 JSON |
 | `flow/clarification/ClarificationService.java` | 歧义引导阶段 |
 | `flow/retrieval/RetrievalContext.java` | 多通道检索阶段的上下文结果，占位保存知识库片段和工具结果 |
 | `flow/retrieval/RetrievalExecuteService.java` | 知识库和工具检索执行阶段 |
@@ -817,7 +905,10 @@ Spring Bean 和配置属性模块。
 config/
 ├─ AiInfraProperties.java
 ├─ AuthProperties.java
+├─ ChatIntentExecutorConfig.java
+├─ ChatIntentProperties.java
 ├─ ChatMemoryProperties.java
+├─ ChatQueryRewriteProperties.java
 ├─ ConcurrencyLimitProperties.java
 ├─ MybatisPlusAutoFillConfig.java
 ├─ ObjectStorageProperties.java
@@ -832,10 +923,24 @@ config/
 | --- | --- | --- |
 | `AiInfraProperties.java` | `app.ai-infra` | 保存 ai-infra baseUrl 和远程调用超时时间 |
 | `AuthProperties.java` | `app.auth` | 保存种子管理员用户名和密码 |
+| `ChatIntentProperties.java` | `app.chat.intent` | 保存意图识别开关、分数阈值、歧义阈值、总量封顶、分类超时和缓存 TTL |
 | `ChatMemoryProperties.java` | `app.chat.memory` | 保存会话记忆上下文预算、压缩窗口、最近 token 窗口和摘要版本 |
+| `ChatQueryRewriteProperties.java` | `app.chat.query-rewrite` | 保存查询改写开关、降级策略、改写超时和上下文轮数 |
 | `ConcurrencyLimitProperties.java` | `app.concurrency` | 保存上传兜底并发和 ingestion 消费并发配置 |
 | `ObjectStorageProperties.java` | `app.storage` | 保存 RustFS / S3 provider、endpoint、accessKey、secretKey、bucket |
 | `RagProperties.java` | `app.ai.rag` | 保存 RAG 模型、维度、向量表、分块默认值、源文件大小和 MQ topic |
+
+### `ChatIntentExecutorConfig.java`
+
+意图识别专用线程池配置。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 子问题并行分类 | `IntentResolutionService` 把查询改写后的多个子问题提交到 `intentClassifyExecutor` 并行执行 |
+| 阻塞调用隔离 | LLM 意图分类调用占用专用线程池，不使用 Java common pool |
+| 超时降级 | `app.chat.intent.classify-timeout-ms` 到期后，未完成子问题降级为空意图 |
 
 ### `ConcurrencyLimitProperties.java`
 
@@ -1452,6 +1557,7 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | 查询改写和问题拆分 | `QueryRewriteService`、`QueryRewriteResultParser`、`QueryRewriteRecordService`、`chat_query_rewrite_record` |
 | 术语统一 | `TerminologyNormalizationService`、`TerminologyDictionaryService`、`TerminologyDictionaryCacheService`、`chat_terminology_term`、`chat_terminology_alias` |
 | 查询预处理配置 | `QueryPipelineConfigService`、`QueryPipelineConfigCacheService`、`chat_pipeline_config` |
+| 意图识别和后台配置 | `IntentResolutionService`、`IntentTreeService`、`IntentRuleService`、`RuleIntentRouter`、`IntentClassifier`、`AdminIntentController`、`AdminIntentService`、`AdminIntentRuleService`、`chat_intent_node`、`chat_intent_rule` |
 | 会话记忆压缩 | `ConversationMemoryCompressionService`、`ConversationTokenEstimator`、`ConversationMemorySummary`、`ConversationMemorySummaryMapper`、`conversation_memory_summary` |
 | 会话管理 | `ChatController`、`ChatService`、`ChatMessageCacheService` |
 | 统一业务异常 | `BusinessException`、`GlobalExceptionHandler`、`ApiErrorResponse` |
@@ -1471,5 +1577,5 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | 向量写入和重建 | `DocumentIngestionService`、`PgVectorRepository`、`AiInfraClient` |
 | 知识库管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
 | 文档和分块管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
-| 数据库迁移 | `resources/db/migration/V1__init_schema.sql`、`resources/db/migration/V2__create_ingestion_task.sql`、`resources/db/migration/V3__add_chat_message_created_index.sql`、`resources/db/migration/V4__add_dashboard_trend_indexes.sql`、`resources/db/migration/V5__create_conversation_memory_summary.sql` |
+| 数据库迁移 | `resources/db/migration/V1__init_schema.sql` 到 `resources/db/migration/V10__drop_chat_intent_rule_priority.sql` |
 | Actuator 安全收口 | `application.yml` |

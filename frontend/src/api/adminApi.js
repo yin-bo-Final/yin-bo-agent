@@ -203,6 +203,115 @@ export async function updateQueryPipelineConfig(payload) {
   return parseResponse(response, '流水线配置保存失败');
 }
 
+export async function fetchIntentTree() {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/tree`, {
+    credentials: 'include'
+  });
+  return parseResponse(response, '意图树加载失败');
+}
+
+export async function fetchIntentNodes() {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/nodes`, {
+    credentials: 'include'
+  });
+  return parseResponse(response, '意图列表加载失败');
+}
+
+export async function createIntentNode(payload) {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/nodes`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response, '意图节点创建失败');
+}
+
+export async function updateIntentNode(nodeId, payload) {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/nodes/${pathSegment(nodeId)}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response, '意图节点更新失败');
+}
+
+export async function updateIntentNodeEnabled(nodeId, enabled) {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/nodes/${pathSegment(nodeId)}/enabled`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({ enabled })
+  });
+  return parseResponse(response, '意图节点状态更新失败');
+}
+
+export async function deleteIntentNode(nodeId) {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/nodes/${pathSegment(nodeId)}`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  return parseResponse(response, '意图节点删除失败');
+}
+
+export async function fetchIntentRules() {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/rules`, {
+    credentials: 'include'
+  });
+  return parseResponse(response, '意图规则加载失败');
+}
+
+export async function createIntentRule(payload) {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/rules`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response, '意图规则创建失败');
+}
+
+export async function updateIntentRule(ruleId, payload) {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/rules/${pathSegment(ruleId)}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response, '意图规则更新失败');
+}
+
+export async function updateIntentRuleEnabled(ruleId, enabled) {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/rules/${pathSegment(ruleId)}/enabled`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({ enabled })
+  });
+  return parseResponse(response, '意图规则状态更新失败');
+}
+
+export async function deleteIntentRule(ruleId) {
+  const response = await fetch(`${API_BASE_URL}/admin/intents/rules/${pathSegment(ruleId)}`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  return parseResponse(response, '意图规则删除失败');
+}
+
 export async function retryIngestionTask(taskId) {
   const response = await fetch(`${API_BASE_URL}/admin/ingestion/tasks/${taskId}/retry`, {
     method: 'POST',

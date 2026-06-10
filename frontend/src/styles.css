@@ -3247,6 +3247,21 @@ input {
   transform: translateY(-1px);
 }
 
+.admin-nav-group {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(76, 79, 105, 0.08);
+}
+
+.admin-nav-group small {
+  padding: 0 12px;
+  color: rgba(48, 52, 70, 0.48);
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .admin-sidebar-toggle,
 .admin-rail-button {
   grid-template-columns: 1fr;
@@ -5065,6 +5080,16 @@ input {
   grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) 110px 80px 90px minmax(170px, 1fr) 180px 220px;
 }
 
+.intent-grid {
+  min-width: 1180px;
+  grid-template-columns: minmax(180px, 1fr) minmax(260px, 1.2fr) 90px 110px minmax(180px, 1fr) 90px 280px;
+}
+
+.intent-rule-grid {
+  min-width: 1220px;
+  grid-template-columns: minmax(180px, 1fr) minmax(230px, 1fr) 100px minmax(330px, 1.35fr) 70px 90px 240px;
+}
+
 .kc-table-head.chunk-grid,
 .kc-table-row.chunk-grid {
   gap: 10px;
@@ -5079,6 +5104,18 @@ input {
 
 .kc-table-head.mapping-grid,
 .kc-table-row.mapping-grid {
+  gap: 10px;
+  padding-inline: 20px;
+}
+
+.kc-table-head.intent-grid,
+.kc-table-row.intent-grid {
+  gap: 10px;
+  padding-inline: 20px;
+}
+
+.kc-table-head.intent-rule-grid,
+.kc-table-row.intent-rule-grid {
   gap: 10px;
   padding-inline: 20px;
 }
@@ -5107,6 +5144,38 @@ input {
 
 .kc-table-head.mapping-grid > span:last-child,
 .kc-table-row.mapping-grid > span:last-child {
+  justify-self: center;
+  text-align: center;
+}
+
+.kc-table-head.intent-grid > span:nth-child(3),
+.kc-table-head.intent-grid > span:nth-child(4),
+.kc-table-head.intent-grid > span:nth-child(6),
+.kc-table-row.intent-grid > span:nth-child(3),
+.kc-table-row.intent-grid > span:nth-child(4),
+.kc-table-row.intent-grid > span:nth-child(6) {
+  justify-self: center;
+  text-align: center;
+}
+
+.kc-table-head.intent-grid > span:last-child,
+.kc-table-row.intent-grid > span:last-child {
+  justify-self: center;
+  text-align: center;
+}
+
+.kc-table-head.intent-rule-grid > span:nth-child(3),
+.kc-table-head.intent-rule-grid > span:nth-child(5),
+.kc-table-head.intent-rule-grid > span:nth-child(6),
+.kc-table-row.intent-rule-grid > span:nth-child(3),
+.kc-table-row.intent-rule-grid > span:nth-child(5),
+.kc-table-row.intent-rule-grid > span:nth-child(6) {
+  justify-self: center;
+  text-align: center;
+}
+
+.kc-table-head.intent-rule-grid > span:last-child,
+.kc-table-row.intent-rule-grid > span:last-child {
   justify-self: center;
   text-align: center;
 }
@@ -5555,9 +5624,259 @@ input {
   grid-column: 2;
 }
 
+.intent-tree-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.92fr) minmax(460px, 1.08fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.intent-module .kc-table-card {
+  overflow: hidden;
+}
+
+.intent-tree-panel,
+.intent-detail-panel {
+  min-width: 0;
+}
+
+.intent-tree-list {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  background: var(--yb-surface-muted);
+}
+
+.intent-tree-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  border: 1px solid var(--yb-line);
+  border-radius: var(--yb-radius);
+  padding: 12px;
+  background: var(--yb-surface);
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.intent-tree-node.disabled {
+  opacity: 0.58;
+  background: var(--yb-surface-muted);
+}
+
+.intent-tree-node:hover {
+  border-color: var(--yb-line-strong);
+}
+
+.intent-tree-node.active {
+  border-color: rgba(31, 108, 159, 0.24);
+  background: var(--yb-blue-soft);
+  box-shadow: inset 3px 0 0 var(--yb-blue);
+}
+
+.intent-tree-node > button {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  color: var(--yb-text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.intent-tree-node > button span {
+  overflow: hidden;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.intent-tree-node > button small {
+  overflow: hidden;
+  color: var(--yb-muted);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.intent-tree-node.level-1 {
+  margin-left: 18px;
+}
+
+.intent-tree-node.level-2 {
+  margin-left: 18px;
+  background: var(--yb-canvas-plain);
+}
+
+.intent-tree-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-self: start;
+  gap: 8px;
+}
+
+.intent-tree-actions button {
+  min-height: 30px;
+  border: 1px solid var(--yb-line);
+  border-radius: var(--yb-radius);
+  padding: 0 10px;
+  color: var(--yb-ink);
+  background: var(--yb-surface);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.intent-tree-actions button:hover {
+  border-color: var(--yb-line-strong);
+  color: var(--yb-text);
+  background: var(--yb-soft);
+}
+
+.intent-tree-children {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+}
+
+.intent-detail-grid {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 0;
+  margin: 18px 20px;
+  border: 1px solid var(--yb-line);
+  border-radius: var(--yb-radius);
+  overflow: hidden;
+  background: var(--yb-surface);
+}
+
+.intent-detail-grid span,
+.intent-detail-grid strong {
+  min-height: 44px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--yb-line);
+}
+
+.intent-detail-grid span {
+  color: var(--yb-muted);
+  background: var(--yb-surface-muted);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.intent-detail-grid strong {
+  overflow: hidden;
+  color: var(--yb-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.intent-detail-grid span:nth-last-child(-n + 2),
+.intent-detail-grid strong:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.intent-detail-text {
+  display: grid;
+  gap: 10px;
+  margin: 0 20px 20px;
+}
+
+.intent-detail-text strong {
+  color: var(--yb-text);
+  font-size: 14px;
+}
+
+.intent-detail-text p {
+  margin: 0;
+  color: rgba(48, 52, 70, 0.72);
+  line-height: 1.7;
+}
+
+.intent-example-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.intent-example-list span,
+.intent-example-list small {
+  border: 1px solid var(--yb-line);
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: var(--yb-ink);
+  background: var(--yb-soft);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.intent-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.intent-rule-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.intent-rule-form-grid label {
+  align-content: start;
+}
+
+.intent-rule-form-grid select {
+  margin-bottom: 8px;
+}
+
+.intent-rule-keywords {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.intent-rule-keywords small {
+  overflow: hidden;
+  color: var(--yb-muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kc-modal.intent-node-modal {
+  width: min(920px, 100%);
+}
+
+.kc-danger-button {
+  display: inline-grid;
+  place-items: center;
+  min-height: 42px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 16px;
+  color: #ffffff;
+  background: #b42318;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.kc-danger-button:hover:not(:disabled) {
+  background: #8f1d14;
+}
+
 @media (max-width: 980px) {
   .pipeline-layout,
-  .pipeline-field-grid {
+  .pipeline-field-grid,
+  .intent-tree-layout,
+  .intent-form-grid,
+  .intent-rule-form-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -6739,6 +7058,24 @@ a:focus-visible {
   border-radius: var(--yb-radius);
   color: var(--yb-ink);
   background: var(--yb-soft);
+}
+
+.admin-title-icon-intentTree,
+.intent-tree-module .kc-metric-icon {
+  color: var(--yb-blue);
+  background: var(--yb-blue-soft);
+}
+
+.admin-title-icon-intentList,
+.intent-list-module .kc-metric-icon {
+  color: var(--yb-success);
+  background: var(--yb-success-soft);
+}
+
+.admin-title-icon-intentRules,
+.intent-rules-module .kc-metric-icon {
+  color: var(--yb-warning);
+  background: var(--yb-warning-soft);
 }
 
 .admin-nav button,

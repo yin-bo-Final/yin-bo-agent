@@ -95,7 +95,7 @@ DELETE /api/conversations/{conversationId}
 
 ## `pages/AdminPage.vue`
 
-后台管理页，目前包含 Dashboard、知识库管理、失败任务管理、关键词映射和 Pipeline 配置。
+后台管理页，目前包含 Dashboard、知识库管理、失败任务管理、关键词映射、Pipeline 配置和意图管理。
 
 - 后台侧边栏和折叠状态
 - Dashboard 指标
@@ -106,8 +106,13 @@ DELETE /api/conversations/{conversationId}
 - 失败任务支持删除，便于清理后台噪声数据
 - 关键词映射列表、新增、编辑、启用、禁用、删除
 - Pipeline 配置支持关闭 LLM 语义改写、调整降级策略、超时和最近上下文轮数
+- 意图树配置支持查看层级树、选择节点、给节点新增子节点、添加规则、编辑、启停和删除
+- 意图列表提供扁平视图，支持按关键词、层级、类型过滤
+- 规则配置提供强规则 / 弱规则维护，支持包含词、必要词、排除词和 ANY / ALL 匹配模式
+- 意图管理三页分别使用树、列表、条件滑杆图标，Header、窄栏和侧边导航保持一致识别
+- 意图管理 UI 复用后台 `kc-*` 卡片、表格、按钮、弹窗和状态标签，局部样式仅在 `intent-module` 作用域内补充
 - 自定义弹窗、下拉栏、tooltip
-- 根据 `/admin/knowledge/...`、`/admin/tasks/failed`、`/admin/mappings` 和 `/admin/pipeline` 解析内部视图
+- 根据 `/admin/knowledge/...`、`/admin/tasks/failed`、`/admin/mappings`、`/admin/pipeline`、`/admin/intent-tree`、`/admin/intent-list` 和 `/admin/intent-rules` 解析内部视图
 - 文档处于 `UPLOADING` 或 `PROCESSING` 时轮询刷新
 - 使用 `utils/quietMotion.js` + GSAP ScrollTrigger 做后台内容进入 reveal
 
@@ -121,6 +126,9 @@ DELETE /api/conversations/{conversationId}
 /admin/tasks/failed
 /admin/mappings
 /admin/pipeline
+/admin/intent-tree
+/admin/intent-list
+/admin/intent-rules
 ```
 
 后台主要接口：
@@ -150,6 +158,17 @@ PATCH  /api/admin/query/terminology/mappings/{aliasId}/enabled
 DELETE /api/admin/query/terminology/mappings/{aliasId}
 GET    /api/admin/query/pipeline/config
 PATCH  /api/admin/query/pipeline/config
+GET    /api/admin/intents/tree
+GET    /api/admin/intents/nodes
+POST   /api/admin/intents/nodes
+PATCH  /api/admin/intents/nodes/{nodeId}
+PATCH  /api/admin/intents/nodes/{nodeId}/enabled
+DELETE /api/admin/intents/nodes/{nodeId}
+GET    /api/admin/intents/rules
+POST   /api/admin/intents/rules
+PATCH  /api/admin/intents/rules/{ruleId}
+PATCH  /api/admin/intents/rules/{ruleId}/enabled
+DELETE /api/admin/intents/rules/{ruleId}
 ```
 
 ## `api/`
@@ -158,7 +177,7 @@ PATCH  /api/admin/query/pipeline/config
 | --- | --- |
 | `authApi.js` | 注册、登录、当前用户、退出、注销 |
 | `chatApi.js` | 模型列表、聊天、流式聊天、会话管理和手动记忆压缩 |
-| `adminApi.js` | Dashboard、知识库、文档上传、分块、失败任务、关键词映射和 Pipeline 配置 |
+| `adminApi.js` | Dashboard、知识库、文档上传、分块、失败任务、关键词映射、Pipeline 配置和意图管理 |
 | `http.js` | 统一解析响应和错误，429 会触发全局错误弹窗 |
 
 所有需要登录态的请求都带 `credentials: 'include'`。
@@ -194,6 +213,7 @@ Minimalist redesign token 覆盖层
 后台布局
 知识库 / 文档 / 分块表格
 关键词映射和 Pipeline 配置
+意图树 / 意图列表 / 规则配置
 通用按钮、弹窗、状态、下拉栏、tooltip
 响应式规则
 动画 keyframes
@@ -204,6 +224,8 @@ Minimalist redesign token 覆盖层
 - 后台界面保持项目自己的简约工作台风格，不照搬外部截图。
 - 主题色固定 `#4C4F69`，字体固定 `Cascadia Mono`。
 - 按钮、弹窗、下拉栏、tooltip 优先复用现有类名和交互。
+- 后台新增模块要先复用 `kc-metric-card`、`kc-table-card`、`kc-card-toolbar`、`kc-table-row`，只有模块特殊结构再加局部 class。
+- 同一个后台分组下的子模块图标要保持同一线性 SVG 风格，但语义轮廓要能区分，避免多个页面共用一个泛化图标。
 - tooltip 只在必要场景使用，例如导航栏折叠后图标悬停，或表格内容被省略时展示完整内容。
 - 文档管理、知识库管理、分块管理都要保持统一的按钮高度、边框、hover 动效。
 - 不要为了验证每个小改动都跑 `npm run build` 或 `npm run dev`，除非本次改动确实需要前端运行验证。
