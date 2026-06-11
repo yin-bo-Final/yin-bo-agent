@@ -1,6 +1,7 @@
 package com.yinbo.agent.ingestion.service;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.yinbo.agent.admin.dto.PageResponse;
 import com.yinbo.agent.common.BusinessException;
 import com.yinbo.agent.config.RagProperties;
 import com.yinbo.agent.ingestion.dto.IngestionTaskResponse;
@@ -23,6 +24,9 @@ public class IngestionTaskAdminService {
 
     private static final Logger log = LoggerFactory.getLogger(IngestionTaskAdminService.class);
     private static final String DOCUMENT_STATUS_PROCESSING = "PROCESSING";
+    private static final int DEFAULT_PAGE = 1;
+    private static final int DEFAULT_PAGE_SIZE = 20;
+    private static final int MAX_PAGE_SIZE = 100;
 
     private final RagProperties ragProperties;
     private final IngestionTaskMapper ingestionTaskMapper;
@@ -47,15 +51,87 @@ public class IngestionTaskAdminService {
 
     // 查询失败或死信状态的入库任务。
     public List<IngestionTaskResponse> listFailedTasks() {
-        return ingestionTaskMapper.selectList(new LambdaQueryWrapper<IngestionTask>()
-                        .in(IngestionTask::getStatus, List.of(
-                                IngestionTaskService.STATUS_FAILED,
-                                IngestionTaskService.STATUS_DEAD
-                        ))
-                        .orderByDesc(IngestionTask::getCreatedAt))
+        return ingestionTaskMapper.selectList(buildFailedTaskQuery(null, null, null, null)
+                        .orderByDesc("created_at")
+                        .orderByDesc("id"))
                 .stream()
                 .map(this::toResponse)
                 .toList();
+    }
+
+    // 分页查询失败或死信状态的入库任务。
+    public PageResponse<IngestionTaskResponse> pageFailedTasks(
+            Integer page,
+            Integer pageSize,
+            String keyword,
+            String status,
+            LocalDateTime startAt,
+            LocalDateTime endAt
+    ) {
+        int safePage = normalizePage(page);
+        int safePageSize = normalizePageSize(pageSize);
+        long total = ingestionTaskMapper.selectCount(buildFailedTaskQuery(keyword, status, startAt, endAt));
+        long pages = total == 0 ? 0 : (long) Math.ceil(total / (double) safePageSize);
+        long offset = (long) (safePage - 1) * safePageSize;
+        List<IngestionTaskResponse> records = ingestionTaskMapper.selectList(buildFailedTaskQuery(keyword, status, startAt, endAt)
+                        .orderByDesc("created_at")
+                        .orderByDesc("id")
+                        .last("LIMIT " + safePageSize + " OFFSET " + offset))
+                .stream()
+                .map(this::toResponse)
+                .toList();
+        return new PageResponse<>(safePage, safePageSize, total, pages, records);
+    }
+
+    private QueryWrapper<IngestionTask> buildFailedTaskQuery(
+            String keyword,
+            String status,
+            LocalDateTime startAt,
+            LocalDateTime endAt
+    ) {
+        QueryWrapper<IngestionTask> query = new QueryWrapper<>();
+        query.in("status", List.of(
+                IngestionTaskService.STATUS_FAILED,
+                IngestionTaskService.STATUS_DEAD
+        ));
+        String cleanStatus = normalizeFilter(status);
+        if (cleanStatus != null) {
+            query.eq("status", cleanStatus);
+        }
+        if (startAt != null) {
+            query.ge("created_at", startAt);
+        }
+        if (endAt != null) {
+            query.le("created_at", endAt);
+        }
+        String cleanKeyword = keyword == null ? "" : keyword.trim();
+        if (!cleanKeyword.isEmpty()) {
+            String likeKeyword = "%" + cleanKeyword.toLowerCase() + "%";
+            query.and(wrapper -> {
+                wrapper.apply("LOWER(task_no) LIKE {0}", likeKeyword)
+                        .or().apply("LOWER(document_no) LIKE {0}", likeKeyword)
+                        .or().apply("LOWER(COALESCE(action, '')) LIKE {0}", likeKeyword)
+                        .or().apply("LOWER(COALESCE(strategy, '')) LIKE {0}", likeKeyword)
+                        .or().apply("LOWER(COALESCE(last_error, '')) LIKE {0}", likeKeyword)
+                        .or().apply("LOWER(COALESCE(source_request_id, '')) LIKE {0}", likeKeyword)
+                        .or().apply("LOWER(COALESCE(mq_message_id, '')) LIKE {0}", likeKeyword)
+                        .or().apply("""
+                                EXISTS (
+                                    SELECT 1
+                                    FROM knowledge_document kd
+                                    WHERE kd.id = ingestion_task.document_id
+                                      AND LOWER(COALESCE(kd.file_name, '')) LIKE {0}
+                                )
+                                """, likeKeyword);
+                Long idKeyword = parseLong(cleanKeyword);
+                if (idKeyword != null) {
+                    wrapper.or().eq("id", idKeyword)
+                            .or().eq("document_id", idKeyword)
+                            .or().eq("knowledge_base_id", idKeyword);
+                }
+            });
+        }
+        return query;
     }
 
     // 手动重试失败任务。
@@ -133,6 +209,32 @@ public class IngestionTaskAdminService {
         int retryCount = nullToZero(task.getRetryCount());
         int maxRetries = nullToDefault(task.getMaxRetries(), IngestionTaskService.DEFAULT_MAX_RETRIES);
         return Math.min(retryCount, maxRetries);
+    }
+
+    private int normalizePage(Integer page) {
+        return page == null || page < 1 ? DEFAULT_PAGE : page;
+    }
+
+    private int normalizePageSize(Integer pageSize) {
+        if (pageSize == null || pageSize < 1) {
+            return DEFAULT_PAGE_SIZE;
+        }
+        return Math.min(pageSize, MAX_PAGE_SIZE);
+    }
+
+    private String normalizeFilter(String value) {
+        if (value == null || value.isBlank() || "ALL".equalsIgnoreCase(value)) {
+            return null;
+        }
+        return value.trim().toUpperCase();
+    }
+
+    private Long parseLong(String value) {
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException exception) {
+            return null;
+        }
     }
 
     // 转换时间为响应时间。

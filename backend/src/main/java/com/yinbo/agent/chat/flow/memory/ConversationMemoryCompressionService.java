@@ -484,7 +484,8 @@ public class ConversationMemoryCompressionService {
                 summary.getCompressionModelId(),
                 toInstant(summary.getCreatedAt()),
                 null,
-                summary.getSummaryTokens()
+                summary.getSummaryTokens(),
+                null
         );
     }
 

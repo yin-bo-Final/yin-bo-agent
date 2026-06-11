@@ -1,9 +1,5 @@
 <script setup>
-import { LineChart } from 'echarts/charts';
-import { GridComponent, MarkLineComponent, TooltipComponent } from 'echarts/components';
-import * as echarts from 'echarts/core';
-import { CanvasRenderer } from 'echarts/renderers';
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import {
   createKnowledgeBase,
   createIntentNode,
@@ -47,8 +43,54 @@ import {
   uploadKnowledgeDocument
 } from '../api/adminApi';
 import { createQuietReveal } from '../utils/quietMotion';
-
-echarts.use([LineChart, GridComponent, TooltipComponent, MarkLineComponent, CanvasRenderer]);
+import AdminDashboardSection from './admin/AdminDashboardSection.vue';
+import AdminHeader from './admin/AdminHeader.vue';
+import AdminIntentRecordsSection from './admin/AdminIntentRecordsSection.vue';
+import AdminQueryRecordsSection from './admin/AdminQueryRecordsSection.vue';
+import AdminSidebar from './admin/AdminSidebar.vue';
+import {
+  canOpenDocumentChunks,
+  canRechunkDocument,
+  canRetryTask,
+  canViewDocumentChunks,
+  defaultChunkOptions,
+  defaultIntentNodeForm,
+  defaultIntentRuleForm,
+  defaultMappingForm,
+  defaultPipelineForm,
+  documentChunkActionLabel,
+  documentStatusFilterText,
+  formatBytes,
+  formatDate,
+  formatDuration,
+  formatNumber,
+  intentExamplesText,
+  intentKindLabel,
+  intentLevelLabel,
+  intentMatchModeLabel,
+  intentRuleTypeLabel,
+  isBusyDocumentStatus,
+  isFailedDocumentStatus,
+  isSessionError,
+  keywordText,
+  metricText,
+  normalizeChunkPayload,
+  normalizeIntentNodePayload,
+  normalizeIntentRulePayload,
+  normalizePipelinePayload,
+  parseAdminRoute,
+  shouldShowDocumentChunkAction,
+  sourceText,
+  statusClass,
+  statusFilterText,
+  statusText,
+  taskActionText,
+  taskDetailRows,
+  taskStatusClass,
+  taskStatusFilterText,
+  taskStatusText,
+  typeText
+} from './admin/adminPageUtils';
 
 const props = defineProps({
   currentUser: {
@@ -107,6 +149,8 @@ const rechunkFormError = ref('');
 const baseKeyword = ref('');
 const documentKeyword = ref('');
 const taskKeyword = ref('');
+const taskStartAt = ref('');
+const taskEndAt = ref('');
 const mappingKeyword = ref('');
 const intentKeyword = ref('');
 const intentRuleKeyword = ref('');
@@ -115,9 +159,12 @@ const intentLevelFilter = ref('ALL');
 const intentRuleTypeFilter = ref('ALL');
 const documentStatusFilter = ref('ALL');
 const taskStatusFilter = ref('ALL');
+const taskPage = ref(1);
+const taskPageSize = ref(20);
+const taskTotal = ref(0);
+const taskPages = ref(0);
 const chunkStatusFilter = ref('ALL');
 const messageTrendRange = ref('day');
-const activeTrendType = ref('message');
 const isCreateModalOpen = ref(false);
 const isMappingModalOpen = ref(false);
 const isIntentNodeModalOpen = ref(false);
@@ -211,20 +258,10 @@ const floatingTooltip = ref({
   placement: 'top'
 });
 const adminMain = ref(null);
-const dashboardTrendShell = ref(null);
-const dashboardTrendChart = ref(null);
-const dashboardTrendOverlay = ref(null);
+const intentRecordsSection = ref(null);
+const queryRecordsSection = ref(null);
 let knowledgePollTimer = null;
 let stopAdminMotion = null;
-let dashboardChart = null;
-let dashboardTrendAnimationFrame = 0;
-
-const trendTypeOptions = [
-  { type: 'message', label: '消息' },
-  { type: 'conversation', label: '会话' },
-  { type: 'responseTime', label: '响应时间' },
-  { type: 'activeUser', label: '活跃用户' }
-];
 
 const activeModule = computed(() => route.value.module);
 const currentView = computed(() => route.value.view);
@@ -241,6 +278,9 @@ const currentHeader = computed(() => {
   if (activeModule.value === 'pipeline') {
     return { label: '会话流水线', title: 'Pipeline 配置', icon: 'pipeline' };
   }
+  if (activeModule.value === 'query-records') {
+    return { label: '查询预处理', title: '改写记录', icon: 'queryRecords' };
+  }
   if (activeModule.value === 'intent-tree') {
     return { label: '意图管理', title: '意图树配置', icon: 'intentTree' };
   }
@@ -249,6 +289,9 @@ const currentHeader = computed(() => {
   }
   if (activeModule.value === 'intent-rules') {
     return { label: '意图管理', title: '规则配置', icon: 'intentRules' };
+  }
+  if (activeModule.value === 'intent-records') {
+    return { label: '意图管理', title: '识别记录', icon: 'intentRecords' };
   }
   if (currentView.value === 'documents') {
     return { label: '文档资产', title: '文档管理', icon: 'documents' };
@@ -393,45 +436,6 @@ function clearOverflowTooltip(event) {
   floatingTooltip.value.visible = false;
 }
 
-function statusFilterText(value) {
-  if (value === 'ENABLED') {
-    return '启用';
-  }
-  if (value === 'DISABLED') {
-    return '禁用';
-  }
-  return '全部状态';
-}
-
-function documentStatusFilterText(value) {
-  if (value === 'UPLOADING') {
-    return 'uploading';
-  }
-  if (value === 'UPLOADED') {
-    return 'uploaded';
-  }
-  if (value === 'COMPLETED') {
-    return 'success';
-  }
-  if (value === 'PROCESSING') {
-    return 'processing';
-  }
-  if (value === 'FAILED') {
-    return 'failed';
-  }
-  return '全部状态';
-}
-
-function taskStatusFilterText(value) {
-  if (value === 'FAILED') {
-    return 'failed';
-  }
-  if (value === 'DEAD') {
-    return 'dead';
-  }
-  return '全部状态';
-}
-
 function toggleTaskStatusMenu() {
   isTaskStatusMenuOpen.value = !isTaskStatusMenuOpen.value;
   isDocumentStatusMenuOpen.value = false;
@@ -450,9 +454,11 @@ function toggleChunkStatusMenu() {
   isDocumentStatusMenuOpen.value = false;
 }
 
-function setTaskStatus(value) {
+async function setTaskStatus(value) {
   taskStatusFilter.value = value;
   isTaskStatusMenuOpen.value = false;
+  taskPage.value = 1;
+  await loadFailedTasks();
 }
 
 function setDocumentStatus(value) {
@@ -474,110 +480,6 @@ function openCreateKnowledgeBaseModal() {
 function closeCreateKnowledgeBaseModal() {
   createFormError.value = '';
   isCreateModalOpen.value = false;
-}
-
-function defaultMappingForm() {
-  return {
-    aliasName: '',
-    canonicalName: '',
-    termType: 'TECH',
-    description: '',
-    priority: 100,
-    enabled: true
-  };
-}
-
-function defaultPipelineForm() {
-  return {
-    terminologyEnabled: true,
-    llmRewriteEnabled: true,
-    ruleSplitEnabled: true,
-    fallbackPolicy: 'TERM_ONLY',
-    rewriteTimeoutMs: 3000,
-    rewriteContextTurns: 3
-  };
-}
-
-function defaultIntentNodeForm() {
-  return {
-    nodeCode: '',
-    parentCode: '',
-    name: '',
-    description: '',
-    level: 'CATEGORY',
-    kind: 'KB',
-    examplesText: '',
-    knowledgeBaseNo: '',
-    collectionName: '',
-    mcpToolId: '',
-    promptSnippet: '',
-    promptTemplate: '',
-    paramPromptTemplate: '',
-    topK: '',
-    minScore: '',
-    sortOrder: 0,
-    enabled: true
-  };
-}
-
-function defaultIntentRuleForm() {
-  return {
-    ruleCode: '',
-    name: '',
-    description: '',
-    targetNodeCode: '',
-    ruleType: 'STRONG',
-    includeKeywordsText: '',
-    includeMatchMode: 'ANY',
-    requireKeywordsText: '',
-    requireMatchMode: 'ANY',
-    excludeKeywordsText: '',
-    score: 0.9,
-    enabled: true
-  };
-}
-
-function intentKindLabel(value) {
-  if (value === 'MCP') {
-    return 'MCP 工具';
-  }
-  if (value === 'SYSTEM') {
-    return '系统直答';
-  }
-  return '知识库';
-}
-
-function intentLevelLabel(value) {
-  if (value === 'DOMAIN') {
-    return '领域';
-  }
-  if (value === 'TOPIC') {
-    return '主题';
-  }
-  return '分类';
-}
-
-function intentRuleTypeLabel(value) {
-  return value === 'WEAK' ? '弱规则' : '强规则';
-}
-
-function intentMatchModeLabel(value) {
-  return value === 'ALL' ? '全部命中' : '任一命中';
-}
-
-function intentExamplesText(examples) {
-  return Array.isArray(examples) ? examples.join('\n') : '';
-}
-
-function keywordText(keywords) {
-  return Array.isArray(keywords) ? keywords.join('\n') : '';
-}
-
-function keywordArray(text) {
-  return String(text || '')
-    .split(/\r?\n/)
-    .map((value) => value.trim())
-    .filter(Boolean);
 }
 
 function openCreateIntentNodeModal(parentNode = null) {
@@ -648,32 +550,6 @@ async function submitIntentNodeForm() {
   } finally {
     isSavingIntentNode.value = false;
   }
-}
-
-function normalizeIntentNodePayload(form) {
-  const examples = String(form.examplesText || '')
-    .split(/\r?\n/)
-    .map((value) => value.trim())
-    .filter(Boolean);
-  return {
-    nodeCode: form.nodeCode.trim(),
-    parentCode: form.parentCode.trim(),
-    name: form.name.trim(),
-    description: form.description.trim(),
-    level: form.level,
-    kind: form.kind,
-    examples,
-    knowledgeBaseNo: form.knowledgeBaseNo.trim(),
-    collectionName: form.collectionName.trim(),
-    mcpToolId: form.mcpToolId.trim(),
-    promptSnippet: form.promptSnippet.trim(),
-    promptTemplate: form.promptTemplate.trim(),
-    paramPromptTemplate: form.paramPromptTemplate.trim(),
-    topK: form.topK === '' ? null : Number(form.topK),
-    minScore: form.minScore === '' ? null : Number(form.minScore),
-    sortOrder: Number(form.sortOrder || 0),
-    enabled: form.enabled !== false
-  };
 }
 
 function selectIntentNode(node) {
@@ -803,23 +679,6 @@ async function submitIntentRuleForm() {
   }
 }
 
-function normalizeIntentRulePayload(form) {
-  return {
-    ruleCode: form.ruleCode.trim(),
-    name: form.name.trim(),
-    description: form.description.trim(),
-    targetNodeCode: form.targetNodeCode.trim(),
-    ruleType: form.ruleType,
-    includeKeywords: keywordArray(form.includeKeywordsText),
-    includeMatchMode: form.includeMatchMode || 'ANY',
-    requireKeywords: keywordArray(form.requireKeywordsText),
-    requireMatchMode: form.requireMatchMode || 'ANY',
-    excludeKeywords: keywordArray(form.excludeKeywordsText),
-    score: form.score === '' ? null : Number(form.score),
-    enabled: form.enabled !== false
-  };
-}
-
 async function toggleIntentRuleEnabled(rule) {
   try {
     await updateIntentRuleEnabled(rule.id, !rule.enabled);
@@ -871,17 +730,6 @@ async function confirmDeleteIntentRule() {
   } finally {
     isDeletingIntentRule.value = false;
   }
-}
-
-function normalizePipelinePayload(value) {
-  return {
-    terminologyEnabled: value?.terminologyEnabled !== false,
-    llmRewriteEnabled: value?.llmRewriteEnabled !== false,
-    ruleSplitEnabled: value?.ruleSplitEnabled !== false,
-    fallbackPolicy: value?.fallbackPolicy || 'TERM_ONLY',
-    rewriteTimeoutMs: Number(value?.rewriteTimeoutMs || 3000),
-    rewriteContextTurns: Number(value?.rewriteContextTurns || 3)
-  };
 }
 
 function openCreateMappingModal() {
@@ -1021,18 +869,13 @@ const filteredKnowledgeBases = computed(() => {
       .some((value) => value.toLowerCase().includes(keyword));
   });
 });
-const deadTaskDocumentIds = computed(() => new Set(
-  failedTasks.value
-    .filter((task) => task.status === 'DEAD' && task.documentId)
-    .map((task) => task.documentId)
-));
 const visibleDocuments = computed(() => {
   const knownIds = new Set(documents.value.map((document) => document.documentId));
   return [
     ...uploadingDocuments.value.filter((document) => (
       document.knowledgeBaseId === selectedKnowledgeBaseId.value && !knownIds.has(document.documentId)
     )),
-    ...documents.value.filter((document) => !deadTaskDocumentIds.value.has(document.documentId))
+    ...documents.value
   ];
 });
 const filteredDocuments = computed(() => {
@@ -1054,110 +897,25 @@ const filteredChunks = computed(() => {
   }
   return chunks.value;
 });
-const filteredFailedTasks = computed(() => {
-  const keyword = taskKeyword.value.trim().toLowerCase();
-  return failedTasks.value.filter((task) => {
-    const keywordMatched = !keyword || [
-      task.taskId,
-      task.documentId,
-      task.fileName,
-      task.lastError,
-      task.mqMessageId,
-      task.sourceRequestId
-    ]
-      .filter(Boolean)
-      .some((value) => String(value).toLowerCase().includes(keyword));
-    const statusMatched = taskStatusFilter.value === 'ALL' || task.status === taskStatusFilter.value;
-    return keywordMatched && statusMatched;
-  }).slice().sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0));
-});
-const averageResponseStatus = computed(() => {
-  const value = dashboard.value?.averageResponseTimeMs;
-  if (value === null || value === undefined) {
-    return 'pending';
-  }
-  if (value > 15000) {
-    return 'danger';
-  }
-  if (value <= 10000) {
-    return 'good';
-  }
-  return 'warn';
-});
-const messageTrendPoints = computed(() => {
-  const points = dashboard.value?.messageTrendPoints;
-  return Array.isArray(points) ? points : [];
-});
-const dashboardTrendSeries = computed(() => {
-  const series = dashboard.value?.dashboardTrendSeries;
-  if (Array.isArray(series) && series.length > 0) {
-    return series;
-  }
-  const fallbackPoints = messageTrendPoints.value.map((point) => ({
-    label: point.label || '-',
-    value: point.messageCount || 0
-  }));
-  return [{
-    type: 'message',
-    title: '消息趋势',
-    summaryLabel: '消息数',
-    unit: '条',
-    color: '#4C4F69',
-    summaryValue: fallbackPoints.reduce((total, point) => total + point.value, 0),
-    thresholds: [],
-    points: fallbackPoints
-  }];
-});
-const activeDashboardTrend = computed(() => {
-  return dashboardTrendSeries.value.find((series) => series.type === activeTrendType.value)
-    || dashboardTrendSeries.value[0]
-    || null;
-});
-const activeTrendPoints = computed(() => {
-  const points = activeDashboardTrend.value?.points;
-  return Array.isArray(points) ? points : [];
-});
-const activeTrendThresholds = computed(() => {
-  const thresholds = activeDashboardTrend.value?.thresholds;
-  return Array.isArray(thresholds) ? thresholds : [];
-});
-const activeTrendSummaryValue = computed(() => {
-  const value = activeDashboardTrend.value?.summaryValue;
-  return Number.isFinite(Number(value)) ? Number(value) : 0;
-});
-const activeTrendOptionIndex = computed(() => {
-  return Math.max(0, trendTypeOptions.findIndex((option) => option.type === activeTrendType.value));
-});
-const dashboardTrendRangeIndex = computed(() => messageTrendRange.value === 'month' ? 1 : 0);
+const taskPageStart = computed(() => taskTotal.value === 0 ? 0 : (taskPage.value - 1) * taskPageSize.value + 1);
+const taskPageEnd = computed(() => Math.min(taskTotal.value, taskPage.value * taskPageSize.value));
+const failedTaskRetryCount = computed(() => failedTasks.value.filter((task) => task.status === 'FAILED').length);
+const failedTaskDeadCount = computed(() => failedTasks.value.filter((task) => task.status === 'DEAD').length);
 
 onMounted(async () => {
   window.addEventListener('popstate', handleRouteChange);
-  window.addEventListener('resize', resizeDashboardTrendChart);
   knowledgePollTimer = window.setInterval(pollProcessingDocuments, 3000);
   await Promise.all([loadDashboard(), loadKnowledge(), loadFailedTasks(), loadQueryAdmin(), loadIntentAdmin()]);
   await runAdminReveal();
-  await renderDashboardTrendChart();
 });
 
 onUnmounted(() => {
   window.removeEventListener('popstate', handleRouteChange);
-  window.removeEventListener('resize', resizeDashboardTrendChart);
   stopAdminMotion?.();
-  disposeDashboardTrendChart();
   if (knowledgePollTimer) {
     window.clearInterval(knowledgePollTimer);
   }
 });
-
-watch([activeTrendPoints, activeModule, activeTrendType], async () => {
-  await renderDashboardTrendChart();
-}, { deep: true });
-
-watch(dashboardTrendSeries, (series) => {
-  if (series.length > 0 && !series.some((item) => item.type === activeTrendType.value)) {
-    activeTrendType.value = series[0].type;
-  }
-}, { deep: true });
 
 async function runAdminReveal() {
   await nextTick();
@@ -1165,50 +923,6 @@ async function runAdminReveal() {
   stopAdminMotion = createQuietReveal(adminMain.value, {
     scroller: adminMain.value
   });
-}
-
-function parseAdminRoute() {
-  const segments = window.location.pathname.split('/').filter(Boolean);
-  if (segments[0] !== 'admin') {
-    return { module: 'dashboard', view: 'dashboard' };
-  }
-  if (segments[1] === 'tasks') {
-    return { module: 'tasks', view: 'failed-tasks' };
-  }
-  if (segments[1] === 'mappings') {
-    return { module: 'mappings', view: 'mappings' };
-  }
-  if (segments[1] === 'pipeline') {
-    return { module: 'pipeline', view: 'pipeline' };
-  }
-  if (segments[1] === 'intent-tree') {
-    return { module: 'intent-tree', view: 'intent-tree' };
-  }
-  if (segments[1] === 'intent-list') {
-    return { module: 'intent-list', view: 'intent-list' };
-  }
-  if (segments[1] === 'intent-rules') {
-    return { module: 'intent-rules', view: 'intent-rules' };
-  }
-  if (segments[1] !== 'knowledge') {
-    return { module: 'dashboard', view: 'dashboard' };
-  }
-  if (segments[2] && segments[3] === 'docs' && segments[4]) {
-    return {
-      module: 'knowledge',
-      view: 'chunks',
-      knowledgeBaseId: decodeURIComponent(segments[2]),
-      documentId: decodeURIComponent(segments[4])
-    };
-  }
-  if (segments[2]) {
-    return {
-      module: 'knowledge',
-      view: 'documents',
-      knowledgeBaseId: decodeURIComponent(segments[2])
-    };
-  }
-  return { module: 'knowledge', view: 'bases' };
 }
 
 async function handleRouteChange() {
@@ -1230,7 +944,6 @@ async function handleRouteChange() {
     await loadIntentAdmin();
   }
   await runAdminReveal();
-  await renderDashboardTrendChart();
 }
 
 async function navigateTo(path) {
@@ -1248,7 +961,6 @@ async function loadDashboard() {
     handleAdminError(error);
   } finally {
     isLoadingDashboard.value = false;
-    await renderDashboardTrendChart();
   }
 }
 
@@ -1258,298 +970,6 @@ async function setMessageTrendRange(value) {
   }
   messageTrendRange.value = value;
   await loadDashboard();
-}
-
-function setActiveTrendType(value) {
-  if (activeTrendType.value === value) {
-    return;
-  }
-  activeTrendType.value = value;
-}
-
-async function renderDashboardTrendChart() {
-  await nextTick();
-  if (activeModule.value !== 'dashboard' || !dashboardTrendChart.value) {
-    disposeDashboardTrendChart();
-    return;
-  }
-  if (!dashboardChart) {
-    dashboardChart = echarts.init(dashboardTrendChart.value, null, { renderer: 'canvas' });
-  }
-
-  const trend = activeDashboardTrend.value;
-  const points = activeTrendPoints.value;
-  const labels = points.map((point) => point.label || '-');
-  const trendValues = points.map((point) => Number(point.value || 0));
-  const thresholdValues = activeTrendThresholds.value.map((threshold) => Number(threshold.value || 0));
-  const maxTrendValue = Math.max(...trendValues, ...thresholdValues, 0);
-  const yAxisMax = Math.max(5, Math.ceil(maxTrendValue * 1.18));
-  const trendColor = trend?.color || '#4C4F69';
-
-  dashboardChart.setOption({
-    backgroundColor: 'transparent',
-    animation: false,
-    color: [trendColor],
-    textStyle: {
-      fontFamily: '"Cascadia Mono", "Microsoft YaHei", Consolas, monospace',
-      color: '#303446'
-    },
-    tooltip: {
-      trigger: 'axis',
-      borderWidth: 1,
-      borderColor: 'rgba(76, 79, 105, 0.14)',
-      backgroundColor: 'rgba(255, 255, 255, 0.98)',
-      padding: [10, 12],
-      textStyle: {
-        color: '#303446',
-        fontFamily: '"Cascadia Mono", "Microsoft YaHei", Consolas, monospace',
-        fontSize: 12
-      },
-      axisPointer: {
-        type: 'line',
-        lineStyle: {
-          color: 'rgba(76, 79, 105, 0.22)',
-          width: 1
-        }
-      },
-      formatter(params) {
-        const index = params?.[0]?.dataIndex ?? 0;
-        const point = points[index] || {};
-        return [
-          `<strong>${point.label || ''}</strong>`,
-          `${trend?.summaryLabel || '数值'}: ${formatTrendValue(point.value || 0, trend?.unit)}`
-        ].join('<br/>');
-      }
-    },
-    legend: { show: false },
-    grid: {
-      top: 28,
-      right: 28,
-      bottom: 30,
-      left: 42,
-      containLabel: true
-    },
-    xAxis: {
-      type: 'category',
-      boundaryGap: false,
-      data: labels,
-      axisTick: { show: false },
-      axisLine: {
-        lineStyle: { color: 'rgba(76, 79, 105, 0.12)' }
-      },
-      axisLabel: {
-        color: 'rgba(48, 52, 70, 0.52)',
-        fontSize: 12,
-        interval: 0
-      }
-    },
-    yAxis: {
-      type: 'value',
-      min: 0,
-      max: yAxisMax,
-      minInterval: 1,
-      splitLine: {
-        lineStyle: {
-          color: 'rgba(76, 79, 105, 0.12)',
-          type: 'dashed'
-        }
-      },
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: {
-        color: 'rgba(48, 52, 70, 0.52)',
-        fontSize: 12,
-        formatter(value) {
-          return formatTrendAxisValue(value, trend?.unit);
-        }
-      }
-    },
-    series: [
-      createTrendSeries(trend?.summaryLabel || '趋势', trendValues, trend)
-    ]
-  }, true);
-  dashboardChart.resize();
-  renderDashboardTrendOverlay(labels, trendValues, trendColor);
-}
-
-async function renderDashboardTrendOverlay(labels, data, color = '#4C4F69') {
-  await nextTick();
-  if (!dashboardChart || !dashboardTrendShell.value || !dashboardTrendOverlay.value || !data.length) {
-    return;
-  }
-  window.cancelAnimationFrame(dashboardTrendAnimationFrame);
-  const shellRect = dashboardTrendShell.value.getBoundingClientRect();
-  const svg = dashboardTrendOverlay.value;
-  svg.setAttribute('viewBox', `0 0 ${shellRect.width} ${shellRect.height}`);
-  svg.innerHTML = '';
-
-  const pixelPoints = data.map((value, index) => {
-    const [x, y] = dashboardChart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [labels[index], value]);
-    return { x, y, value };
-  });
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', createSmoothPath(pixelPoints));
-  path.setAttribute('class', 'dashboard-trend-svg-line');
-  path.style.stroke = color;
-  svg.appendChild(path);
-
-  const circles = pixelPoints.map((point) => {
-    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('cx', point.x);
-    circle.setAttribute('cy', point.y);
-    circle.setAttribute('r', '0');
-    circle.setAttribute('class', 'dashboard-trend-svg-point');
-    circle.style.stroke = color;
-    svg.appendChild(circle);
-    return circle;
-  });
-
-  const pathLength = path.getTotalLength();
-  path.style.strokeDasharray = String(pathLength);
-  path.style.strokeDashoffset = String(pathLength);
-  const startedAt = window.performance.now();
-  const lineDuration = 1680;
-  const pointDuration = 180;
-  const pointRadius = 3.5;
-
-  function step(now) {
-    if (!dashboardTrendOverlay.value) {
-      return;
-    }
-    const elapsed = now - startedAt;
-    const lineProgress = easeInOutCubic(Math.min(1, elapsed / lineDuration));
-    path.style.strokeDashoffset = String(pathLength * (1 - lineProgress));
-    circles.forEach((circle, index) => {
-      const position = circles.length <= 1 ? 1 : index / (circles.length - 1);
-      const pointStart = position * Math.max(0, lineDuration - pointDuration);
-      const pointProgress = Math.max(0, Math.min(1, (elapsed - pointStart) / pointDuration));
-      circle.setAttribute('r', String(pointRadius * easeOutCubic(pointProgress)));
-    });
-
-    if (elapsed < lineDuration + pointDuration) {
-      dashboardTrendAnimationFrame = window.requestAnimationFrame(step);
-    }
-  }
-
-  dashboardTrendAnimationFrame = window.requestAnimationFrame(step);
-}
-
-function createSmoothPath(points) {
-  if (!points.length) {
-    return '';
-  }
-  if (points.length === 1) {
-    const point = points[0];
-    return `M ${point.x} ${point.y}`;
-  }
-  return points.reduce((path, point, index) => {
-    if (index === 0) {
-      return `M ${point.x} ${point.y}`;
-    }
-    const previous = points[index - 1];
-    const distance = point.x - previous.x;
-    const controlOne = {
-      x: previous.x + distance * 0.42,
-      y: previous.y
-    };
-    const controlTwo = {
-      x: point.x - distance * 0.42,
-      y: point.y
-    };
-    return `${path} C ${controlOne.x} ${controlOne.y}, ${controlTwo.x} ${controlTwo.y}, ${point.x} ${point.y}`;
-  }, '');
-}
-
-function easeOutCubic(value) {
-  return 1 - Math.pow(1 - value, 3);
-}
-
-function easeInOutCubic(value) {
-  if (value <= 0) {
-    return 0;
-  }
-  if (value >= 1) {
-    return 1;
-  }
-  return value < 0.5
-    ? 4 * value * value * value
-    : 1 - Math.pow(-2 * value + 2, 3) / 2;
-}
-
-function createTrendSeries(name, data, trend) {
-  const color = trend?.color || '#4C4F69';
-  const thresholds = Array.isArray(trend?.thresholds) ? trend.thresholds : [];
-  return {
-    name,
-    type: 'line',
-    data,
-    smooth: true,
-    showSymbol: true,
-    symbol: 'circle',
-    symbolSize: 10,
-    connectNulls: false,
-    lineStyle: {
-      width: 3,
-      color,
-      opacity: 0,
-      cap: 'round',
-      join: 'round'
-    },
-    itemStyle: {
-      color: '#ffffff',
-      opacity: 0,
-      borderWidth: 2,
-      borderColor: color
-    },
-    markLine: thresholds.length ? {
-      symbol: 'none',
-      silent: true,
-      data: thresholds.map((threshold) => ({
-        name: threshold.label,
-        yAxis: threshold.value,
-        label: {
-          formatter: threshold.label,
-          position: 'insideEndTop',
-          color: threshold.color || '#4C4F69',
-          fontSize: 12,
-          fontWeight: 700
-        },
-        lineStyle: {
-          color: threshold.color || '#4C4F69',
-          type: 'dashed',
-          width: 1.5
-        }
-      }))
-    } : undefined,
-    emphasis: {
-      focus: 'series',
-      lineStyle: {
-        width: 3
-      }
-    }
-  };
-}
-
-function resizeDashboardTrendChart() {
-  dashboardChart?.resize();
-  if (dashboardChart) {
-    const trend = activeDashboardTrend.value;
-    const points = activeTrendPoints.value;
-    renderDashboardTrendOverlay(
-      points.map((point) => point.label || '-'),
-      points.map((point) => Number(point.value || 0)),
-      trend?.color || '#4C4F69'
-    );
-  }
-}
-
-function disposeDashboardTrendChart() {
-  window.cancelAnimationFrame(dashboardTrendAnimationFrame);
-  if (dashboardTrendOverlay.value) {
-    dashboardTrendOverlay.value.innerHTML = '';
-  }
-  dashboardChart?.dispose();
-  dashboardChart = null;
 }
 
 async function loadKnowledge() {
@@ -1575,13 +995,52 @@ async function loadKnowledge() {
 async function loadFailedTasks() {
   isLoadingTasks.value = true;
   try {
-    const response = await fetchFailedIngestionTasks();
-    failedTasks.value = Array.isArray(response) ? response : [];
+    const response = await fetchFailedIngestionTasks({
+      page: taskPage.value,
+      pageSize: taskPageSize.value,
+      keyword: taskKeyword.value.trim(),
+      status: taskStatusFilter.value,
+      startAt: taskStartAt.value,
+      endAt: taskEndAt.value
+    });
+    failedTasks.value = Array.isArray(response?.records) ? response.records : (Array.isArray(response) ? response : []);
+    taskTotal.value = Number(response?.total ?? failedTasks.value.length);
+    taskPages.value = Number(response?.pages ?? 0);
+    taskPage.value = Number(response?.page ?? taskPage.value);
+    taskPageSize.value = Number(response?.pageSize ?? taskPageSize.value);
   } catch (error) {
     handleAdminError(error);
   } finally {
     isLoadingTasks.value = false;
   }
+}
+
+async function applyTaskFilters() {
+  taskPage.value = 1;
+  await loadFailedTasks();
+}
+
+async function resetTaskFilters() {
+  taskKeyword.value = '';
+  taskStatusFilter.value = 'ALL';
+  taskStartAt.value = '';
+  taskEndAt.value = '';
+  taskPage.value = 1;
+  await loadFailedTasks();
+}
+
+async function goToTaskPage(nextPage) {
+  const safePage = Math.max(1, Math.min(Number(nextPage || 1), taskPages.value || 1));
+  if (safePage === taskPage.value || isLoadingTasks.value) {
+    return;
+  }
+  taskPage.value = safePage;
+  await loadFailedTasks();
+}
+
+async function changeTaskPageSize() {
+  taskPage.value = 1;
+  await loadFailedTasks();
 }
 
 async function loadQueryAdmin() {
@@ -1693,6 +1152,14 @@ async function refreshCurrentView() {
     }
     if (activeModule.value === 'intent-tree' || activeModule.value === 'intent-list' || activeModule.value === 'intent-rules') {
       await loadIntentAdmin();
+      return;
+    }
+    if (activeModule.value === 'intent-records') {
+      await intentRecordsSection.value?.reloadRecords();
+      return;
+    }
+    if (activeModule.value === 'query-records') {
+      await queryRecordsSection.value?.reloadRecords();
       return;
     }
     await loadKnowledge();
@@ -2295,31 +1762,6 @@ function toggleAllVisibleChunks() {
   selectedChunkIds.value = next;
 }
 
-function defaultChunkOptions() {
-  return {
-    strategy: 'RECURSIVE',
-    chunkSize: 1000,
-    chunkOverlap: 150,
-    maxChunks: 200
-  };
-}
-
-function normalizeChunkPayload(options) {
-  const strategy = options.strategy || 'RECURSIVE';
-  if (strategy === 'NONE') {
-    return { strategy };
-  }
-  if (strategy === 'AUTO') {
-    return { strategy };
-  }
-  return {
-    strategy,
-    chunkSize: Number(options.chunkSize || 1000),
-    chunkOverlap: Number(options.chunkOverlap || 0),
-    maxChunks: Number(options.maxChunks || 200)
-  };
-}
-
 function handleAdminError(error) {
   if (isSessionError(error)) {
     emit('session-expired');
@@ -2328,656 +1770,45 @@ function handleAdminError(error) {
   adminError.value = error.message || '后台管理请求失败';
 }
 
-function isSessionError(error) {
-  return error.message?.includes('未登录') || error.message?.includes('会话已过期');
-}
-
-function formatNumber(value) {
-  return Number(value || 0).toLocaleString();
-}
-
-function formatBytes(value) {
-  const bytes = Number(value || 0);
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatDate(value) {
-  return value ? new Date(value).toLocaleString() : '待生成';
-}
-
-function formatDuration(value) {
-  if (value === null || value === undefined) {
-    return '待接入';
-  }
-  if (value < 1000) {
-    return `${value}ms`;
-  }
-  return `${(value / 1000).toFixed(2)}s`;
-}
-
-function formatTrendValue(value, unit) {
-  const numberValue = Number(value || 0);
-  if (unit === '毫秒') {
-    return formatDuration(numberValue);
-  }
-  return formatNumber(numberValue);
-}
-
-function formatTrendAxisValue(value, unit) {
-  const numberValue = Number(value || 0);
-  if (unit === '毫秒') {
-    if (numberValue >= 1000) {
-      const seconds = numberValue / 1000;
-      return `${seconds >= 10 ? seconds.toFixed(0) : seconds.toFixed(1)}s`;
-    }
-    return `${Math.round(numberValue)}ms`;
-  }
-  return formatNumber(Math.round(numberValue));
-}
-
-function metricText(value, fallback = '待接入') {
-  return value === null || value === undefined ? fallback : formatNumber(value);
-}
-
-function sourceText(document) {
-  return document.sourceType === 'URL' ? 'URL' : 'Local File';
-}
-
-function taskActionText(action) {
-  if (action === 'REBUILD_VECTORS') {
-    return '重建向量';
-  }
-  return '分块';
-}
-
-function taskStatusText(status) {
-  if (status === 'DEAD') {
-    return 'dead';
-  }
-  if (status === 'FAILED') {
-    return 'failed';
-  }
-  if (status === 'RETRYING') {
-    return 'retrying';
-  }
-  if (status === 'COMPLETED') {
-    return 'success';
-  }
-  if (status === 'RUNNING') {
-    return 'running';
-  }
-  return 'pending';
-}
-
-function taskStatusClass(status) {
-  if (status === 'DEAD' || status === 'FAILED') {
-    return 'danger';
-  }
-  if (status === 'COMPLETED') {
-    return 'success';
-  }
-  if (status === 'RETRYING' || status === 'RUNNING') {
-    return 'pending';
-  }
-  return 'muted';
-}
-
-function taskOptionsText(task) {
-  if (task.action === 'REBUILD_VECTORS') {
-    return '沿用当前分块';
-  }
-  if (task.strategy === 'RECURSIVE') {
-    return `${task.strategy.toLowerCase()} / ${task.chunkSize}-${task.chunkOverlap} / ${task.maxChunks}`;
-  }
-  return task.strategy ? task.strategy.toLowerCase() : '-';
-}
-
-function canRetryTask(task) {
-  return task?.status === 'FAILED';
-}
-
-function taskDetailRows(task) {
-  if (!task) {
-    return [];
-  }
-  return [
-    ['任务编号', task.taskId],
-    ['文档编号', task.documentId],
-    ['文档状态', task.documentStatus],
-    ['动作', taskActionText(task.action)],
-    ['状态', taskStatusText(task.status)],
-    ['分块参数', taskOptionsText(task)],
-    ['重试次数', `${task.retryCount} / ${task.maxRetries}`],
-    ['最近失败', formatDate(task.lastFailedAt || task.updatedAt)],
-    ['开始时间', task.lastStartedAt ? formatDate(task.lastStartedAt) : '-'],
-    ['创建时间', formatDate(task.createdAt)],
-    ['更新时间', formatDate(task.updatedAt)],
-    ['MQ MessageId', task.mqMessageId || '-'],
-    ['Source RequestId', task.sourceRequestId || '-'],
-    ['错误原因', task.lastError || '-']
-  ];
-}
-
-function typeText(document) {
-  const type = document.contentType || document.fileName?.split('.').pop() || document.sourceType;
-  return String(type).replace('application/', '').replace('text/', '');
-}
-
-function statusClass(status) {
-  if (status === 'COMPLETED') {
-    return 'success';
-  }
-  if (status === 'FAILED') {
-    return 'danger';
-  }
-  if (status === 'UPLOADED') {
-    return 'muted';
-  }
-  if (status === 'UPLOADING') {
-    return 'pending';
-  }
-  return 'pending';
-}
-
-function statusText(status) {
-  if (status === 'COMPLETED') {
-    return 'success';
-  }
-  if (status === 'FAILED') {
-    return 'failed';
-  }
-  if (status === 'UPLOADED') {
-    return 'uploaded';
-  }
-  if (status === 'UPLOADING') {
-    return 'uploading';
-  }
-  return 'processing';
-}
-
-function isBusyDocumentStatus(status) {
-  return status === 'UPLOADING' || status === 'PROCESSING';
-}
-
-function isFailedDocumentStatus(status) {
-  return status === 'FAILED';
-}
-
-function shouldShowDocumentChunkAction(document) {
-  return !isFailedDocumentStatus(document?.status);
-}
-
-function canRechunkDocument(document) {
-  return document
-    && shouldShowDocumentChunkAction(document)
-    && !isBusyDocumentStatus(document.status);
-}
-
-function canOpenDocumentChunks(document) {
-  return document
-    && !isFailedDocumentStatus(document.status)
-    && document.status !== 'UPLOADING';
-}
-
-function canViewDocumentChunks(document) {
-  return canOpenDocumentChunks(document) && Number(document.chunkCount || 0) > 0;
-}
-
-function documentChunkActionLabel(document) {
-  if (document.status === 'UPLOADING') {
-    return '上传中...';
-  }
-  if (document.status === 'PROCESSING') {
-    return '处理中...';
-  }
-  if (document.status === 'COMPLETED') {
-    return '重新分块';
-  }
-  return '分块';
-}
 </script>
 
 <template>
   <main class="admin-page" :class="{ 'admin-sidebar-collapsed': isAdminSidebarCollapsed }">
-    <nav v-if="isAdminSidebarCollapsed" class="admin-sidebar-rail" aria-label="后台管理快捷导航">
-      <button class="admin-rail-button" type="button" data-tooltip="展开导航栏" @click="toggleAdminSidebar">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="4" y="5" width="16" height="14" rx="3" />
-          <path d="M9 5v14" />
-        </svg>
-      </button>
-      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'dashboard' }" data-tooltip="DashBoard" @click="navigateTo('/admin')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 13h6V4H4v9Z" />
-          <path d="M14 20h6V4h-6v16Z" />
-          <path d="M4 20h6v-3H4v3Z" />
-        </svg>
-      </button>
-      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'knowledge' }" data-tooltip="知识库管理" @click="navigateTo('/admin/knowledge')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v16H7.5A2.5 2.5 0 0 0 5 21.5v-16Z" />
-          <path d="M5 5.5A2.5 2.5 0 0 0 2.5 3H2v16h.5A2.5 2.5 0 0 1 5 21.5" />
-          <path d="M9 8h7" />
-          <path d="M9 12h6" />
-        </svg>
-      </button>
-      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'tasks' }" data-tooltip="失败任务" @click="navigateTo('/admin/tasks/failed')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 5h16" />
-          <path d="M4 12h10" />
-          <path d="M4 19h7" />
-          <path d="M17 15l4 4" />
-          <path d="M21 15l-4 4" />
-        </svg>
-      </button>
-      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'mappings' }" data-tooltip="关键词映射" @click="navigateTo('/admin/mappings')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 7h7" />
-          <path d="M4 17h7" />
-          <path d="M15 7h5" />
-          <path d="M15 17h5" />
-          <path d="M11 7l4 10" />
-        </svg>
-      </button>
-      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'pipeline' }" data-tooltip="流水线配置" @click="navigateTo('/admin/pipeline')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 6h5" />
-          <path d="M15 6h5" />
-          <path d="M9 6h6" />
-          <path d="M4 18h5" />
-          <path d="M15 18h5" />
-          <path d="M12 9v6" />
-        </svg>
-      </button>
-      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'intent-tree' }" data-tooltip="意图树配置" @click="navigateTo('/admin/intent-tree')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 5v4" />
-          <path d="M6.5 13h11" />
-          <path d="M6.5 13v4" />
-          <path d="M12 9v8" />
-          <path d="M17.5 13v4" />
-          <rect x="9.5" y="3" width="5" height="4" rx="1.4" />
-          <rect x="4" y="17" width="5" height="4" rx="1.4" />
-          <rect x="9.5" y="17" width="5" height="4" rx="1.4" />
-          <rect x="15" y="17" width="5" height="4" rx="1.4" />
-        </svg>
-      </button>
-      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'intent-list' }" data-tooltip="意图列表" @click="navigateTo('/admin/intent-list')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="4" y="4" width="16" height="16" rx="3" />
-          <path d="M8 8h.01" />
-          <path d="M11 8h5" />
-          <path d="M8 12h.01" />
-          <path d="M11 12h5" />
-          <path d="M8 16h.01" />
-          <path d="M11 16h5" />
-        </svg>
-      </button>
-      <button class="admin-rail-button" type="button" :class="{ active: activeModule === 'intent-rules' }" data-tooltip="规则配置" @click="navigateTo('/admin/intent-rules')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 7h10" />
-          <path d="M18 7h2" />
-          <path d="M4 12h3" />
-          <path d="M11 12h9" />
-          <path d="M4 17h8" />
-          <path d="M16 17h4" />
-          <circle cx="16" cy="7" r="2" />
-          <circle cx="9" cy="12" r="2" />
-          <circle cx="14" cy="17" r="2" />
-        </svg>
-      </button>
-      <button class="admin-rail-button admin-rail-bottom" type="button" data-tooltip="返回会话" @click="emit('back-to-chat')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M15 18l-6-6 6-6" />
-          <path d="M9 12h12" />
-        </svg>
-      </button>
-    </nav>
-
-    <aside class="admin-sidebar">
-      <div class="admin-brand">
-        <span class="admin-brand-mark">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 5h16" />
-            <path d="M4 12h16" />
-            <path d="M4 19h16" />
-            <path d="M8 5v14" />
-            <path d="M16 5v14" />
-          </svg>
-        </span>
-        <div>
-          <strong>后台管理</strong>
-          <small>{{ props.currentUser.displayName || props.currentUser.username }}</small>
-        </div>
-        <button class="admin-sidebar-toggle" type="button" @click="toggleAdminSidebar">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <rect x="4" y="5" width="16" height="14" rx="3" />
-            <path d="M9 5v14" />
-          </svg>
-        </button>
-      </div>
-
-      <nav class="admin-nav" aria-label="后台管理导航">
-        <button type="button" :class="{ active: activeModule === 'dashboard' }" @click="navigateTo('/admin')">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 13h6V4H4v9Z" />
-            <path d="M14 20h6V4h-6v16Z" />
-            <path d="M4 20h6v-3H4v3Z" />
-          </svg>
-          <span>DashBoard</span>
-        </button>
-        <button type="button" :class="{ active: activeModule === 'knowledge' }" @click="navigateTo('/admin/knowledge')">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v16H7.5A2.5 2.5 0 0 0 5 21.5v-16Z" />
-            <path d="M5 5.5A2.5 2.5 0 0 0 2.5 3H2v16h.5A2.5 2.5 0 0 1 5 21.5" />
-            <path d="M9 8h7" />
-            <path d="M9 12h6" />
-          </svg>
-          <span>知识库管理</span>
-        </button>
-        <button type="button" :class="{ active: activeModule === 'tasks' }" @click="navigateTo('/admin/tasks/failed')">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 5h16" />
-            <path d="M4 12h10" />
-            <path d="M4 19h7" />
-            <path d="M17 15l4 4" />
-            <path d="M21 15l-4 4" />
-          </svg>
-          <span>失败任务</span>
-        </button>
-        <button type="button" :class="{ active: activeModule === 'mappings' }" @click="navigateTo('/admin/mappings')">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 7h7" />
-            <path d="M4 17h7" />
-            <path d="M15 7h5" />
-            <path d="M15 17h5" />
-            <path d="M11 7l4 10" />
-          </svg>
-          <span>关键词映射</span>
-        </button>
-        <button type="button" :class="{ active: activeModule === 'pipeline' }" @click="navigateTo('/admin/pipeline')">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 6h5" />
-            <path d="M15 6h5" />
-            <path d="M9 6h6" />
-            <path d="M4 18h5" />
-            <path d="M15 18h5" />
-            <path d="M12 9v6" />
-          </svg>
-          <span>流水线配置</span>
-        </button>
-        <div class="admin-nav-group">
-          <small>意图管理</small>
-          <button type="button" :class="{ active: activeModule === 'intent-tree' }" @click="navigateTo('/admin/intent-tree')">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 5v4" />
-              <path d="M6.5 13h11" />
-              <path d="M6.5 13v4" />
-              <path d="M12 9v8" />
-              <path d="M17.5 13v4" />
-              <rect x="9.5" y="3" width="5" height="4" rx="1.4" />
-              <rect x="4" y="17" width="5" height="4" rx="1.4" />
-              <rect x="9.5" y="17" width="5" height="4" rx="1.4" />
-              <rect x="15" y="17" width="5" height="4" rx="1.4" />
-            </svg>
-            <span>意图树配置</span>
-          </button>
-          <button type="button" :class="{ active: activeModule === 'intent-list' }" @click="navigateTo('/admin/intent-list')">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="4" y="4" width="16" height="16" rx="3" />
-              <path d="M8 8h.01" />
-              <path d="M11 8h5" />
-              <path d="M8 12h.01" />
-              <path d="M11 12h5" />
-              <path d="M8 16h.01" />
-              <path d="M11 16h5" />
-            </svg>
-            <span>意图列表</span>
-          </button>
-          <button type="button" :class="{ active: activeModule === 'intent-rules' }" @click="navigateTo('/admin/intent-rules')">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 7h10" />
-              <path d="M18 7h2" />
-              <path d="M4 12h3" />
-              <path d="M11 12h9" />
-              <path d="M4 17h8" />
-              <path d="M16 17h4" />
-              <circle cx="16" cy="7" r="2" />
-              <circle cx="9" cy="12" r="2" />
-              <circle cx="14" cy="17" r="2" />
-            </svg>
-            <span>规则配置</span>
-          </button>
-        </div>
-      </nav>
-
-      <button class="admin-back-button" type="button" @click="emit('back-to-chat')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M15 18l-6-6 6-6" />
-          <path d="M9 12h12" />
-        </svg>
-        <span>返回会话</span>
-      </button>
-    </aside>
-
+    <AdminSidebar
+      :active-module="activeModule"
+      :collapsed="isAdminSidebarCollapsed"
+      :current-user="props.currentUser"
+      @back-to-chat="emit('back-to-chat')"
+      @navigate="navigateTo"
+      @toggle="toggleAdminSidebar"
+    />
     <section ref="adminMain" class="admin-main">
-      <header class="admin-header">
-        <div>
-          <span>{{ currentHeader.label }}</span>
-          <h1>
-            <i class="admin-title-icon" :class="`admin-title-icon-${currentHeader.icon}`" aria-hidden="true">
-              <svg v-if="currentHeader.icon === 'dashboard'" viewBox="0 0 24 24">
-                <path d="M4 13h6V4H4v9Z" />
-                <path d="M14 20h6V4h-6v16Z" />
-                <path d="M4 20h6v-3H4v3Z" />
-              </svg>
-              <svg v-else-if="currentHeader.icon === 'documents'" viewBox="0 0 24 24">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
-                <path d="M14 2v6h6" />
-                <path d="M8 13h8" />
-                <path d="M8 17h6" />
-              </svg>
-              <svg v-else-if="currentHeader.icon === 'chunks'" viewBox="0 0 24 24">
-                <path d="M4 7h16" />
-                <path d="M4 12h10" />
-                <path d="M4 17h16" />
-                <path d="M17 10l3 2-3 2" />
-              </svg>
-              <svg v-else-if="currentHeader.icon === 'tasks'" viewBox="0 0 24 24">
-                <path d="M4 5h16" />
-                <path d="M4 12h10" />
-                <path d="M4 19h7" />
-                <path d="M17 15l4 4" />
-                <path d="M21 15l-4 4" />
-              </svg>
-              <svg v-else-if="currentHeader.icon === 'mappings'" viewBox="0 0 24 24">
-                <path d="M4 7h7" />
-                <path d="M4 17h7" />
-                <path d="M15 7h5" />
-                <path d="M15 17h5" />
-                <path d="M11 7l4 10" />
-              </svg>
-              <svg v-else-if="currentHeader.icon === 'pipeline'" viewBox="0 0 24 24">
-                <path d="M4 6h5" />
-                <path d="M15 6h5" />
-                <path d="M9 6h6" />
-                <path d="M4 18h5" />
-                <path d="M15 18h5" />
-                <path d="M12 9v6" />
-              </svg>
-              <svg v-else-if="currentHeader.icon === 'intentTree'" viewBox="0 0 24 24">
-                <path d="M12 5v4" />
-                <path d="M6.5 13h11" />
-                <path d="M6.5 13v4" />
-                <path d="M12 9v8" />
-                <path d="M17.5 13v4" />
-                <rect x="9.5" y="3" width="5" height="4" rx="1.4" />
-                <rect x="4" y="17" width="5" height="4" rx="1.4" />
-                <rect x="9.5" y="17" width="5" height="4" rx="1.4" />
-                <rect x="15" y="17" width="5" height="4" rx="1.4" />
-              </svg>
-              <svg v-else-if="currentHeader.icon === 'intentList'" viewBox="0 0 24 24">
-                <rect x="4" y="4" width="16" height="16" rx="3" />
-                <path d="M8 8h.01" />
-                <path d="M11 8h5" />
-                <path d="M8 12h.01" />
-                <path d="M11 12h5" />
-                <path d="M8 16h.01" />
-                <path d="M11 16h5" />
-              </svg>
-              <svg v-else-if="currentHeader.icon === 'intentRules'" viewBox="0 0 24 24">
-                <path d="M4 7h10" />
-                <path d="M18 7h2" />
-                <path d="M4 12h3" />
-                <path d="M11 12h9" />
-                <path d="M4 17h8" />
-                <path d="M16 17h4" />
-                <circle cx="16" cy="7" r="2" />
-                <circle cx="9" cy="12" r="2" />
-                <circle cx="14" cy="17" r="2" />
-              </svg>
-              <svg v-else viewBox="0 0 24 24">
-                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-                <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15Z" />
-                <path d="M8 7h8" />
-                <path d="M8 11h6" />
-              </svg>
-            </i>
-            {{ currentHeader.title }}
-          </h1>
-        </div>
-        <button type="button" class="admin-refresh-button" :class="{ refreshing: isRefreshing }" :disabled="isRefreshing" @click="refreshCurrentView">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M20 6v5h-5" />
-            <path d="M4 18v-5h5" />
-            <path d="M19 11a7 7 0 0 0-12.2-4.2L4 9" />
-            <path d="M5 13a7 7 0 0 0 12.2 4.2L20 15" />
-          </svg>
-          <span>刷新</span>
-        </button>
-      </header>
-
+      <AdminHeader
+        :current-header="currentHeader"
+        :is-refreshing="isRefreshing"
+        @refresh="refreshCurrentView"
+      />
       <p v-if="adminError" class="admin-error">{{ adminError }}</p>
 
-      <section v-if="activeModule === 'dashboard'" class="admin-section kc-content">
-        <div class="kc-metric-grid">
-          <article class="kc-metric-card">
-            <span>活跃用户</span>
-            <strong>{{ isLoadingDashboard ? '...' : metricText(dashboard?.activeUserCount) }}</strong>
-            <small>最近 24 小时登录</small>
-          </article>
-          <article class="kc-metric-card">
-            <span>消息数</span>
-            <strong>{{ isLoadingDashboard ? '...' : metricText(dashboard?.messageCount) }}</strong>
-            <small>全量 chat_message</small>
-          </article>
-          <article class="kc-metric-card">
-            <span>会话数</span>
-            <strong>{{ isLoadingDashboard ? '...' : metricText(dashboard?.conversationCount) }}</strong>
-            <small>全量会话</small>
-          </article>
-          <article class="kc-metric-card">
-            <span>流量数</span>
-            <strong>{{ isLoadingDashboard ? '...' : metricText(dashboard?.trafficCharacterCount) }}</strong>
-            <small>消息字符量</small>
-          </article>
-          <article class="kc-metric-card" :class="averageResponseStatus">
-            <span>平均响应时间</span>
-            <strong>{{ formatDuration(dashboard?.averageResponseTimeMs) }}</strong>
-            <small>10 秒内良好，超过 15 秒标红</small>
-          </article>
-          <article class="kc-metric-card muted">
-            <span>知识错误率</span>
-            <strong>待接入</strong>
-            <small>RAG 评估完善后统计</small>
-          </article>
-          <article class="kc-metric-card muted">
-            <span>无知识率</span>
-            <strong>待接入</strong>
-            <small>RAG 检索链路完善后统计</small>
-          </article>
-        </div>
+      <AdminDashboardSection
+        v-if="activeModule === 'dashboard'"
+        :dashboard="dashboard"
+        :is-loading="isLoadingDashboard"
+        :message-trend-range="messageTrendRange"
+        @range-change="setMessageTrendRange"
+      />
 
-        <article class="dashboard-trend-card">
-          <header class="dashboard-trend-header">
-            <div class="dashboard-trend-heading">
-              <div class="dashboard-trend-title">
-                <strong>趋势分析</strong>
-                <span aria-label="趋势分析说明">?</span>
-              </div>
-              <div
-                class="dashboard-trend-actions dashboard-trend-type-switch"
-                :style="{ '--trend-index': activeTrendOptionIndex }"
-                role="group"
-                aria-label="趋势类型"
-              >
-                <span class="dashboard-trend-indicator" aria-hidden="true"></span>
-                <button
-                  v-for="option in trendTypeOptions"
-                  :key="option.type"
-                  type="button"
-                  :class="{ active: activeDashboardTrend?.type === option.type }"
-                  :disabled="isLoadingDashboard || !dashboardTrendSeries.some((series) => series.type === option.type)"
-                  @click="setActiveTrendType(option.type)"
-                >
-                  {{ option.label }}
-                </button>
-              </div>
-            </div>
-            <div
-              class="dashboard-trend-actions dashboard-trend-range-switch"
-              :style="{ '--trend-index': dashboardTrendRangeIndex }"
-              role="group"
-              aria-label="趋势范围"
-            >
-              <span class="dashboard-trend-indicator" aria-hidden="true"></span>
-              <button
-                type="button"
-                :class="{ active: messageTrendRange === 'day' }"
-                :disabled="isLoadingDashboard"
-                @click="setMessageTrendRange('day')"
-              >
-                24小时
-              </button>
-              <button
-                type="button"
-                :class="{ active: messageTrendRange === 'month' }"
-                :disabled="isLoadingDashboard"
-                @click="setMessageTrendRange('month')"
-              >
-                本月
-              </button>
-            </div>
-          </header>
-          <div class="dashboard-trend-summary" :aria-label="`${activeDashboardTrend?.summaryLabel || '趋势'}统计`">
-            <span class="dashboard-trend-summary-card">
-              <i :style="{ backgroundColor: activeDashboardTrend?.color || '#4C4F69' }"></i>
-              <span class="dashboard-trend-summary-copy">
-                <b>{{ activeDashboardTrend?.summaryLabel || '趋势数' }}：{{ formatTrendValue(activeTrendSummaryValue, activeDashboardTrend?.unit) }}</b>
-                <small>单位：{{ activeDashboardTrend?.unit || '-' }}</small>
-              </span>
-            </span>
-          </div>
-          <div
-            v-if="activeTrendPoints.length"
-            ref="dashboardTrendShell"
-            class="dashboard-trend-chart"
-            :aria-label="`${activeDashboardTrend?.title || '趋势'}折线图`"
-          >
-            <div ref="dashboardTrendChart" class="dashboard-trend-chart-canvas"></div>
-            <svg ref="dashboardTrendOverlay" class="dashboard-trend-overlay" aria-hidden="true"></svg>
-          </div>
-          <p v-else class="dashboard-trend-empty">
-            {{ isLoadingDashboard ? '趋势数据加载中...' : '暂无趋势数据' }}
-          </p>
-        </article>
-      </section>
+      <AdminIntentRecordsSection
+        v-else-if="activeModule === 'intent-records'"
+        ref="intentRecordsSection"
+        @error="handleAdminError"
+      />
+
+      <AdminQueryRecordsSection
+        v-else-if="activeModule === 'query-records'"
+        ref="queryRecordsSection"
+        @error="handleAdminError"
+      />
 
       <section v-else-if="activeModule === 'tasks'" class="admin-section kc-content">
         <div class="kc-metric-grid knowledge-metrics">
@@ -2992,7 +1823,7 @@ function documentChunkActionLabel(document) {
               </svg>
             </span>
             <span>失败任务</span>
-            <strong>{{ isLoadingTasks ? '...' : metricText(failedTasks.length, '0') }}</strong>
+            <strong>{{ isLoadingTasks ? '...' : metricText(taskTotal, '0') }}</strong>
           </article>
           <article class="kc-metric-card icon-card">
             <span class="kc-metric-icon">
@@ -3001,8 +1832,8 @@ function documentChunkActionLabel(document) {
                 <circle cx="12" cy="12" r="9" />
               </svg>
             </span>
-            <span>死信任务</span>
-            <strong>{{ failedTasks.filter((task) => task.status === 'DEAD').length }}</strong>
+            <span>本页死信</span>
+            <strong>{{ metricText(failedTaskDeadCount, '0') }}</strong>
           </article>
           <article class="kc-metric-card icon-card">
             <span class="kc-metric-icon">
@@ -3013,8 +1844,8 @@ function documentChunkActionLabel(document) {
                 <path d="M5 13a7 7 0 0 0 12.2 4.2L20 15" />
               </svg>
             </span>
-            <span>可手动重试</span>
-            <strong>{{ failedTasks.filter((task) => task.status === 'FAILED').length }}</strong>
+            <span>本页可重试</span>
+            <strong>{{ metricText(failedTaskRetryCount, '0') }}</strong>
           </article>
         </div>
 
@@ -3022,10 +1853,15 @@ function documentChunkActionLabel(document) {
           <div class="kc-card-toolbar">
             <div>
               <strong>失败任务列表</strong>
-              <small>共 {{ filteredFailedTasks.length }} 条</small>
+              <small>第 {{ taskPageStart }}-{{ taskPageEnd }} 条 / 共 {{ formatNumber(taskTotal) }} 条</small>
             </div>
-            <div class="kc-toolbar-actions">
-              <input v-model="taskKeyword" type="search" placeholder="搜索文档、任务或错误原因" />
+            <div class="kc-toolbar-actions kc-filter-bar wide">
+              <input
+                v-model="taskKeyword"
+                type="search"
+                placeholder="搜索文档、任务或错误原因"
+                @keyup.enter="applyTaskFilters"
+              />
               <div class="kc-select-menu" :class="{ open: isTaskStatusMenuOpen }">
                 <button type="button" class="kc-select-trigger" @click="toggleTaskStatusMenu">
                   <span>{{ taskStatusFilterText(taskStatusFilter) }}</span>
@@ -3037,6 +1873,12 @@ function documentChunkActionLabel(document) {
                   <button type="button" :class="{ active: taskStatusFilter === 'DEAD' }" @click="setTaskStatus('DEAD')">dead</button>
                 </div>
               </div>
+              <input v-model="taskStartAt" type="datetime-local" aria-label="开始时间" @change="applyTaskFilters" />
+              <input v-model="taskEndAt" type="datetime-local" aria-label="结束时间" @change="applyTaskFilters" />
+              <button type="button" class="kc-ghost-button" :disabled="isLoadingTasks" @click="resetTaskFilters">重置</button>
+              <button type="button" class="kc-primary-button" :disabled="isLoadingTasks" @click="applyTaskFilters">
+                {{ isLoadingTasks ? '查询中...' : '查询' }}
+              </button>
             </div>
           </div>
           <div class="kc-table-head task-grid">
@@ -3048,7 +1890,7 @@ function documentChunkActionLabel(document) {
             <span>操作</span>
           </div>
           <div class="kc-table-body">
-            <div v-for="task in filteredFailedTasks" :key="task.taskId" class="kc-table-row task-grid">
+            <div v-for="task in failedTasks" :key="task.taskId" class="kc-table-row task-grid">
               <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, task.fileName)" @mouseleave="clearOverflowTooltip">
                 <span class="kc-tooltip-content">{{ task.fileName }}</span>
               </span>
@@ -3067,7 +1909,22 @@ function documentChunkActionLabel(document) {
               </span>
             </div>
           </div>
-          <p v-if="!isLoadingTasks && filteredFailedTasks.length === 0" class="kc-empty">当前没有失败入库任务。</p>
+          <p v-if="!isLoadingTasks && failedTasks.length === 0" class="kc-empty">当前没有失败入库任务。</p>
+
+          <footer class="kc-pagination">
+            <span>第 {{ taskPageStart }}-{{ taskPageEnd }} 条 / 共 {{ formatNumber(taskTotal) }} 条</span>
+            <div>
+              <select v-model.number="taskPageSize" :disabled="isLoadingTasks" @change="changeTaskPageSize">
+                <option :value="10">10 / 页</option>
+                <option :value="20">20 / 页</option>
+                <option :value="50">50 / 页</option>
+                <option :value="100">100 / 页</option>
+              </select>
+              <button type="button" class="kc-ghost-button" :disabled="isLoadingTasks || taskPage <= 1" @click="goToTaskPage(taskPage - 1)">上一页</button>
+              <span>{{ taskPage }} / {{ taskPages || 1 }}</span>
+              <button type="button" class="kc-ghost-button" :disabled="isLoadingTasks || taskPage >= (taskPages || 1)" @click="goToTaskPage(taskPage + 1)">下一页</button>
+            </div>
+          </footer>
         </section>
       </section>
 

@@ -19,6 +19,7 @@ import com.yinbo.agent.chat.flow.retrieval.RetrievalExecuteService;
 import com.yinbo.agent.common.BusinessException;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -32,7 +33,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class ConversationFlowExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(ConversationFlowExecutor.class);
-    private static final long STREAM_TIMEOUT_MILLIS = 180_000L;
+    private static final long STREAM_TIMEOUT_MILLIS = 360_000L;
 
     private final ConversationLifecycleService conversationLifecycleService;
     private final ConversationMemoryService conversationMemoryService;
@@ -89,7 +90,7 @@ public class ConversationFlowExecutor {
             return completeWithAssistantResult(ctx, directChatService.generate(ctx), "sync");
         }
 
-        RetrievalContext retrievalContext = retrievalExecuteService.retrieve(ctx);
+        RetrievalContext retrievalContext = retrieveWithTrace(ctx);
         String emptyRetrievalMessage = retrievalExecuteService.emptyRetrievalMessage(retrievalContext);
         if (emptyRetrievalMessage != null) {
             return completeWithStaticAssistantMessage(ctx, emptyRetrievalMessage);
@@ -102,6 +103,7 @@ public class ConversationFlowExecutor {
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
         ctx.setEmitter(emitter);
         Map<String, String> mdcContext = MDC.getCopyOfContextMap();
+        registerStreamCallbacks(ctx, emitter, mdcContext);
         CompletableFuture.runAsync(() -> {
             if (mdcContext != null) {
                 MDC.setContextMap(mdcContext);
@@ -113,6 +115,44 @@ public class ConversationFlowExecutor {
             }
         });
         return emitter;
+    }
+
+    private void registerStreamCallbacks(
+            ChatExecutionContext ctx,
+            SseEmitter emitter,
+            Map<String, String> mdcContext
+    ) {
+        emitter.onTimeout(() -> withMdc(mdcContext, () -> {
+            if (ctx.markStreamClosed("timeout")) {
+                log.warn(
+                        "event=ai_stream_timeout conversationId={} modelId={} timeoutMs={}",
+                        conversationId(ctx),
+                        modelId(ctx),
+                        STREAM_TIMEOUT_MILLIS
+                );
+            }
+            streamResponseWriter.safeComplete(emitter);
+        }));
+        emitter.onError(exception -> withMdc(mdcContext, () -> {
+            if (ctx.markStreamClosed("error")) {
+                log.info(
+                        "event=ai_stream_emitter_error conversationId={} modelId={} type={} message={}",
+                        conversationId(ctx),
+                        modelId(ctx),
+                        exception.getClass().getSimpleName(),
+                        sanitizeLogValue(exception.getMessage())
+                );
+            }
+        }));
+        emitter.onCompletion(() -> withMdc(mdcContext, () -> {
+            if (ctx.markStreamClosed("completed")) {
+                log.debug(
+                        "event=ai_stream_emitter_completed conversationId={} modelId={}",
+                        conversationId(ctx),
+                        modelId(ctx)
+                );
+            }
+        }));
     }
 
     // 执行流式会话主流程。
@@ -146,7 +186,7 @@ public class ConversationFlowExecutor {
                 return;
             }
 
-            RetrievalContext retrievalContext = retrievalExecuteService.retrieve(ctx);
+            RetrievalContext retrievalContext = retrieveWithTrace(ctx);
             String emptyRetrievalMessage = retrievalExecuteService.emptyRetrievalMessage(retrievalContext);
             if (emptyRetrievalMessage != null) {
                 completeWithStaticAssistantMessage(ctx, emptyRetrievalMessage);
@@ -154,10 +194,12 @@ public class ConversationFlowExecutor {
             }
             streamGroundedResponse(ctx, retrievalContext);
         } catch (ClientDisconnectedException exception) {
+            ctx.markStreamClosed("disconnected");
             log.info(
-                    "event=ai_stream_disconnected conversationId={} modelId={}",
+                    "event=ai_stream_disconnected conversationId={} modelId={} reason={}",
                     conversationId,
-                    ctx.model() == null ? "-" : ctx.model().id()
+                    ctx.model() == null ? "-" : ctx.model().id(),
+                    sanitizeLogValue(ctx.streamCloseReason())
             );
             streamResponseWriter.safeComplete(ctx.emitter());
         } catch (BusinessException exception) {
@@ -215,6 +257,20 @@ public class ConversationFlowExecutor {
         conversationMemoryCompressionService.preparePromptMemory(ctx);
     }
 
+    // 执行检索并把 RAG 阶段摘要写入本轮调试追踪。
+    private RetrievalContext retrieveWithTrace(ChatExecutionContext ctx) {
+        long startedAt = System.nanoTime();
+        RetrievalContext retrievalContext = retrievalExecuteService.retrieve(ctx);
+        long durationMs = Math.max(0L, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt));
+        ctx.setRagTrace(
+                true,
+                durationMs,
+                retrievalContext == null ? 0 : retrievalContext.knowledgeSnippets().size(),
+                retrievalContext == null ? 0 : retrievalContext.toolResults().size()
+        );
+        return retrievalContext;
+    }
+
     // 生成基于检索上下文的普通响应，后续实现。
     private ChatResponse generateGroundedResponse(ChatExecutionContext ctx, RetrievalContext retrievalContext) {
         return completeWithStaticAssistantMessage(ctx, "RAG 回答流程还未实现。");
@@ -246,6 +302,25 @@ public class ConversationFlowExecutor {
     private void finishStream(ChatExecutionContext ctx) {
         streamResponseWriter.sendDone(ctx);
         streamResponseWriter.safeComplete(ctx.emitter());
+    }
+
+    private void withMdc(Map<String, String> mdcContext, Runnable action) {
+        if (mdcContext != null) {
+            MDC.setContextMap(mdcContext);
+        }
+        try {
+            action.run();
+        } finally {
+            MDC.clear();
+        }
+    }
+
+    private String conversationId(ChatExecutionContext ctx) {
+        return ctx.conversation() == null ? "-" : ctx.conversation().getConversationNo();
+    }
+
+    private String modelId(ChatExecutionContext ctx) {
+        return ctx.model() == null ? "-" : ctx.model().id();
     }
 
     // 清洗日志字段值。

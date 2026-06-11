@@ -39,6 +39,9 @@ public class ChatMessageEntity {
     @TableField("total_tokens")
     private Integer totalTokens;
 
+    @TableField("assistant_trace_json")
+    private String assistantTraceJson;
+
     @TableField(value = "created_at", fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 
@@ -123,6 +126,14 @@ public class ChatMessageEntity {
 
     public void setTotalTokens(Integer totalTokens) {
         this.totalTokens = totalTokens;
+    }
+
+    public String getAssistantTraceJson() {
+        return assistantTraceJson;
+    }
+
+    public void setAssistantTraceJson(String assistantTraceJson) {
+        this.assistantTraceJson = assistantTraceJson;
     }
 
     public LocalDateTime getCreatedAt() {

@@ -180,6 +180,12 @@ box-shadow: 0 1px 2px rgba(76, 79, 105, 0.04);
 - 文本可省略，但只有实际溢出时才显示 tooltip。
 - 状态胶囊使用语义色，不改变整行背景。
 
+### 后台通用组件
+
+- 新增后台列表页优先使用 `AdminFilterBar`、`AdminTable`、`AdminDetailModal`、`AdminJsonPreview`、`StatusBadge`，不要直接复制旧页面里的筛选栏、分页、弹窗和 JSON `<pre>` 结构。
+- 页面只保留业务字段、列定义、接口请求和行内容 slot；表格标题区、分页、空状态、详情弹窗头尾和状态胶囊由通用组件承接。
+- `kc-*` CSS 类仍是视觉底座，新增页面只有在通用组件无法表达业务结构时再补局部类。
+
 ### 弹窗
 
 - 遮罩允许轻微 blur。

@@ -63,8 +63,7 @@ public class QueryRewriteService {
 
         if (!config.llmRewriteEnabled()) {
             result = fallbackResult(normalization, config, "REWRITE_DISABLED");
-            applyResult(ctx, result);
-            recordService.record(ctx, result, PROMPT_VERSION, null, null, elapsedMillis(startedAt));
+            finishRewrite(ctx, result, config, null, null, startedAt);
             return;
         }
 
@@ -75,17 +74,17 @@ public class QueryRewriteService {
             errorMessage = exception.getMessage();
             result = fallbackResult(normalization, config, fallbackReason(exception));
             log.warn(
-                    "event=query_rewrite_failed conversationId={} modelId={} reason={} type={} message={}",
+                    "event=query_rewrite_failed conversationId={} modelId={} reason={} timeoutMs={} type={} message={}",
                     ctx.conversation().getConversationNo(),
                     ctx.model().id(),
                     result.fallbackReason(),
+                    config.rewriteTimeoutMs(),
                     exception.getClass().getSimpleName(),
                     sanitizeLogValue(exception.getMessage())
             );
         }
 
-        applyResult(ctx, result);
-        recordService.record(ctx, result, PROMPT_VERSION, rawModelResponse, errorMessage, elapsedMillis(startedAt));
+        finishRewrite(ctx, result, config, rawModelResponse, errorMessage, startedAt);
     }
 
     private TerminologyNormalizationResult normalizeTerms(ChatExecutionContext ctx, QueryPipelineConfigView config) {
@@ -107,7 +106,13 @@ public class QueryRewriteService {
         );
         LLMRequest request = new LLMRequest(ctx.model().id(), false, messages);
         CompletableFuture<LLMResponse> future = CompletableFuture.supplyAsync(() -> llmService.chat(request));
-        LLMResponse response = future.get(config.rewriteTimeoutMs(), TimeUnit.MILLISECONDS);
+        LLMResponse response;
+        try {
+            response = future.get(config.rewriteTimeoutMs(), TimeUnit.MILLISECONDS);
+        } catch (Exception exception) {
+            future.cancel(true);
+            throw exception;
+        }
         String content = response == null ? null : response.content();
         if (content == null || content.isBlank()) {
             throw new IllegalStateException("查询改写模型返回空内容");
@@ -255,6 +260,31 @@ public class QueryRewriteService {
         ctx.setRewriteResult(result);
         ctx.setRewrittenQuery(result.rewrite());
         ctx.setSubQueries(result.subQuestions());
+    }
+
+    private void finishRewrite(
+            ChatExecutionContext ctx,
+            QueryRewriteResult result,
+            QueryPipelineConfigView config,
+            String rawModelResponse,
+            String errorMessage,
+            long startedAt
+    ) {
+        long durationMs = elapsedMillis(startedAt);
+        ctx.setQueryRewriteDurationMs(durationMs);
+        applyResult(ctx, result);
+        log.info(
+                "event=query_rewrite_resolved conversationId={} userMessageId={} sourceType={} success={} fallbackReason={} subQuestionCount={} timeoutMs={} durationMs={}",
+                ctx.conversation() == null ? "-" : ctx.conversation().getConversationNo(),
+                ctx.userMessage() == null ? "-" : ctx.userMessage().getId(),
+                result.sourceType(),
+                result.success(),
+                result.fallbackReason() == null ? "-" : result.fallbackReason(),
+                result.subQuestions().size(),
+                config.rewriteTimeoutMs(),
+                durationMs
+        );
+        recordService.record(ctx, result, PROMPT_VERSION, rawModelResponse, errorMessage, durationMs);
     }
 
     private String fallbackReason(Exception exception) {

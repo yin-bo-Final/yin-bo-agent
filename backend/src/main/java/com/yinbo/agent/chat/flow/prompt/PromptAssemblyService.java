@@ -150,7 +150,8 @@ public class PromptAssemblyService {
                 message.modelId(),
                 message.createdAt(),
                 message.responseDurationMs(),
-                message.totalTokens()
+                message.totalTokens(),
+                message.assistantTraceJson()
         );
     }
 

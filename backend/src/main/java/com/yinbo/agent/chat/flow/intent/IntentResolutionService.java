@@ -30,10 +30,28 @@ import org.springframework.stereotype.Service;
 public class IntentResolutionService {
 
     private static final Logger log = LoggerFactory.getLogger(IntentResolutionService.class);
+    private static final List<String> DIRECT_ANSWER_MARKERS = List.of(
+            "什么意思",
+            "是什么意思",
+            "啥意思",
+            "含义",
+            "概念",
+            "定义",
+            "解释一下",
+            "解释下",
+            "指什么",
+            "这句话"
+    );
+    private static final String FALLBACK_INTENT_DISABLED = "INTENT_DISABLED";
+    private static final String FALLBACK_INTENT_TREE_EMPTY = "INTENT_TREE_EMPTY";
+    private static final String FALLBACK_CLASSIFY_INTERRUPTED = "INTENT_CLASSIFY_INTERRUPTED";
+    private static final String FALLBACK_CLASSIFY_TIMEOUT = "INTENT_CLASSIFY_TIMEOUT";
+    private static final String FALLBACK_CLASSIFY_FAILED = "INTENT_CLASSIFY_FAILED";
 
     private final IntentTreeService intentTreeService;
     private final RuleIntentRouter ruleIntentRouter;
     private final IntentClassifier intentClassifier;
+    private final IntentResolveRecordService intentResolveRecordService;
     private final ChatIntentProperties properties;
     private final ExecutorService intentClassifyExecutor;
 
@@ -42,34 +60,40 @@ public class IntentResolutionService {
             IntentTreeService intentTreeService,
             RuleIntentRouter ruleIntentRouter,
             IntentClassifier intentClassifier,
+            IntentResolveRecordService intentResolveRecordService,
             ChatIntentProperties properties,
             @Qualifier("intentClassifyExecutor") ExecutorService intentClassifyExecutor
     ) {
         this.intentTreeService = intentTreeService;
         this.ruleIntentRouter = ruleIntentRouter;
         this.intentClassifier = intentClassifier;
+        this.intentResolveRecordService = intentResolveRecordService;
         this.properties = properties;
         this.intentClassifyExecutor = intentClassifyExecutor;
     }
 
     // 识别用户意图并写回会话上下文。
     public void resolve(ChatExecutionContext ctx) {
+        long startNanos = System.nanoTime();
         if (!properties.enabled()) {
-            applyResult(ctx, IntentResolveResult.empty());
+            finishResolve(ctx, IntentResolveResult.fallback(FALLBACK_INTENT_DISABLED), elapsedMillis(startNanos));
             return;
         }
 
         IntentTreeData treeData = intentTreeService.loadEnabledTreeData();
         if (treeData.leafNodes().isEmpty()) {
-            applyResult(ctx, IntentResolveResult.empty());
+            finishResolve(ctx, IntentResolveResult.fallback(FALLBACK_INTENT_TREE_EMPTY), elapsedMillis(startNanos));
             return;
         }
 
         List<String> questions = resolveQuestions(ctx);
-        List<SubQuestionIntent> subQuestionIntents = classifyQuestions(ctx, questions, treeData);
-        List<SubQuestionIntent> capped = capTotalIntents(subQuestionIntents);
+        ClassificationBatchResult classified = classifyQuestions(ctx, questions, treeData);
+        List<SubQuestionIntent> capped = capTotalIntents(classified.subQuestionIntents());
         IntentResolveResult result = buildResolveResult(capped);
-        applyResult(ctx, result);
+        if (classified.fallbackReason() != null) {
+            result = result.asFallback(classified.fallbackReason());
+        }
+        finishResolve(ctx, result, elapsedMillis(startNanos));
     }
 
     // 判断当前会话是否可以直接调用 LLM。
@@ -77,23 +101,25 @@ public class IntentResolutionService {
         return ctx.hasIntent(ChatIntentType.DIRECT_CHAT);
     }
 
-    private List<SubQuestionIntent> classifyQuestions(
+    private ClassificationBatchResult classifyQuestions(
             ChatExecutionContext ctx,
             List<String> questions,
             IntentTreeData treeData
     ) {
-        List<CompletableFuture<SubQuestionIntent>> tasks = questions.stream()
+        List<CompletableFuture<QuestionClassificationResult>> tasks = questions.stream()
                 .map(question -> CompletableFuture.supplyAsync(
                         () -> classifyQuestionSafely(ctx, question, treeData),
                         intentClassifyExecutor
                 ))
                 .toList();
         CompletableFuture<Void> all = CompletableFuture.allOf(tasks.toArray(CompletableFuture[]::new));
+        String fallbackReason = null;
         try {
             all.get(properties.classifyTimeoutMs(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             cancelUnfinished(tasks);
+            fallbackReason = FALLBACK_CLASSIFY_INTERRUPTED;
             log.warn(
                     "event=intent_subquestion_classification_interrupted conversationId={} timeoutMs={}",
                     conversationId(ctx),
@@ -101,6 +127,7 @@ public class IntentResolutionService {
             );
         } catch (TimeoutException exception) {
             cancelUnfinished(tasks);
+            fallbackReason = FALLBACK_CLASSIFY_TIMEOUT;
             log.warn(
                     "event=intent_subquestion_classification_timeout conversationId={} timeoutMs={} type={} message={}",
                     conversationId(ctx),
@@ -110,6 +137,7 @@ public class IntentResolutionService {
             );
         } catch (ExecutionException exception) {
             cancelUnfinished(tasks);
+            fallbackReason = FALLBACK_CLASSIFY_FAILED;
             log.warn(
                     "event=intent_subquestion_classification_failed conversationId={} type={} message={}",
                     conversationId(ctx),
@@ -120,23 +148,34 @@ public class IntentResolutionService {
 
         List<SubQuestionIntent> result = new ArrayList<>();
         for (int index = 0; index < questions.size(); index++) {
-            CompletableFuture<SubQuestionIntent> task = tasks.get(index);
+            CompletableFuture<QuestionClassificationResult> task = tasks.get(index);
             if (!task.isDone() || task.isCompletedExceptionally() || task.isCancelled()) {
                 result.add(new SubQuestionIntent(questions.get(index), List.of()));
+                if (fallbackReason == null) {
+                    fallbackReason = FALLBACK_CLASSIFY_FAILED;
+                }
                 continue;
             }
-            result.add(task.getNow(new SubQuestionIntent(questions.get(index), List.of())));
+            QuestionClassificationResult item = task.getNow(QuestionClassificationResult.success(
+                    new SubQuestionIntent(questions.get(index), List.of())
+            ));
+            result.add(item.subQuestionIntent());
+            if (fallbackReason == null && item.fallbackReason() != null) {
+                fallbackReason = item.fallbackReason();
+            }
         }
-        return result;
+        return new ClassificationBatchResult(result, fallbackReason);
     }
 
-    private SubQuestionIntent classifyQuestionSafely(
+    private QuestionClassificationResult classifyQuestionSafely(
             ChatExecutionContext ctx,
             String question,
             IntentTreeData treeData
     ) {
         try {
-            return new SubQuestionIntent(question, classifyQuestion(ctx, question, treeData));
+            return QuestionClassificationResult.success(
+                    new SubQuestionIntent(question, classifyQuestion(ctx, question, treeData))
+            );
         } catch (Exception exception) {
             log.warn(
                     "event=intent_subquestion_classification_failed conversationId={} question={} type={} message={}",
@@ -145,12 +184,15 @@ public class IntentResolutionService {
                     exception.getClass().getSimpleName(),
                     sanitizeLogValue(exception.getMessage())
             );
-            return new SubQuestionIntent(question, List.of());
+            return QuestionClassificationResult.fallback(
+                    new SubQuestionIntent(question, List.of()),
+                    FALLBACK_CLASSIFY_FAILED
+            );
         }
     }
 
-    private void cancelUnfinished(List<CompletableFuture<SubQuestionIntent>> tasks) {
-        for (CompletableFuture<SubQuestionIntent> task : tasks) {
+    private void cancelUnfinished(List<CompletableFuture<QuestionClassificationResult>> tasks) {
+        for (CompletableFuture<QuestionClassificationResult> task : tasks) {
             if (!task.isDone()) {
                 task.cancel(true);
             }
@@ -164,6 +206,9 @@ public class IntentResolutionService {
                     .limit(properties.maxIntents())
                     .toList();
         }
+        if (shouldSkipIntentClassifier(question, ruleResult)) {
+            return List.of();
+        }
 
         List<IntentNode> candidates = ruleResult.candidateLeaves().isEmpty()
                 ? treeData.leafNodes()
@@ -172,6 +217,18 @@ public class IntentResolutionService {
                 .filter(this::aboveMinScore)
                 .limit(properties.maxIntents())
                 .toList();
+    }
+
+    private boolean shouldSkipIntentClassifier(String question, RuleRouteResult ruleResult) {
+        return isDirectAnswerQuestion(question);
+    }
+
+    private boolean isDirectAnswerQuestion(String question) {
+        if (question == null || question.isBlank()) {
+            return true;
+        }
+        String normalized = question.trim().toLowerCase().replaceAll("\\s+", "");
+        return DIRECT_ANSWER_MARKERS.stream().anyMatch(normalized::contains);
     }
 
     private boolean aboveMinScore(NodeScore nodeScore) {
@@ -274,7 +331,12 @@ public class IntentResolutionService {
                 .flatMap(item -> item.nodeScores().stream())
                 .sorted(Comparator.comparingDouble(NodeScore::score).reversed())
                 .toList();
-        return new IntentResolveResult(subQuestionIntents, selected, ambiguity.ambiguous(), ambiguity.guidanceQuestion());
+        return IntentResolveResult.success(
+                subQuestionIntents,
+                selected,
+                ambiguity.ambiguous(),
+                ambiguity.guidanceQuestion()
+        );
     }
 
     private AmbiguityResult detectAmbiguity(List<SubQuestionIntent> subQuestionIntents) {
@@ -319,6 +381,55 @@ public class IntentResolutionService {
         ctx.setIntents(toChatIntentTypes(result));
     }
 
+    private void finishResolve(ChatExecutionContext ctx, IntentResolveResult result, long durationMs) {
+        ctx.setIntentResolveDurationMs(durationMs);
+        applyResult(ctx, result);
+        logResolvedIntent(ctx, result, durationMs);
+        intentResolveRecordService.record(ctx, result, durationMs);
+    }
+
+    private void logResolvedIntent(ChatExecutionContext ctx, IntentResolveResult result, long durationMs) {
+        log.info(
+                "event=intent_resolved conversationId={} userMessageId={} outcome={} fallbackReason={} intents={} ambiguous={} selectedNodeCount={} topNode={} selectedNodes={} subQuestionCount={} durationMs={}",
+                conversationId(ctx),
+                ctx.userMessage() == null ? "-" : ctx.userMessage().getId(),
+                result.outcome(),
+                result.fallbackReason() == null ? "-" : result.fallbackReason(),
+                ctx.intents(),
+                result.ambiguous(),
+                result.selectedNodeScores().size(),
+                topNodeSummary(result),
+                selectedNodeSummary(result),
+                result.subQuestionIntents().size(),
+                durationMs
+        );
+    }
+
+    private List<String> selectedNodeSummary(IntentResolveResult result) {
+        return result.selectedNodeScores().stream()
+                .map(score -> {
+                    IntentNode node = score.node();
+                    String nodeCode = node == null ? "-" : node.getId();
+                    String kind = node == null || node.getKind() == null ? "-" : node.getKind().name();
+                    return nodeCode + ":" + kind + ":" + score.score() + ":" + score.source();
+                })
+                .toList();
+    }
+
+    private String topNodeSummary(IntentResolveResult result) {
+        if (result.selectedNodeScores().isEmpty()) {
+            return "-";
+        }
+        NodeScore score = result.selectedNodeScores().get(0);
+        IntentNode node = score.node();
+        if (node == null) {
+            return "-";
+        }
+        String nodeCode = node.getId() == null || node.getId().isBlank() ? "-" : node.getId();
+        String kind = node.getKind() == null ? "-" : node.getKind().name();
+        return nodeCode + ":" + kind + ":" + score.score() + ":" + score.source();
+    }
+
     private List<ChatIntentType> toChatIntentTypes(IntentResolveResult result) {
         if (result.ambiguous()) {
             return List.of(ChatIntentType.CLARIFICATION);
@@ -345,6 +456,10 @@ public class IntentResolutionService {
         return ctx.conversation() == null ? "-" : ctx.conversation().getConversationNo();
     }
 
+    private long elapsedMillis(long startNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+    }
+
     private String sanitizeLogValue(String value) {
         if (value == null || value.isBlank()) {
             return "-";
@@ -357,5 +472,22 @@ public class IntentResolutionService {
     }
 
     private record AmbiguityResult(boolean ambiguous, String guidanceQuestion) {
+    }
+
+    private record ClassificationBatchResult(List<SubQuestionIntent> subQuestionIntents, String fallbackReason) {
+    }
+
+    private record QuestionClassificationResult(SubQuestionIntent subQuestionIntent, String fallbackReason) {
+
+        private static QuestionClassificationResult success(SubQuestionIntent subQuestionIntent) {
+            return new QuestionClassificationResult(subQuestionIntent, null);
+        }
+
+        private static QuestionClassificationResult fallback(
+                SubQuestionIntent subQuestionIntent,
+                String fallbackReason
+        ) {
+            return new QuestionClassificationResult(subQuestionIntent, fallbackReason);
+        }
     }
 }

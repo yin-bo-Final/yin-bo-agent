@@ -14,6 +14,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
@@ -137,6 +138,18 @@ public class GlobalExceptionHandler {
                 exception
         );
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+    }
+
+    @ExceptionHandler(AsyncRequestTimeoutException.class)
+    // 处理 SSE async 超时，避免 text/event-stream 响应再写 JSON 错误体。
+    public ResponseEntity<Void> handleAsyncRequestTimeout(AsyncRequestTimeoutException exception) {
+        log.warn(
+                "event=async_request_timeout requestId={} type={} message={}",
+                requestId(),
+                exception.getClass().getSimpleName(),
+                sanitizeLogValue(exception.getMessage())
+        );
+        return ResponseEntity.noContent().build();
     }
 
     @ExceptionHandler(Exception.class)

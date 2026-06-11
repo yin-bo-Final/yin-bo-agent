@@ -137,6 +137,8 @@ server:
 
 日志要求：
 - 所有 Java 服务的日志规范必须和 gateway / backend 保持一致，包括 `requestId` MDC、`event=access` 入口访问日志、`method/path/status/costMs/slow/clientIp/userAgent` 字段、console/file pattern、按日期和大小滚动、保留天数和总量上限。
+- 耗时字段命名保持一致：HTTP access 层使用 `costMs`，业务阶段日志和流水线记录使用 `durationMs`，例如 query rewrite、intent resolve、LLM chat。
+- 聊天流水线耗时拆分统一写入 `assistantTrace.durationStages`；新增阶段必须通过 `ChatExecutionContext.recordDurationStage(code, label, durationMs)` 记录，不要再为每个新阶段单独往 Trace 顶层加 `xxxDurationMs` 字段。`responseDurationMs` / `chat_message.response_duration_ms` 表示本轮端到端总耗时。
 - 新增服务时必须补齐和 gateway / backend 同风格的请求过滤器或全局过滤器；例如 ai-infra 也要记录 `/internal/**` 的 access log，不能只依赖 Spring / Tomcat 默认日志。
 - 系统间 HTTP 调用必须透传 `X-Request-Id`，例如 gateway -> backend、backend -> ai-infra。
 - 关键业务动作必须有 event=... 日志，例如创建、删除、状态变更、异步任务投递、异步任务消费、外部模型调用完成或失败。

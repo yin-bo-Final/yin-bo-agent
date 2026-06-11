@@ -5,6 +5,7 @@ import com.yinbo.agent.chat.flow.message.AssistantResponseResult;
 import com.yinbo.agent.chat.flow.prompt.PromptAssemblyService;
 import com.yinbo.agent.chat.flow.response.ChatStreamResponseWriter;
 import com.yinbo.agent.chat.flow.response.ChatStreamResponseWriter.ClientDisconnectedException;
+import com.yinbo.ai.api.chat.LLMRequest;
 import com.yinbo.ai.api.chat.LLMResponse;
 import com.yinbo.ai.api.chat.LLMService;
 import com.yinbo.ai.api.model.ModelOption;
@@ -36,9 +37,11 @@ public class DirectChatService {
     // 执行普通直聊模型调用。
     public AssistantResponseResult generate(ChatExecutionContext ctx) {
         String conversationId = ctx.conversation().getConversationNo();
-        long responseStartedAt = System.nanoTime();
+        long responseStartedAt = -1L;
         try {
-            LLMResponse response = llmService.chat(promptAssemblyService.buildDirectRequest(ctx));
+            LLMRequest request = promptAssemblyService.buildDirectRequest(ctx);
+            responseStartedAt = System.nanoTime();
+            LLMResponse response = llmService.chat(request);
             return toAssistantResponseResult(response, responseStartedAt, ctx.latestUserMessage().content(), ctx.model().id());
         } catch (Exception exception) {
             log.warn(
@@ -49,19 +52,21 @@ public class DirectChatService {
                     sanitizeLogValue(exception.getMessage()),
                     exception
             );
-            return modelFailureResult(ctx, responseStartedAt);
+            return modelFailureResult(ctx, responseStartedAt, fallbackReason(exception));
         }
     }
 
     // 执行流式直聊模型调用，返回 null 表示已中断并完成 SSE。
     public AssistantResponseResult stream(ChatExecutionContext ctx) {
         String conversationId = ctx.conversation().getConversationNo();
-        long responseStartedAt = System.nanoTime();
+        long responseStartedAt = -1L;
         StringBuilder contentBuilder = new StringBuilder();
         AssistantResponseResult result;
         try {
+            LLMRequest request = promptAssemblyService.buildDirectRequest(ctx);
+            responseStartedAt = System.nanoTime();
             LLMResponse response = llmService.streamChat(
-                    promptAssemblyService.buildDirectRequest(ctx),
+                    request,
                     delta -> {
                         if (delta == null || delta.isEmpty()) {
                             return;
@@ -73,9 +78,13 @@ public class DirectChatService {
             String content = contentBuilder.isEmpty()
                     ? response == null ? "" : response.content()
                     : contentBuilder.toString();
+            content = normalizeModelContent(content);
             long responseDurationMs = elapsedMillis(responseStartedAt);
             String modelId = response == null || response.modelId() == null ? ctx.model().id() : response.modelId();
             result = toAssistantResponseResult(modelId, content, responseDurationMs, usageFrom(response), ctx.latestUserMessage().content());
+            if (contentBuilder.isEmpty()) {
+                streamResponseWriter.sendChunkedContent(ctx, result.content());
+            }
         } catch (ClientDisconnectedException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -104,25 +113,19 @@ public class DirectChatService {
                     sanitizeLogValue(exception.getMessage()),
                     exception
             );
-            result = modelFailureResult(ctx, responseStartedAt);
+            result = modelFailureResult(ctx, responseStartedAt, fallbackReason(exception));
             streamResponseWriter.sendChunkedContent(ctx, result.content());
         }
 
-        if (result.content().isBlank()) {
-            String content = "模型调用成功，但返回内容为空。";
-            streamResponseWriter.sendDelta(ctx, content);
-            return result.withContent(content);
-        }
         return result;
     }
 
     // 生成固定内容的 assistant 响应结果。
     public AssistantResponseResult staticResult(ChatExecutionContext ctx, String content) {
-        long responseStartedAt = System.nanoTime();
-        return new AssistantResponseResult(
+        return AssistantResponseResult.staticContent(
                 ctx.model().id(),
                 content,
-                elapsedMillis(responseStartedAt),
+                0L,
                 null,
                 estimateTokenCount(content),
                 estimateTokenCount(ctx.latestUserMessage().content()) + estimateTokenCount(content)
@@ -130,16 +133,21 @@ public class DirectChatService {
     }
 
     // 构造模型失败时的调用结果。
-    private AssistantResponseResult modelFailureResult(ChatExecutionContext ctx, long responseStartedAt) {
+    private AssistantResponseResult modelFailureResult(
+            ChatExecutionContext ctx,
+            long responseStartedAt,
+            String fallbackReason
+    ) {
         String content = modelFailureResponseContent(ctx.model(), ctx.latestUserMessage().content());
-        long responseDurationMs = elapsedMillis(responseStartedAt);
-        return new AssistantResponseResult(
+        long responseDurationMs = responseStartedAt <= 0L ? 0L : elapsedMillis(responseStartedAt);
+        return AssistantResponseResult.fallback(
                 ctx.model().id(),
                 content,
                 responseDurationMs,
                 null,
                 estimateTokenCount(content),
-                estimateTokenCount(ctx.latestUserMessage().content()) + estimateTokenCount(content)
+                estimateTokenCount(ctx.latestUserMessage().content()) + estimateTokenCount(content),
+                fallbackReason
         );
     }
 
@@ -152,9 +160,13 @@ public class DirectChatService {
     ) {
         String modelId = response == null || response.modelId() == null ? fallbackModelId : response.modelId();
         String text = response == null ? null : response.content();
-        String content = text == null || text.isBlank() ? "模型调用成功，但返回内容为空。" : text;
+        String content = normalizeModelContent(text);
         long responseDurationMs = elapsedMillis(responseStartedAt);
         return toAssistantResponseResult(modelId, content, responseDurationMs, usageFrom(response), latestUserContent);
+    }
+
+    private String normalizeModelContent(String text) {
+        return text == null || text.isBlank() ? "模型调用成功，但返回内容为空。" : text;
     }
 
     // 转换模型调用结果。
@@ -175,7 +187,7 @@ public class DirectChatService {
         if (totalTokens == null) {
             totalTokens = (promptTokens == null ? estimateTokenCount(latestUserContent) : promptTokens) + completionTokens;
         }
-        return new AssistantResponseResult(modelId, content, responseDurationMs, promptTokens, completionTokens, totalTokens);
+        return AssistantResponseResult.llm(modelId, content, responseDurationMs, promptTokens, completionTokens, totalTokens);
     }
 
     // 从模型响应中提取 token 用量。
@@ -228,6 +240,20 @@ public class DirectChatService {
         }
         String sanitized = value.replaceAll("[\\r\\n\\t]", "_");
         return sanitized.length() <= 256 ? sanitized : sanitized.substring(0, 256);
+    }
+
+    private String fallbackReason(Exception exception) {
+        String message = exception.getMessage();
+        if (message != null && message.contains("status=503")) {
+            return "AI_INFRA_503";
+        }
+        if (message != null && message.contains("status=429")) {
+            return "AI_INFRA_RATE_LIMITED";
+        }
+        if (message != null && message.contains("status=504")) {
+            return "AI_INFRA_TIMEOUT";
+        }
+        return "AI_CALL_FAILED";
     }
 
     // Token 用量。

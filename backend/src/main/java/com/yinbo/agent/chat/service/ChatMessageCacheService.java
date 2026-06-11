@@ -118,7 +118,8 @@ public class ChatMessageCacheService {
             String modelId,
             Instant createdAt,
             Long responseDurationMs,
-            Integer totalTokens
+            Integer totalTokens,
+            String assistantTraceJson
     ) {
 
         // 从数据库消息实体转换为缓存消息。
@@ -130,7 +131,8 @@ public class ChatMessageCacheService {
                     message.getModelId(),
                     toInstant(message.getCreatedAt()),
                     message.getResponseDurationMs(),
-                    message.getTotalTokens()
+                    message.getTotalTokens(),
+                    message.getAssistantTraceJson()
             );
         }
 

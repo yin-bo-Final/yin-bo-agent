@@ -13,6 +13,10 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 public class QueryPipelineConfigService {
 
     private static final long CONFIG_ID = 1L;
+    private static final int MIN_REWRITE_TIMEOUT_MS = 500;
+    private static final int MAX_REWRITE_TIMEOUT_MS = 30_000;
+    private static final int MIN_REWRITE_CONTEXT_TURNS = 1;
+    private static final int MAX_REWRITE_CONTEXT_TURNS = 10;
 
     private final ChatPipelineConfigMapper configMapper;
     private final QueryPipelineConfigCacheService cacheService;
@@ -33,7 +37,11 @@ public class QueryPipelineConfigService {
     public QueryPipelineConfigView currentConfig() {
         QueryPipelineConfigView cached = cacheService.get();
         if (cached != null) {
-            return cached;
+            QueryPipelineConfigView normalized = normalizeView(cached);
+            if (!normalized.equals(cached)) {
+                cacheService.put(normalized);
+            }
+            return normalized;
         }
         QueryPipelineConfigView config = toView(configMapper.selectById(CONFIG_ID));
         cacheService.put(config);
@@ -60,10 +68,18 @@ public class QueryPipelineConfigService {
             config.setFallbackPolicy(normalizeFallbackPolicy(command.fallbackPolicy()));
         }
         if (command.rewriteTimeoutMs() != null && command.rewriteTimeoutMs() > 0) {
-            config.setRewriteTimeoutMs(Math.min(command.rewriteTimeoutMs(), 30_000));
+            config.setRewriteTimeoutMs(clamp(
+                    command.rewriteTimeoutMs(),
+                    MIN_REWRITE_TIMEOUT_MS,
+                    MAX_REWRITE_TIMEOUT_MS
+            ));
         }
         if (command.rewriteContextTurns() != null && command.rewriteContextTurns() > 0) {
-            config.setRewriteContextTurns(Math.min(command.rewriteContextTurns(), 10));
+            config.setRewriteContextTurns(clamp(
+                    command.rewriteContextTurns(),
+                    MIN_REWRITE_CONTEXT_TURNS,
+                    MAX_REWRITE_CONTEXT_TURNS
+            ));
         }
         config.setUpdatedBy(updatedBy);
         if (configMapper.selectById(CONFIG_ID) == null) {
@@ -83,8 +99,18 @@ public class QueryPipelineConfigService {
                 booleanOrDefault(safeConfig.getLlmRewriteEnabled(), properties.llmRewriteEnabled()),
                 booleanOrDefault(safeConfig.getRuleSplitEnabled(), properties.ruleSplitEnabled()),
                 normalizeFallbackPolicy(safeConfig.getFallbackPolicy()),
-                positiveOrDefault(safeConfig.getRewriteTimeoutMs(), properties.rewriteTimeoutMs()),
-                positiveOrDefault(safeConfig.getRewriteContextTurns(), properties.rewriteContextTurns()),
+                boundedPositiveOrDefault(
+                        safeConfig.getRewriteTimeoutMs(),
+                        properties.rewriteTimeoutMs(),
+                        MIN_REWRITE_TIMEOUT_MS,
+                        MAX_REWRITE_TIMEOUT_MS
+                ),
+                boundedPositiveOrDefault(
+                        safeConfig.getRewriteContextTurns(),
+                        properties.rewriteContextTurns(),
+                        MIN_REWRITE_CONTEXT_TURNS,
+                        MAX_REWRITE_CONTEXT_TURNS
+                ),
                 safeConfig.getUpdatedAt()
         );
     }
@@ -96,9 +122,41 @@ public class QueryPipelineConfigService {
         config.setLlmRewriteEnabled(properties.llmRewriteEnabled());
         config.setRuleSplitEnabled(properties.ruleSplitEnabled());
         config.setFallbackPolicy(normalizeFallbackPolicy(properties.fallbackPolicy()));
-        config.setRewriteTimeoutMs(properties.rewriteTimeoutMs());
-        config.setRewriteContextTurns(properties.rewriteContextTurns());
+        config.setRewriteTimeoutMs(boundedPositiveOrDefault(
+                null,
+                properties.rewriteTimeoutMs(),
+                MIN_REWRITE_TIMEOUT_MS,
+                MAX_REWRITE_TIMEOUT_MS
+        ));
+        config.setRewriteContextTurns(boundedPositiveOrDefault(
+                null,
+                properties.rewriteContextTurns(),
+                MIN_REWRITE_CONTEXT_TURNS,
+                MAX_REWRITE_CONTEXT_TURNS
+        ));
         return config;
+    }
+
+    private QueryPipelineConfigView normalizeView(QueryPipelineConfigView config) {
+        return new QueryPipelineConfigView(
+                config.terminologyEnabled(),
+                config.llmRewriteEnabled(),
+                config.ruleSplitEnabled(),
+                normalizeFallbackPolicy(config.fallbackPolicy()),
+                boundedPositiveOrDefault(
+                        config.rewriteTimeoutMs(),
+                        properties.rewriteTimeoutMs(),
+                        MIN_REWRITE_TIMEOUT_MS,
+                        MAX_REWRITE_TIMEOUT_MS
+                ),
+                boundedPositiveOrDefault(
+                        config.rewriteContextTurns(),
+                        properties.rewriteContextTurns(),
+                        MIN_REWRITE_CONTEXT_TURNS,
+                        MAX_REWRITE_CONTEXT_TURNS
+                ),
+                config.updatedAt()
+        );
     }
 
     private boolean booleanOrDefault(Boolean value, boolean defaultValue) {
@@ -107,6 +165,14 @@ public class QueryPipelineConfigService {
 
     private int positiveOrDefault(Integer value, int defaultValue) {
         return value == null || value <= 0 ? defaultValue : value;
+    }
+
+    private int boundedPositiveOrDefault(Integer value, int defaultValue, int min, int max) {
+        return clamp(positiveOrDefault(value, defaultValue), min, max);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(value, max));
     }
 
     private String normalizeFallbackPolicy(String value) {

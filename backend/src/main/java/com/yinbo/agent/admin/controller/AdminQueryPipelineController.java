@@ -1,9 +1,12 @@
 package com.yinbo.agent.admin.controller;
 
 import com.yinbo.agent.admin.AdminGuard;
+import com.yinbo.agent.admin.dto.PageResponse;
+import com.yinbo.agent.admin.dto.QueryRewriteRecordResponse;
 import com.yinbo.agent.admin.dto.TerminologyMappingRequest;
 import com.yinbo.agent.admin.dto.TerminologyMappingResponse;
 import com.yinbo.agent.admin.dto.UpdateQueryPipelineConfigRequest;
+import com.yinbo.agent.admin.service.AdminQueryRewriteRecordService;
 import com.yinbo.agent.admin.service.AdminTerminologyService;
 import com.yinbo.agent.auth.entity.AuthUser;
 import com.yinbo.agent.chat.flow.query.pipeline.QueryPipelineConfigService;
@@ -11,7 +14,9 @@ import com.yinbo.agent.chat.flow.query.pipeline.QueryPipelineConfigService.Updat
 import com.yinbo.agent.chat.flow.query.pipeline.QueryPipelineConfigView;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import java.time.LocalDateTime;
 import java.util.List;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -19,6 +24,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -29,16 +35,19 @@ public class AdminQueryPipelineController {
     private final AdminGuard adminGuard;
     private final AdminTerminologyService terminologyService;
     private final QueryPipelineConfigService pipelineConfigService;
+    private final AdminQueryRewriteRecordService queryRewriteRecordService;
 
     // 注入管理员校验、术语管理和流水线配置服务。
     public AdminQueryPipelineController(
             AdminGuard adminGuard,
             AdminTerminologyService terminologyService,
-            QueryPipelineConfigService pipelineConfigService
+            QueryPipelineConfigService pipelineConfigService,
+            AdminQueryRewriteRecordService queryRewriteRecordService
     ) {
         this.adminGuard = adminGuard;
         this.terminologyService = terminologyService;
         this.pipelineConfigService = pipelineConfigService;
+        this.queryRewriteRecordService = queryRewriteRecordService;
     }
 
     @GetMapping("/terminology/mappings")
@@ -112,6 +121,22 @@ public class AdminQueryPipelineController {
                 ),
                 authUser.getId()
         );
+    }
+
+    @GetMapping("/rewrite-records")
+    // 分页查询查询改写记录。
+    public PageResponse<QueryRewriteRecordResponse> rewriteRecords(
+            HttpServletRequest request,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer pageSize,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String sourceType,
+            @RequestParam(required = false) String success,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime startAt,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime endAt
+    ) {
+        adminGuard.requireAdmin(request);
+        return queryRewriteRecordService.page(page, pageSize, keyword, sourceType, success, startAt, endAt);
     }
 
     // 启用状态请求。

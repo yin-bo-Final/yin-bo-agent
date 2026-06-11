@@ -65,7 +65,7 @@ ConversationPage
 -> AiInfraClient
 -> ai-infra /internal/ai/chat 或 /internal/ai/chat/stream
 -> ModelSelector / ModelRoutingExecutor / 供应商 ChatClient
--> 保存消息、响应耗时和 token
+-> 保存消息、端到端总耗时、assistant Trace 和 token
 ```
 
 ### 文档入库
@@ -108,6 +108,7 @@ ConversationPage
 | `chat_pipeline_config` | `chat`              | 查询预处理 Pipeline 开关和降级策略             |
 | `chat_intent_node`     | `chat`              | 意图树节点、叶子路由目标、示例问题和节点级检索配置    |
 | `chat_intent_rule`     | `chat`              | 可配置意图规则、关键词条件、目标节点和命中分数       |
+| `chat_intent_resolve_record` | `chat`       | 意图识别输入、命中节点、最终意图、歧义状态、降级原因和耗时记录 |
 | `knowledge_base`         | `knowledge`               | 知识库名称、collection、Embedding 模型 |
 | `knowledge_document`     | `ingestion` / `knowledge` | 文档元数据、RustFS 对象信息、状态、耗时       |
 | `knowledge_chunk`        | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数、向量 ID     |
@@ -134,7 +135,8 @@ ConversationPage
 - 前端 `/api` 请求默认先进入 gateway，再由 gateway 转发到后端业务服务。
 - backend 通过 `AiInfraClient` 远程调用 ai-infra，HTTP 契约放在 `ai-api`，不要让 backend 反向依赖 ai-infra 实现类。
 - 会话生成入口由 `ChatService` 接收，阶段化处理放在 `chat/flow`；`ConversationFlowExecutor` 只负责编排，生命周期、记忆加载、记忆压缩、消息持久化、LLM 调用、查询改写、意图识别树、歧义引导、RAG 检索和工具调用分别扩展对应子包服务。
-- 意图识别的多子问题分类走 `intentClassifyExecutor` 专用线程池；意图节点被规则引用时不要直接改 `nodeCode` 或删除节点，先调整规则。
+- 意图识别的多子问题分类走 `intentClassifyExecutor` 专用线程池；结果会写入 `chat_intent_resolve_record` 并打印带 `outcome`、`fallbackReason`、`durationMs` 的 `event=intent_resolved` 日志；意图节点被规则引用时不要直接改 `nodeCode` 或删除节点，先调整规则。
+- 意图强规则回归样例在 `backend/src/test/resources/intent-rule-bad-cases.csv`，新增规则或修 bad case 后同步补样例。
 - 后台接口路径统一放在 `/api/admin/**`。
 - 业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本，已经执行过的迁移文件不能直接改内容。

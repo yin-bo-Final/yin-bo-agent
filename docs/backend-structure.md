@@ -29,7 +29,10 @@ backend/src/main/
       ├─ V7__add_query_rewrite_unique_indexes.sql
       ├─ V8__create_chat_intent_node.sql
       ├─ V9__create_chat_intent_rule.sql
-      └─ V10__drop_chat_intent_rule_priority.sql
+      ├─ V10__drop_chat_intent_rule_priority.sql
+      ├─ V11__create_chat_intent_resolve_record.sql
+      ├─ V12__tighten_intent_rule_exclusions.sql
+      └─ V13__add_intent_resolve_outcome.sql
 ```
 
 ## `resources` 配置模块
@@ -185,6 +188,40 @@ Flyway 意图规则字段收敛迁移脚本。
 | 重建规则索引 | 删除旧的 `enabled + priority` 索引，改为 `enabled + score + id`，让启用规则按命中分数排序 |
 | 兼容已执行 V9 | 保持 `V9` 文件内容稳定，通过新增 `V10` 演进结构，避免 Flyway checksum mismatch |
 
+### `db/migration/V11__create_chat_intent_resolve_record.sql`
+
+Flyway 意图识别记录迁移脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 意图识别记录表 | 创建 `chat_intent_resolve_record`，保存每轮识别的输入、命中节点、最终意图、歧义状态和耗时 |
+| 评估索引 | 按会话消息、创建时间、歧义状态建索引，方便 bad case 回放和命中率评估 |
+
+### `db/migration/V12__tighten_intent_rule_exclusions.sql`
+
+Flyway 默认规则修正脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 收紧默认强规则 | 给物流轨迹和订单查询强规则补充解释类排除词，避免 `快递到哪是什么意思` 误触发 MCP |
+| 保护用户配置 | 只在规则仍保持默认排除词时更新，避免覆盖管理员后续在后台改过的规则 |
+
+### `db/migration/V13__add_intent_resolve_outcome.sql`
+
+Flyway 意图识别结果语义补充迁移脚本。
+
+主要功能：
+
+| 功能 | 说明 |
+| --- | --- |
+| 识别结果状态 | 给 `chat_intent_resolve_record` 增加 `outcome` 字段，区分正常识别和降级兜底 |
+| 降级原因 | 增加 `fallback_reason` 字段，记录 `INTENT_CLASSIFY_TIMEOUT` 等兜底原因 |
+| 评估索引 | 按 `outcome` 和创建时间建索引，方便筛选降级样本 |
+
 当前业务表边界：
 
 | 表 | 主要模块 | 功能 |
@@ -199,6 +236,7 @@ Flyway 意图规则字段收敛迁移脚本。
 | `chat_pipeline_config` | `chat` | 查询预处理 Pipeline 开关和降级策略 |
 | `chat_intent_node` | `chat` | 意图树节点、叶子路由目标、示例问题和节点级检索配置 |
 | `chat_intent_rule` | `chat` | 可配置意图规则、关键词条件、目标节点和命中分数 |
+| `chat_intent_resolve_record` | `chat` | 意图识别输入、命中节点、最终意图、歧义状态、降级原因和耗时记录 |
 | `knowledge_base` | `knowledge` | 知识库编号、名称、Embedding 模型、collection 和状态 |
 | `knowledge_document` | `ingestion` / `knowledge` | 文档来源、对象存储信息、解析状态、分块参数和耗时 |
 | `knowledge_chunk` | `ingestion` / `knowledge` | 分块内容、启用状态、token、字符数和向量文档 ID |
@@ -592,6 +630,10 @@ chat/
 ├─ entity/
 │  ├─ ChatConversation.java
 │  ├─ ChatMessageEntity.java
+│  ├─ ChatIntentNode.java
+│  ├─ ChatIntentResolveRecord.java
+│  ├─ ChatIntentRule.java
+│  ├─ ChatQueryRewriteRecord.java
 │  └─ ConversationMemorySummary.java
 ├─ flow/
 │  ├─ ConversationFlowExecutor.java
@@ -601,7 +643,16 @@ chat/
 │  │  ├─ ChatExecutionContext.java
 │  │  └─ ChatIntentType.java
 │  ├─ intent/
-│  │  └─ IntentResolutionService.java
+│  │  ├─ IntentClassificationParser.java
+│  │  ├─ IntentClassifier.java
+│  │  ├─ IntentResolutionService.java
+│  │  ├─ IntentResolveRecordService.java
+│  │  ├─ IntentRuleCacheService.java
+│  │  ├─ IntentRuleService.java
+│  │  ├─ IntentTreeCacheService.java
+│  │  ├─ IntentTreeService.java
+│  │  ├─ RuleIntentRouter.java
+│  │  └─ model/
 │  ├─ lifecycle/
 │  │  ├─ ConversationLifecycleService.java
 │  │  └─ ConversationStreamRegistry.java
@@ -745,7 +796,7 @@ AI 对话入口和会话管理服务。
 | `flow/memory/ConversationMemoryService.java` | 历史会话记忆加载阶段，统一处理 Redis 缓存读取和 PostgreSQL 回源 |
 | `flow/memory/ConversationTokenEstimator.java` | 会话消息和摘要 token 粗略估算 |
 | `flow/message/ChatMessagePersistenceService.java` | user/assistant 消息持久化、会话更新和缓存刷新 |
-| `flow/message/AssistantResponseResult.java` | assistant 响应内容、模型和 token 统计的统一结果 |
+| `flow/message/AssistantResponseResult.java` | assistant 响应内容、模型、token、来源类型、成功状态和降级原因的统一结果 |
 | `flow/llm/DirectChatService.java` | 普通直聊和流式直聊模型调用 |
 | `flow/query/QueryRewriteService.java` | 查询改写和子问题拆分阶段 |
 | `flow/intent/IntentResolutionService.java` | 意图识别编排阶段 |
@@ -1557,7 +1608,7 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | 查询改写和问题拆分 | `QueryRewriteService`、`QueryRewriteResultParser`、`QueryRewriteRecordService`、`chat_query_rewrite_record` |
 | 术语统一 | `TerminologyNormalizationService`、`TerminologyDictionaryService`、`TerminologyDictionaryCacheService`、`chat_terminology_term`、`chat_terminology_alias` |
 | 查询预处理配置 | `QueryPipelineConfigService`、`QueryPipelineConfigCacheService`、`chat_pipeline_config` |
-| 意图识别和后台配置 | `IntentResolutionService`、`IntentTreeService`、`IntentRuleService`、`RuleIntentRouter`、`IntentClassifier`、`AdminIntentController`、`AdminIntentService`、`AdminIntentRuleService`、`chat_intent_node`、`chat_intent_rule` |
+| 意图识别和后台配置 | `IntentResolutionService`、`IntentResolveRecordService`、`IntentTreeService`、`IntentRuleService`、`RuleIntentRouter`、`IntentClassifier`、`AdminIntentController`、`AdminIntentService`、`AdminIntentRuleService`、`chat_intent_node`、`chat_intent_rule`、`chat_intent_resolve_record` |
 | 会话记忆压缩 | `ConversationMemoryCompressionService`、`ConversationTokenEstimator`、`ConversationMemorySummary`、`ConversationMemorySummaryMapper`、`conversation_memory_summary` |
 | 会话管理 | `ChatController`、`ChatService`、`ChatMessageCacheService` |
 | 统一业务异常 | `BusinessException`、`GlobalExceptionHandler`、`ApiErrorResponse` |
@@ -1577,5 +1628,5 @@ service 的 Actuator 默认只保留健康检查和基础信息。
 | 向量写入和重建 | `DocumentIngestionService`、`PgVectorRepository`、`AiInfraClient` |
 | 知识库管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
 | 文档和分块管理 | `KnowledgeAdminController`、`KnowledgeAdminService` |
-| 数据库迁移 | `resources/db/migration/V1__init_schema.sql` 到 `resources/db/migration/V10__drop_chat_intent_rule_priority.sql` |
+| 数据库迁移 | `resources/db/migration/V1__init_schema.sql` 到 `resources/db/migration/V13__add_intent_resolve_outcome.sql` |
 | Actuator 安全收口 | `application.yml` |

@@ -17,6 +17,7 @@ public class ChatStreamResponseWriter {
 
     // 发送流式开始事件。
     public void sendStart(ChatExecutionContext ctx) {
+        assertStreamOpen(ctx);
         sendEvent(ctx.emitter(), "start", ChatStreamEvent.start(
                 ctx.conversation().getConversationNo(),
                 ctx.model().id(),
@@ -26,6 +27,7 @@ public class ChatStreamResponseWriter {
 
     // 发送模型增量内容。
     public void sendDelta(ChatExecutionContext ctx, String delta) {
+        assertStreamOpen(ctx);
         sendEvent(ctx.emitter(), "delta", ChatStreamEvent.delta(
                 ctx.conversation().getConversationNo(),
                 ctx.model().id(),
@@ -44,17 +46,20 @@ public class ChatStreamResponseWriter {
 
     // 发送流式完成事件。
     public void sendDone(ChatExecutionContext ctx) {
+        assertStreamOpen(ctx);
         sendEvent(ctx.emitter(), "done", ChatStreamEvent.done(
                 ctx.conversation().getConversationNo(),
                 ctx.chatResponse().modelId(),
                 ctx.chatResponse().createdAt(),
                 ctx.chatResponse().responseDurationMs(),
-                ctx.chatResponse().totalTokens()
+                ctx.chatResponse().totalTokens(),
+                ctx.chatResponse().assistantTrace()
         ));
     }
 
     // 发送流式错误事件。
     public void sendError(ChatExecutionContext ctx, String message) {
+        assertStreamOpen(ctx);
         sendEvent(ctx.emitter(), "error", ChatStreamEvent.error(message));
     }
 
@@ -79,6 +84,14 @@ public class ChatStreamResponseWriter {
         }
     }
 
+    private void assertStreamOpen(ChatExecutionContext ctx) {
+        if (ctx.streamClosed()) {
+            throw new ClientDisconnectedException(
+                    new IllegalStateException("SSE emitter already closed reason=" + ctx.streamCloseReason())
+            );
+        }
+    }
+
     // 判断异常是否来自客户端断开连接。
     private boolean isClientDisconnected(Throwable throwable) {
         Throwable current = throwable;
@@ -90,6 +103,16 @@ public class ChatStreamResponseWriter {
             if (className.contains("ClientAbortException")) {
                 return true;
             }
+            String message = current.getMessage();
+            if (message != null && (
+                    message.contains("ResponseBodyEmitter has already completed")
+                            || message.contains("SSE emitter already closed")
+                            || message.contains("Broken pipe")
+                            || message.contains("Connection reset")
+                            || message.contains("已建立的连接")
+            )) {
+                return true;
+            }
             current = current.getCause();
         }
         return false;
@@ -99,7 +122,7 @@ public class ChatStreamResponseWriter {
     public static class ClientDisconnectedException extends RuntimeException {
 
         public ClientDisconnectedException(Throwable cause) {
-            super(cause);
+            super("SSE client disconnected", cause);
         }
     }
 }

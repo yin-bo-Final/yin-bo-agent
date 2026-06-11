@@ -10,6 +10,7 @@ public record ChatResponse(
         String content,
         Instant createdAt,
         Long responseDurationMs,
-        Integer totalTokens
+        Integer totalTokens,
+        ChatAssistantTraceResponse assistantTrace
 ) {
 }

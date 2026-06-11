@@ -10,6 +10,7 @@ public record ConversationMessageResponse(
         Instant createdAt,
         Long responseDurationMs,
         Integer totalTokens,
-        Long messageId
+        Long messageId,
+        ChatAssistantTraceResponse assistantTrace
 ) {
 }

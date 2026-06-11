@@ -12,6 +12,8 @@ import {
   streamChatMessage,
   updateConversationPin
 } from '../api/chatApi';
+import AssistantTracePanel from '../components/AssistantTracePanel.vue';
+import { hasAssistantTrace, normalizeAssistantTrace } from '../utils/assistantTrace';
 import { createQuietReveal } from '../utils/quietMotion';
 
 const props = defineProps({
@@ -378,6 +380,8 @@ async function submitMessage() {
     isStreaming: true,
     totalTokens: null,
     responseDurationMs: null,
+    assistantTrace: null,
+    isTraceOpen: false,
     thinkMode: thinkMode.value,
     thinkStartedAt: performance.now(),
     thinkDurationSeconds: null
@@ -427,6 +431,7 @@ async function submitMessage() {
         }
         assistantMessage.totalTokens = event.totalTokens ?? assistantMessage.totalTokens;
         assistantMessage.responseDurationMs = event.responseDurationMs ?? assistantMessage.responseDurationMs;
+        assistantMessage.assistantTrace = normalizeAssistantTrace(event.assistantTrace, assistantMessage, selectedModelId.value);
       },
       onError(event) {
         if (autoCompressionStatusMessageId) {
@@ -874,6 +879,13 @@ function toggleConversationMenu(conversationIdValue) {
   conversationOpenMenuId.value = conversationOpenMenuId.value === conversationIdValue ? '' : conversationIdValue;
 }
 
+function toggleAssistantTrace(message) {
+  if (!hasAssistantTrace(message) || message.isStreaming) {
+    return;
+  }
+  message.isTraceOpen = !message.isTraceOpen;
+}
+
 function openCancelMenu() {
   if (isCancelMenuOpen.value) {
     closeCancelMenu();
@@ -1001,6 +1013,24 @@ function formatTokenCount(value) {
     return `${Math.round(tokenCount / 1000)}k`;
   }
   return String(tokenCount);
+}
+
+function mapConversationMessage(response, message, index) {
+  const mappedMessage = {
+    id: `${response.conversationId}-${message.messageId || message.createdAt}-${index}`,
+    serverMessageId: message.messageId ?? null,
+    role: message.role,
+    content: message.content,
+    modelId: message.modelId ?? null,
+    totalTokens: message.totalTokens ?? null,
+    responseDurationMs: message.responseDurationMs ?? null,
+    assistantTrace: null,
+    isTraceOpen: false
+  };
+  mappedMessage.assistantTrace = message.role === 'assistant'
+    ? normalizeAssistantTrace(message.assistantTrace, mappedMessage, selectedModelId.value)
+    : null;
+  return mappedMessage;
 }
 
 function isConversationContentMessage(message) {
@@ -1321,14 +1351,7 @@ async function openConversation(targetConversationId) {
     const response = await fetchConversationDetail(targetConversationId);
     conversationId.value = response.conversationId;
     selectedModelId.value = response.modelId || selectedModelId.value;
-    messages.value = response.messages.map((message, index) => ({
-      id: `${response.conversationId}-${message.messageId || message.createdAt}-${index}`,
-      serverMessageId: message.messageId ?? null,
-      role: message.role,
-      content: message.content,
-      totalTokens: message.totalTokens ?? null,
-      responseDurationMs: message.responseDurationMs ?? null
-    }));
+    messages.value = response.messages.map((message, index) => mapConversationMessage(response, message, index));
     if (messages.value.length === 0) {
       messages.value = buildNewConversationMessages();
     } else {
@@ -1401,14 +1424,7 @@ async function openConversationFromRoute(targetConversationId, replaceHistory) {
     const response = await fetchConversationDetail(targetConversationId);
     conversationId.value = response.conversationId;
     selectedModelId.value = response.modelId || selectedModelId.value;
-    messages.value = response.messages.map((message, index) => ({
-      id: `${response.conversationId}-${message.messageId || message.createdAt}-${index}`,
-      serverMessageId: message.messageId ?? null,
-      role: message.role,
-      content: message.content,
-      totalTokens: message.totalTokens ?? null,
-      responseDurationMs: message.responseDurationMs ?? null
-    }));
+    messages.value = response.messages.map((message, index) => mapConversationMessage(response, message, index));
     if (messages.value.length === 0) {
       messages.value = buildNewConversationMessages();
     } else {
@@ -1999,9 +2015,36 @@ function stopPointerFrame() {
             :data-message-id="message.id"
           >
             <div class="message-bubble markdown-body" v-html="renderMessageContent(message)"></div>
-            <small v-if="message.role === 'assistant' && !message.isStreaming && message.totalTokens !== null && message.totalTokens !== undefined" class="message-usage">
-              消耗token数量: {{ message.totalTokens }}
-            </small>
+            <div
+              v-if="message.role === 'assistant' && !message.isStreaming && ((message.totalTokens !== null && message.totalTokens !== undefined) || hasAssistantTrace(message))"
+              class="message-meta-row"
+            >
+              <small v-if="message.totalTokens !== null && message.totalTokens !== undefined" class="message-usage">
+                消耗token数量: {{ message.totalTokens }}
+              </small>
+              <button
+                v-if="hasAssistantTrace(message)"
+                type="button"
+                class="message-trace-toggle"
+                :class="{ active: message.isTraceOpen }"
+                :aria-expanded="message.isTraceOpen"
+                :aria-label="message.isTraceOpen ? '收起本轮链路' : '查看本轮链路'"
+                @click="toggleAssistantTrace(message)"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h16" />
+                  <path d="M4 12h10" />
+                  <path d="M4 17h7" />
+                  <path d="M17 14l3 3-3 3" />
+                </svg>
+                <span>Trace</span>
+              </button>
+            </div>
+            <AssistantTracePanel
+              v-if="hasAssistantTrace(message) && message.isTraceOpen"
+              :trace="message.assistantTrace"
+              :message-id="message.id"
+            />
           </article>
         </template>
 

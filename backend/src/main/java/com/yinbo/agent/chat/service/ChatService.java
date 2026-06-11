@@ -2,7 +2,10 @@ package com.yinbo.agent.chat.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yinbo.agent.auth.entity.AuthUser;
+import com.yinbo.agent.chat.dto.ChatAssistantTraceResponse;
 import com.yinbo.agent.chat.dto.ChatRequest;
 import com.yinbo.agent.chat.dto.ChatResponse;
 import com.yinbo.agent.chat.dto.ConversationDetailResponse;
@@ -25,6 +28,8 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,12 +41,15 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 // AI 对话入口和会话管理服务。
 public class ChatService {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatService.class);
+
     private final ConversationFlowExecutor conversationFlowExecutor;
     private final ConversationMemoryService conversationMemoryService;
     private final ConversationMemoryCompressionService conversationMemoryCompressionService;
     private final ChatConversationMapper chatConversationMapper;
     private final ChatMessageMapper chatMessageMapper;
     private final ChatMessageCacheService chatMessageCacheService;
+    private final ObjectMapper objectMapper;
 
     // 注入会话流水线执行器、会话 Mapper、消息 Mapper 和缓存服务。
     public ChatService(
@@ -50,7 +58,8 @@ public class ChatService {
             ConversationMemoryCompressionService conversationMemoryCompressionService,
             ChatConversationMapper chatConversationMapper,
             ChatMessageMapper chatMessageMapper,
-            ChatMessageCacheService chatMessageCacheService
+            ChatMessageCacheService chatMessageCacheService,
+            ObjectMapper objectMapper
     ) {
         this.conversationFlowExecutor = conversationFlowExecutor;
         this.conversationMemoryService = conversationMemoryService;
@@ -58,6 +67,7 @@ public class ChatService {
         this.chatConversationMapper = chatConversationMapper;
         this.chatMessageMapper = chatMessageMapper;
         this.chatMessageCacheService = chatMessageCacheService;
+        this.objectMapper = objectMapper;
     }
 
     // 执行普通非流式 AI 对话。
@@ -193,8 +203,25 @@ public class ChatService {
                 message.createdAt(),
                 message.responseDurationMs(),
                 message.totalTokens(),
-                message.id()
+                message.id(),
+                parseAssistantTrace(message.assistantTraceJson())
         );
+    }
+
+    private ChatAssistantTraceResponse parseAssistantTrace(String assistantTraceJson) {
+        if (assistantTraceJson == null || assistantTraceJson.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(assistantTraceJson, ChatAssistantTraceResponse.class);
+        } catch (JsonProcessingException exception) {
+            log.warn(
+                    "event=assistant_trace_decode_failed type={} message={}",
+                    exception.getClass().getSimpleName(),
+                    sanitizeLogValue(exception.getMessage())
+            );
+            return null;
+        }
     }
 
     // 事务提交后删除会话消息缓存。
@@ -220,5 +247,13 @@ public class ChatService {
     // 转换为 Instant。
     private Instant toInstant(LocalDateTime value) {
         return value == null ? Instant.now() : value.atZone(ZoneId.systemDefault()).toInstant();
+    }
+
+    private String sanitizeLogValue(String value) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        String sanitized = value.replaceAll("[\\r\\n\\t]", "_");
+        return sanitized.length() <= 256 ? sanitized : sanitized.substring(0, 256);
     }
 }

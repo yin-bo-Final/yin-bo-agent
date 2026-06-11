@@ -1,15 +1,18 @@
 package com.yinbo.agent.ingestion.controller;
 
 import com.yinbo.agent.admin.AdminGuard;
+import com.yinbo.agent.admin.dto.PageResponse;
 import com.yinbo.agent.ingestion.dto.IngestionTaskResponse;
 import com.yinbo.agent.ingestion.service.IngestionTaskAdminService;
 import jakarta.servlet.http.HttpServletRequest;
-import java.util.List;
+import java.time.LocalDateTime;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -27,10 +30,18 @@ public class IngestionTaskAdminController {
     }
 
     @GetMapping("/failed")
-    // 查询失败入库任务列表。
-    public List<IngestionTaskResponse> failedTasks(HttpServletRequest request) {
+    // 分页查询失败入库任务列表。
+    public PageResponse<IngestionTaskResponse> failedTasks(
+            HttpServletRequest request,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer pageSize,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime startAt,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime endAt
+    ) {
         adminGuard.requireAdmin(request);
-        return ingestionTaskAdminService.listFailedTasks();
+        return ingestionTaskAdminService.pageFailedTasks(page, pageSize, keyword, status, startAt, endAt);
     }
 
     @PostMapping("/{taskId}/retry")

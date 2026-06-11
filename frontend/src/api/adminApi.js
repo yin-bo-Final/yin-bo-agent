@@ -126,8 +126,11 @@ export async function rebuildDocumentVectors(documentId) {
   return parseResponse(response, '向量重建失败');
 }
 
-export async function fetchFailedIngestionTasks() {
-  const response = await fetch(`${API_BASE_URL}/admin/ingestion/tasks/failed`, {
+export async function fetchFailedIngestionTasks(options = {}) {
+  const query = buildRecordQuery(options, {
+    statusKey: 'status'
+  });
+  const response = await fetch(`${API_BASE_URL}/admin/ingestion/tasks/failed${query ? `?${query}` : ''}`, {
     credentials: 'include'
   });
   return parseResponse(response, '失败任务列表加载失败');
@@ -189,6 +192,18 @@ export async function fetchQueryPipelineConfig() {
     credentials: 'include'
   });
   return parseResponse(response, '流水线配置加载失败');
+}
+
+export async function fetchQueryRewriteRecords(options = {}) {
+  const query = buildRecordQuery(options, {
+    statusKey: 'sourceType',
+    statusOptionKey: 'sourceType',
+    successKey: 'success'
+  });
+  const response = await fetch(`${API_BASE_URL}/admin/query/rewrite-records${query ? `?${query}` : ''}`, {
+    credentials: 'include'
+  });
+  return parseResponse(response, '查询改写记录加载失败');
 }
 
 export async function updateQueryPipelineConfig(payload) {
@@ -266,6 +281,21 @@ export async function fetchIntentRules() {
     credentials: 'include'
   });
   return parseResponse(response, '意图规则加载失败');
+}
+
+export async function fetchIntentResolveRecords(options = {}) {
+  const searchParams = buildRecordSearchParams(options);
+  if (options.outcome && options.outcome !== 'ALL') {
+    searchParams.set('outcome', options.outcome);
+  }
+  if (options.ambiguous && options.ambiguous !== 'ALL') {
+    searchParams.set('ambiguous', options.ambiguous);
+  }
+  const query = searchParams.toString();
+  const response = await fetch(`${API_BASE_URL}/admin/intents/resolve-records${query ? `?${query}` : ''}`, {
+    credentials: 'include'
+  });
+  return parseResponse(response, '意图识别记录加载失败');
 }
 
 export async function createIntentRule(payload) {
@@ -394,6 +424,42 @@ function appendIngestionOptions(formData, payload) {
       formData.append(key, value);
     }
   });
+}
+
+function buildRecordQuery(options, config = {}) {
+  return buildRecordSearchParams(options, config).toString();
+}
+
+function buildRecordSearchParams(options, config = {}) {
+  const searchParams = new URLSearchParams();
+  if (options.page) {
+    searchParams.set('page', options.page);
+  }
+  if (options.pageSize) {
+    searchParams.set('pageSize', options.pageSize);
+  }
+  if (options.keyword) {
+    searchParams.set('keyword', options.keyword);
+  }
+  const statusOptionKey = config.statusOptionKey || config.statusKey;
+  if (config.statusKey && options[statusOptionKey] && options[statusOptionKey] !== 'ALL') {
+    searchParams.set(config.statusKey, options[statusOptionKey]);
+  }
+  if (config.successKey && options[config.successKey] && options[config.successKey] !== 'ALL') {
+    searchParams.set(config.successKey, options[config.successKey]);
+  }
+  if (options.startAt) {
+    searchParams.set('startAt', normalizeDateTimeValue(options.startAt));
+  }
+  if (options.endAt) {
+    searchParams.set('endAt', normalizeDateTimeValue(options.endAt));
+  }
+  return searchParams;
+}
+
+function normalizeDateTimeValue(value) {
+  const text = String(value || '').trim();
+  return text.length === 16 ? `${text}:00` : text;
 }
 
 function pathSegment(value) {

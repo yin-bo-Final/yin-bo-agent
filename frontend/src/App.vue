@@ -1,10 +1,11 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue';
 import { fetchCurrentUser } from './api/authApi';
 import GlobalErrorToasts from './components/GlobalErrorToasts.vue';
-import AdminPage from './pages/AdminPage.vue';
 import AuthPage from './pages/AuthPage.vue';
 import ConversationPage from './pages/ConversationPage.vue';
+
+const AdminPage = defineAsyncComponent(() => import('./pages/AdminPage.vue'));
 
 const currentUser = ref(null);
 const isCheckingSession = ref(true);

@@ -4,14 +4,19 @@ import com.yinbo.agent.admin.AdminGuard;
 import com.yinbo.agent.admin.dto.IntentNodeEnabledRequest;
 import com.yinbo.agent.admin.dto.IntentNodeRequest;
 import com.yinbo.agent.admin.dto.IntentNodeResponse;
+import com.yinbo.agent.admin.dto.IntentResolveRecordResponse;
 import com.yinbo.agent.admin.dto.IntentRuleEnabledRequest;
 import com.yinbo.agent.admin.dto.IntentRuleRequest;
 import com.yinbo.agent.admin.dto.IntentRuleResponse;
+import com.yinbo.agent.admin.dto.PageResponse;
+import com.yinbo.agent.admin.service.AdminIntentResolveRecordService;
 import com.yinbo.agent.admin.service.AdminIntentService;
 import com.yinbo.agent.admin.service.AdminIntentRuleService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import java.time.LocalDateTime;
 import java.util.List;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -19,6 +24,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -29,16 +35,19 @@ public class AdminIntentController {
     private final AdminGuard adminGuard;
     private final AdminIntentService adminIntentService;
     private final AdminIntentRuleService adminIntentRuleService;
+    private final AdminIntentResolveRecordService adminIntentResolveRecordService;
 
     // 注入管理员校验和意图树维护服务。
     public AdminIntentController(
             AdminGuard adminGuard,
             AdminIntentService adminIntentService,
-            AdminIntentRuleService adminIntentRuleService
+            AdminIntentRuleService adminIntentRuleService,
+            AdminIntentResolveRecordService adminIntentResolveRecordService
     ) {
         this.adminGuard = adminGuard;
         this.adminIntentService = adminIntentService;
         this.adminIntentRuleService = adminIntentRuleService;
+        this.adminIntentResolveRecordService = adminIntentResolveRecordService;
     }
 
     @GetMapping("/tree")
@@ -99,6 +108,23 @@ public class AdminIntentController {
     public List<IntentRuleResponse> rules(HttpServletRequest request) {
         adminGuard.requireAdmin(request);
         return adminIntentRuleService.rules();
+    }
+
+    @GetMapping("/resolve-records")
+    // 分页查询意图识别记录。
+    public PageResponse<IntentResolveRecordResponse> resolveRecords(
+            HttpServletRequest request,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer pageSize,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String outcome,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String ambiguous,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime startAt,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime endAt
+    ) {
+        adminGuard.requireAdmin(request);
+        return adminIntentResolveRecordService.page(page, pageSize, keyword, outcome, status, ambiguous, startAt, endAt);
     }
 
     @PostMapping("/rules")

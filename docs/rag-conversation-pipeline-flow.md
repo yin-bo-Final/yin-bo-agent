@@ -41,6 +41,45 @@ ConversationPage
 
 同步接口和流式接口共用同一套阶段。差异是流式接口会先创建 `SseEmitter`，在线程池里执行 `doExecuteStream(...)`，并用 `ConversationStreamRegistry` 标记当前会话正在输出，避免手动压缩和流式输出并发写摘要。
 
+## 流水线 Trace 和耗时阶段
+
+assistant 调试 Trace 会随 assistant 消息保存到 `chat_message.assistant_trace_json`，并在普通响应、SSE `done` 事件和会话历史详情中返回给前端。Trace 顶层必须带 `traceVersion`，当前版本为 `1`；前端按版本做兼容，不靠猜字段存在与否判断结构。`chat_message.response_duration_ms` 表示本轮端到端总耗时，不再表示最后一次 LLM 调用耗时。
+
+耗时拆分统一使用 `durationStages` 数组，不再继续为每个新增阶段往 Trace 顶层追加 `xxxDurationMs` 字段。结构如下：
+
+```json
+{
+  "traceVersion": 1,
+  "durationStages": [
+    {
+      "code": "query_rewrite",
+      "label": "查询改写",
+      "durationMs": 1234
+    }
+  ]
+}
+```
+
+当前标准阶段：
+
+| code | label | 来源 |
+| --- | --- | --- |
+| `query_rewrite` | 查询改写 | `QueryRewriteService.finishRewrite(...)` / `ctx.setQueryRewriteDurationMs(...)` |
+| `intent_resolve` | 意图识别 | `IntentResolutionService.finishResolve(...)` / `ctx.setIntentResolveDurationMs(...)` |
+| `rag` | RAG | `ConversationFlowExecutor.retrieveWithTrace(...)` / `ctx.setRagTrace(...)`，仅进入 RAG 时记录 |
+| `llm` | LLM | `ChatMessagePersistenceService.buildDurationStages(...)` 从 `AssistantResponseResult.responseDurationMs` 添加；`STATIC` 响应不记录 |
+| `other` | 其他 | `total - 已知 stages - llm`，用于承接准备会话、保存消息、封装上下文等暂未细分的耗时 |
+
+后续新增向量化、向量检索、上下文封装等子阶段时，优先在对应阶段服务里记录：
+
+```java
+ctx.recordDurationStage("embedding", "向量化", durationMs);
+ctx.recordDurationStage("vector_search", "向量检索", durationMs);
+ctx.recordDurationStage("prompt_assembly", "上下文封装", durationMs);
+```
+
+前端 `utils/assistantTrace.js` 负责归一化 Trace，`components/AssistantTracePanel.vue` 负责渲染 `assistantTrace.durationStages` 作为“耗时拆分”，`ConversationPage.vue` 只保留 Trace 开关和消息挂载。旧的 `llmDurationMs` / `otherDurationMs` 只保留历史兼容，不作为新增开发入口。
+
 ## 当前执行路径
 
 ### 直聊路径
@@ -205,9 +244,20 @@ ctx.rewriteResult.subQuestions
 -> capTotalIntents 总量封顶
 -> detectAmbiguity 歧义检测
 -> 写入 ctx.intentResult / ctx.intents / ctx.ambiguous
+-> 写入 chat_intent_resolve_record
+-> 打印 event=intent_resolved 结构化日志
 ```
 
 多个子问题会提交到 `intentClassifyExecutor` 专用线程池并行识别，`classify-timeout-ms` 是本轮意图分类等待上限。超时或异常的子问题会降级为空意图，不会阻塞其他子问题；LLM 分类器本身不再使用 Java common pool，避免慢模型调用影响其他异步任务。
+
+每轮识别都会打印结构化日志，方便本地直接看是否命中成功：
+
+```text
+event=intent_resolved conversationId=... userMessageId=... outcome=SUCCESS fallbackReason=- intents=[TOOL_CALL] ambiguous=false selectedNodeCount=1 topNode=logistics-tracking:MCP:0.95:RULE selectedNodes=[logistics-tracking:MCP:0.95:RULE] subQuestionCount=1 durationMs=12
+event=intent_resolved conversationId=... userMessageId=... outcome=FALLBACK fallbackReason=INTENT_CLASSIFY_TIMEOUT intents=[DIRECT_CHAT] ambiguous=false selectedNodeCount=0 topNode=- selectedNodes=[] subQuestionCount=1 durationMs=3003
+```
+
+同一份结果会写入 `chat_intent_resolve_record`，用于后续 bad case 回放和命中率评估。核心字段包括原始问题、归一化问题、改写问题、子问题 JSON、最终 `ChatIntentType`、命中节点 JSON、子问题意图 JSON、歧义状态、引导问题、`outcome`、`fallback_reason`、模型和耗时。记录失败只写 warn 日志，不影响主会话流程。
 
 强规则来自 `chat_intent_rule`，用于高确定性表达，例如：
 
@@ -229,6 +279,8 @@ ctx.rewriteResult.subQuestions
 | `require_keywords_json` | 必要词组，支持 `ANY` / `ALL` |
 | `exclude_keywords_json` | 排除词组，任一命中则规则失效 |
 | `score` | 强规则命中后的分数 |
+
+默认物流轨迹和订单查询强规则已经加入解释类排除词，例如 `什么意思`、`是什么意思`、`含义`、`概念`、`定义`、`解释一下`、`这句话`。这样 `我的快递到哪了` 会命中物流 MCP，但 `你知道快递到哪是什么意思吗` 不会被误拦截。
 
 规则读取也使用 Redis 旁路缓存：
 
@@ -269,6 +321,8 @@ Redis key: yinbo:agent:chat:intent-tree:v1
 | `cache-ttl` | `60m` | 意图树 Redis 快照 TTL |
 
 LLM 分类失败不会触发歧义引导。异常属于系统问题，会降级为空意图或规则强命中结果；歧义引导只用于用户表达本身不明确的情况。
+
+规则层回归测试集位于 `backend/src/test/resources/intent-rule-bad-cases.csv`，当前包含 50 条样例，覆盖物流轨迹、订单查询、系统问候、助手介绍，以及解释类、规则类、运费清关类误伤场景。`RuleIntentRouterBadCaseTest` 会逐条验证强规则命中结果，避免后续改规则时把 `快递到哪是什么意思` 这类问题重新误判成 MCP。
 
 ## 会话记忆压缩
 
@@ -484,7 +538,7 @@ POST /api/conversations/{conversationId}/memory/compress
 | 文件 | 职责 |
 | --- | --- |
 | `chat/flow/ConversationFlowExecutor.java` | 编排会话主流程和短路点 |
-| `chat/flow/context/ChatExecutionContext.java` | 跨阶段传递用户、会话、模型、记忆、意图、SSE |
+| `chat/flow/context/ChatExecutionContext.java` | 跨阶段传递用户、会话、模型、记忆、意图、SSE，并通过 `recordDurationStage(...)` 统一记录耗时阶段 |
 | `chat/flow/lifecycle/ConversationLifecycleService.java` | 创建 / 恢复会话，解析模型和最新用户消息 |
 | `chat/flow/memory/ConversationMemoryService.java` | 加载完整历史消息 |
 | `chat/flow/memory/ConversationMemoryCompressionService.java` | 自动 / 手动压缩，构建 Prompt 记忆视图 |
@@ -495,5 +549,5 @@ POST /api/conversations/{conversationId}/memory/compress
 | `chat/flow/retrieval/RetrievalContext.java` | 检索结果上下文 |
 | `chat/flow/prompt/PromptAssemblyService.java` | 构造直聊 / grounded LLM 请求 |
 | `chat/flow/llm/DirectChatService.java` | 普通直聊模型调用 |
-| `chat/flow/message/ChatMessagePersistenceService.java` | user / assistant 消息落库和缓存刷新 |
+| `chat/flow/message/ChatMessagePersistenceService.java` | user / assistant 消息落库、Trace JSON 构建、总耗时和 `durationStages` 持久化、缓存刷新 |
 | `chat/flow/response/ChatStreamResponseWriter.java` | SSE 事件写出 |

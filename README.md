@@ -83,7 +83,7 @@ RAG 文档入库链路：
 - 前端 Chat 模型选择
 - Chat / Embedding / Rerank 模型由 ai-infra 的 `app.ai` 配置驱动，支持供应商、候选模型、优先级、熔断和故障转移
 - 普通响应和 SSE 流式响应
-- 会话生成已拆成 `ConversationFlowExecutor` 编排器和 `chat/flow` 分层阶段服务，查询改写已接入“术语统一 + LLM 改写/问题拆分 + 容错解析 + 降级记录”，意图识别已接入“规则优先 + 意图树叶子打分 + 总量封顶 + 歧义引导”，RAG 检索和工具调用继续作为后续扩展点
+- 会话生成已拆成 `ConversationFlowExecutor` 编排器和 `chat/flow` 分层阶段服务，查询改写已接入“术语统一 + LLM 改写/问题拆分 + 容错解析 + 降级记录”，意图识别已接入“规则优先 + 意图树叶子打分 + 总量封顶 + 歧义引导 + 识别记录”，RAG 检索和工具调用继续作为后续扩展点
 - 查询改写前会先使用术语表进行关键词映射，术语表由 PostgreSQL 维护并通过 Redis 旁路缓存整份启用快照；管理员可在后台维护关键词映射并开关 LLM 语义改写
 - 会话记忆支持自动上下文压缩和手动压缩，Prompt 使用“头部原文 + 历史摘要 + 最近窗口原文”，原始消息仍完整保存在 `chat_message`
 - 前端输入框显示上下文 token 使用圆环，并提供手动压缩按钮；压缩中消息列表显示分割线且禁止继续发送，接近 90% 上下文时会展示自动压缩提示，最终以服务端返回的摘要水位线为准
@@ -486,6 +486,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 | `chat_pipeline_config` | 查询预处理 Pipeline 开关和降级策略 |
 | `chat_intent_node` | 意图树节点、叶子路由目标、示例问题和节点级检索配置 |
 | `chat_intent_rule` | 可配置意图规则、关键词条件、目标节点和命中分数 |
+| `chat_intent_resolve_record` | 意图识别结果、命中节点、歧义状态、降级原因和耗时记录 |
 | `knowledge_base` | 知识库、Embedding 模型、collection |
 | `knowledge_document` | 文档元数据、RustFS 对象信息、状态、耗时 |
 | `knowledge_chunk` | 分块内容、启用状态、token 数、字符数、向量文档 ID |
@@ -506,7 +507,8 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 - 模型调用不要散落在业务 Service 中，backend 只通过 `AiInfraClient` 调 ai-infra；HTTP 契约放在 `ai-api`，模型供应商实现只放在 `ai-infra`。
 - 会话编排不要继续堆进 `ChatService`，新增查询改写、意图识别、歧义引导、RAG 检索或工具调用时优先扩展 `chat/flow` 下对应子包服务，并通过 `ChatExecutionContext` 传递阶段结果。
 - 查询改写结果写入 `ctx.rewriteResult`，只作为当前流水线中间产物，不写入 `chat_message`；如需评估和回放，写入 `chat_query_rewrite_record`。
-- 意图识别结果写入 `ctx.intentResult`，强规则可直接命中叶子节点，弱规则只缩小候选范围；多个子问题通过专用线程池并行分类，规则内容放在 `chat_intent_rule` 并可由后台维护。LLM 分类失败只降级，不要当成用户歧义；歧义只用于多个高分候选语义接近的情况。
+- 意图识别结果写入 `ctx.intentResult` 和 `chat_intent_resolve_record`，并打印带 `outcome`、`fallbackReason`、`durationMs` 的 `event=intent_resolved` 日志；强规则可直接命中叶子节点，弱规则只缩小候选范围；多个子问题通过专用线程池并行分类，规则内容放在 `chat_intent_rule` 并可由后台维护。LLM 分类失败只降级，不要当成用户歧义；歧义只用于多个高分候选语义接近的情况。
+- 意图规则回归样例放在 `backend/src/test/resources/intent-rule-bad-cases.csv`，当前 50 条，重点覆盖强规则命中和解释类问题误伤。
 - RAG 会话流水线和记忆压缩流程见 [docs/rag-conversation-pipeline-flow.md](docs/rag-conversation-pipeline-flow.md)，压缩只写 `conversation_memory_summary`，不要删除或覆盖 `chat_message` 原始消息。
 - 前端请求错误依赖后端返回的 `message` 字段，所以业务错误优先抛 `BusinessException`。
 - 数据库结构变更必须新增 Flyway 迁移脚本；已经执行过的迁移文件不能直接改内容，否则会触发 Flyway checksum 校验失败。
