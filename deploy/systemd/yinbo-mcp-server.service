@@ -1,0 +1,17 @@
+[Unit]
+Description=Yinbo MCP Server
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=yinbo
+Group=yinbo
+WorkingDirectory=/opt/yinbo-agent
+Environment=TZ=Asia/Shanghai
+ExecStart=/usr/bin/java -Xms128m -Xmx256m -jar /opt/yinbo-agent/apps/yinbo-mcp-server.jar
+SuccessExitStatus=143
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

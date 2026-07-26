@@ -1,0 +1,17 @@
+[Unit]
+Description=Yinbo Agent Gateway
+After=network-online.target docker.service yinbo-backend.service
+Wants=network-online.target
+
+[Service]
+User=yinbo
+Group=yinbo
+WorkingDirectory=/opt/yinbo-agent
+Environment=TZ=Asia/Shanghai
+ExecStart=/usr/bin/java -Xms256m -Xmx512m -jar /opt/yinbo-agent/apps/yinbo-agent-gateway.jar
+SuccessExitStatus=143
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
