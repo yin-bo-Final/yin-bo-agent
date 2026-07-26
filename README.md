@@ -14,6 +14,7 @@
 | 数据库    | PostgreSQL、pgvector、Flyway、MyBatis-Plus、Spring JDBC                |
 | 登录态    | Session、Spring Session Data Redis、Redis、BCrypt                     |
 | AI     | 独立 ai-infra 服务、ai-api 契约、OpenAI 兼容 HTTP 调用、模型路由、熔断和故障转移 |
+| MCP    | 独立 mcp-server 服务、HTTP 工具调用、物流轨迹工具示例 |
 | RAG    | Apache Tika、pgvector、Qwen3 Embedding / Reranker 配置 |
 | 异步     | RocketMQ Spring Boot Starter                                       |
 | 文件存储   | RustFS，使用 MinIO Java SDK 访问 S3 兼容接口                                |
@@ -32,6 +33,7 @@ Vue 3 前端
       -> RustFS 保存上传原始文件
       -> RocketMQ 承载异步 ingestion 任务
       -> HTTP 调用 ai-infra 路由 Chat / Embedding / Rerank 模型
+      -> HTTP 调用 mcp-server 执行物流等工具
       -> Apache Tika 解析 PDF / Word / Markdown / TXT
 ```
 
@@ -148,6 +150,11 @@ SpringAI-Program/
 │  └─ src/main/
 │     ├─ java/com/yinbo/ai/infra/   # 模型路由、熔断和供应商客户端
 │     └─ resources/application.yml
+├─ mcp-server/                      # 独立 MCP 工具服务
+│  ├─ pom.xml
+│  └─ src/main/
+│     ├─ java/com/yinbo/mcp/        # 工具注册、远程调用入口和工具实现
+│     └─ resources/application.yml
 ├─ backend/                         # Spring Boot 后端模块
 │  ├─ pom.xml
 │  └─ src/main/
@@ -199,6 +206,7 @@ SpringAI-Program/
 │  ├─ gateway-structure.md          # 网关模块边界和路由
 │  ├─ ai-infra-structure.md         # AI 基础设施服务和 HTTP 契约
 │  ├─ backend-structure.md          # 后端模块边界
+│  ├─ mcp-service.md                # MCP 服务边界、接口和接入方式
 │  ├─ rag-conversation-pipeline-flow.md # RAG 会话流水线和记忆压缩流程
 │  ├─ frontend-structure.md         # 前端模块边界
 │  └─ frontend-style-guide.md       # 前端样式约定
@@ -212,13 +220,14 @@ AI / Codex 协作规则见 [codex.md](codex.md)。
 网关模块说明见 [docs/gateway-structure.md](docs/gateway-structure.md)，
 AI 基础设施说明见 [docs/ai-infra-structure.md](docs/ai-infra-structure.md)，
 后端模块说明见 [docs/backend-structure.md](docs/backend-structure.md)，
+MCP 服务说明见 [docs/mcp-service.md](docs/mcp-service.md)，
 RAG 会话流水线和记忆压缩流程见 [docs/rag-conversation-pipeline-flow.md](docs/rag-conversation-pipeline-flow.md)，
 前端模块说明见 [docs/frontend-structure.md](docs/frontend-structure.md)。
 前端 UI 风格和交互约定见 [docs/frontend-style-guide.md](docs/frontend-style-guide.md)。
 
 ## 本地配置
 
-`ai-infra`、`backend` 和 `gateway` 的 `application.yml` 都会加载根目录或模块上级目录的 `local-secrets.yml`：
+`ai-infra`、`mcp-server`、`backend` 和 `gateway` 的 `application.yml` 都会加载根目录或模块上级目录的 `local-secrets.yml`：
 
 ```yml
 spring:
@@ -258,6 +267,14 @@ RUSTFS_BUCKET: yinbo-agent-documents
 YINBO_AGENT_SERVICE_URI: http://localhost:8080
 YINBO_AI_INFRA_URI: http://localhost:8082
 AI_INFRA_REQUEST_TIMEOUT: 5m
+YINBO_MCP_SERVER_URI: http://localhost:8083
+MCP_REQUEST_TIMEOUT: 10s
+LOGISTICS_PROVIDER: kuaidi100
+LOGISTICS_REQUEST_TIMEOUT: 10s
+KUAIDI100_KEY: your-kuaidi100-key
+KUAIDI100_CUSTOMER: your-kuaidi100-customer
+KUAIDI100_QUERY_URL: https://poll.kuaidi100.com/poll/query.do
+KUAIDI100_AUTO_NUMBER_URL: http://www.kuaidi100.com/autonumber/auto
 GATEWAY_INTERNAL_TOKEN: replace-with-a-dev-internal-token
 APP_SLOW_REQUEST_THRESHOLD_MS: 3000
 CHAT_MEMORY_CONTEXT_MAX_TOKENS: 100000
@@ -345,6 +362,21 @@ AI 基础设施服务默认地址：
 http://localhost:8082
 ```
 
+### MCP 工具服务
+
+```powershell
+cd mcp-server
+mvn spring-boot:run
+```
+
+MCP 工具服务默认地址：
+
+```text
+http://localhost:8083
+```
+
+当前内置 `logistics-tracking-tool`，backend 会通过 `YINBO_MCP_SERVER_URI` 远程调用该服务。真实物流查询默认走快递100，使用前需要在 `local-secrets.yml` 配置 `KUAIDI100_KEY` 和 `KUAIDI100_CUSTOMER`。
+
 ### 后端业务服务
 
 ```powershell
@@ -358,6 +390,8 @@ mvn spring-boot:run
 $env:JAVA_HOME="C:\Users\35575\.jdks\ms-17.0.17"
 $env:Path="$env:JAVA_HOME\bin;$env:Path"
 cd ai-infra
+mvn spring-boot:run
+cd ../mcp-server
 mvn spring-boot:run
 cd ../backend
 mvn spring-boot:run
@@ -382,7 +416,7 @@ mvn spring-boot:run
 http://localhost:8081
 ```
 
-网关默认把 `/api/**` 转发到 `YINBO_AGENT_SERVICE_URI`，本地默认是 `http://localhost:8080`；`/internal/ai/**` 转发到 `YINBO_AI_INFRA_URI`，本地默认是 `http://localhost:8082`，并要求请求携带匹配 `GATEWAY_INTERNAL_TOKEN` 的 `X-Internal-Token`。backend 自身默认通过 `YINBO_AI_INFRA_URI` 直接调用 ai-infra。
+网关默认把 `/api/**` 转发到 `YINBO_AGENT_SERVICE_URI`，本地默认是 `http://localhost:8080`；`/internal/ai/**` 转发到 `YINBO_AI_INFRA_URI`，本地默认是 `http://localhost:8082`，并要求请求携带匹配 `GATEWAY_INTERNAL_TOKEN` 的 `X-Internal-Token`。backend 自身默认通过 `YINBO_AI_INFRA_URI` 直接调用 ai-infra，通过 `YINBO_MCP_SERVER_URI` 直接调用 mcp-server。
 
 ### 前端
 
@@ -505,6 +539,7 @@ Vite 会把 `/api` 代理到 `http://localhost:8081`，由网关再转发给后�
 - Actuator 默认只启用并暴露 `health` 和 `info`，不暴露 gateway 路由、env、configprops 等内部信息。
 - 关键业务日志使用 `event=...`：登录注册、知识库变更、文档上传、AI 调用、RocketMQ 投递消费、ingestion 完成或失败都会有明确事件。
 - 模型调用不要散落在业务 Service 中，backend 只通过 `AiInfraClient` 调 ai-infra；HTTP 契约放在 `ai-api`，模型供应商实现只放在 `ai-infra`。
+- MCP 工具调用不要写死在业务 Service 中，backend 只通过 `McpToolClient` 远程调用 mcp-server；具体工具实现放在 `mcp-server` 模块。
 - 会话编排不要继续堆进 `ChatService`，新增查询改写、意图识别、歧义引导、RAG 检索或工具调用时优先扩展 `chat/flow` 下对应子包服务，并通过 `ChatExecutionContext` 传递阶段结果。
 - 查询改写结果写入 `ctx.rewriteResult`，只作为当前流水线中间产物，不写入 `chat_message`；如需评估和回放，写入 `chat_query_rewrite_record`。
 - 意图识别结果写入 `ctx.intentResult` 和 `chat_intent_resolve_record`，并打印带 `outcome`、`fallbackReason`、`durationMs` 的 `event=intent_resolved` 日志；强规则可直接命中叶子节点，弱规则只缩小候选范围；多个子问题通过专用线程池并行分类，规则内容放在 `chat_intent_rule` 并可由后台维护。LLM 分类失败只降级，不要当成用户歧义；歧义只用于多个高分候选语义接近的情况。

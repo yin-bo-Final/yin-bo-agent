@@ -130,6 +130,9 @@ app:
   ai-infra:
     base-url: ${YINBO_AI_INFRA_URI:http://localhost:8082}
     request-timeout: ${AI_INFRA_REQUEST_TIMEOUT:5m}
+  mcp:
+    base-url: ${YINBO_MCP_SERVER_URI:http://localhost:8083}
+    request-timeout: ${MCP_REQUEST_TIMEOUT:10s}
   ai:
     rag:
       embedding-model: ${RAG_EMBEDDING_MODEL:Qwen/Qwen3-Embedding-8B}

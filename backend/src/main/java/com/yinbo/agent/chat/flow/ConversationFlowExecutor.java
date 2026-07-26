@@ -273,12 +273,19 @@ public class ConversationFlowExecutor {
 
     // 生成基于检索上下文的普通响应，后续实现。
     private ChatResponse generateGroundedResponse(ChatExecutionContext ctx, RetrievalContext retrievalContext) {
-        return completeWithStaticAssistantMessage(ctx, "RAG 回答流程还未实现。");
+        return completeWithStaticAssistantMessage(ctx, groundedResponseContent(retrievalContext));
     }
 
     // 生成基于检索上下文的流式响应，后续实现。
     private void streamGroundedResponse(ChatExecutionContext ctx, RetrievalContext retrievalContext) {
-        completeWithStaticAssistantMessage(ctx, "RAG 回答流程还未实现。");
+        completeWithStaticAssistantMessage(ctx, groundedResponseContent(retrievalContext));
+    }
+
+    private String groundedResponseContent(RetrievalContext retrievalContext) {
+        if (retrievalContext != null && !retrievalContext.toolResults().isEmpty()) {
+            return String.join("\n\n", retrievalContext.toolResults());
+        }
+        return "RAG 回答流程还未实现。";
     }
 
     // 使用固定内容完成一次 assistant 响应。

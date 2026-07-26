@@ -52,6 +52,7 @@
     <modules>
         <module>ai-api</module>
         <module>ai-infra</module>
+        <module>mcp-server</module>
         <module>backend</module>
         <module>gateway</module>
     </modules>

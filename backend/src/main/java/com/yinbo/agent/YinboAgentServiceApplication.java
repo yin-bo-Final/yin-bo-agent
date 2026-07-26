@@ -6,6 +6,7 @@ import com.yinbo.agent.config.ChatIntentProperties;
 import com.yinbo.agent.config.ChatMemoryProperties;
 import com.yinbo.agent.config.ChatQueryRewriteProperties;
 import com.yinbo.agent.config.ConcurrencyLimitProperties;
+import com.yinbo.agent.config.McpProperties;
 import com.yinbo.agent.config.ObjectStorageProperties;
 import com.yinbo.agent.config.RagProperties;
 import org.mybatis.spring.annotation.MapperScan;
@@ -21,6 +22,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         ChatMemoryProperties.class,
         ChatQueryRewriteProperties.class,
         ConcurrencyLimitProperties.class,
+        McpProperties.class,
         ObjectStorageProperties.class,
         RagProperties.class
 })

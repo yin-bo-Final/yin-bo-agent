@@ -8,6 +8,7 @@
 | ------------------------------------------------------------ | ------------------------------------- |
 | [docs/gateway-structure.md](docs/gateway-structure.md)       | 网关模块、路由转发、真实 IP、限流、并发控制和统一错误响应          |
 | [docs/ai-infra-structure.md](docs/ai-infra-structure.md)     | AI 基础设施服务、模型路由、供应商客户端和 HTTP 契约       |
+| [docs/mcp-service.md](docs/mcp-service.md)                   | 独立 MCP 工具服务、物流轨迹工具和 backend 远程调用契约 |
 | [docs/backend-structure.md](docs/backend-structure.md)       | 后端包结构、RAG ingestion、Flyway、数据表和常见改动入口 |
 | [docs/rag-conversation-pipeline-flow.md](docs/rag-conversation-pipeline-flow.md) | RAG 会话流水线、短路点、记忆压缩和后续检索接入点 |
 | [docs/frontend-structure.md](docs/frontend-structure.md)     | 前端页面结构、API 封装、后台管理 UI 和路由状态           |
@@ -20,6 +21,7 @@
 SpringAI-Program/
 ├─ ai-api/                          # AI 基础设施 HTTP 契约 DTO
 ├─ ai-infra/                        # 独立 AI 基础设施服务
+├─ mcp-server/                      # 独立 MCP 工具服务
 ├─ backend/                         # Spring Boot 后端
 ├─ gateway/                         # Spring Cloud Gateway 网关
 ├─ frontend/                        # Vue 3 前端
@@ -28,11 +30,11 @@ SpringAI-Program/
 ├─ project-structure.md             # 项目结构总览和文档导航
 ├─ local-secrets.example.yml        # 本地私密配置模板
 ├─ local-secrets.yml                # 本地私密配置，不提交
-├─ pom.xml                          # Maven 聚合工程，目前聚合 ai-api、ai-infra、backend 和 gateway
+├─ pom.xml                          # Maven 聚合工程，目前聚合 ai-api、ai-infra、mcp-server、backend 和 gateway
 └─ README.md                        # 项目入口文档
 ```
 
-当前工程采用“前端单页 + 独立网关 + backend 业务服务 + ai-infra 模型基础设施服务 + 中间件外置”的结构。`gateway` 是统一入口，`backend` 负责业务和数据事务，`ai-infra` 负责模型供应商、路由、熔断和故障转移，`ai-api` 保存二者之间的 HTTP 契约。
+当前工程采用“前端单页 + 独立网关 + backend 业务服务 + ai-infra 模型基础设施服务 + mcp-server 工具服务 + 中间件外置”的结构。`gateway` 是统一入口，`backend` 负责业务和数据事务，`ai-infra` 负责模型供应商、路由、熔断和故障转移，`mcp-server` 负责独立工具执行，`ai-api` 保存 backend 和 ai-infra 之间的 HTTP 契约。
 
 ## 系统分层
 
@@ -47,6 +49,8 @@ Vue 3 前端
       -> RocketMQ 承载异步 ingestion 任务
       -> HTTP 调用 ai-infra
         -> 路由 Chat / Embedding / Rerank 模型
+      -> HTTP 调用 mcp-server
+        -> 执行物流、订单等工具
       -> Apache Tika 解析 PDF / Word / Markdown / TXT
 ```
 
@@ -62,6 +66,7 @@ ConversationPage
 -> ChatService
 -> ConversationFlowExecutor 编排 chat/flow 子包阶段服务
 -> 生命周期、加载记忆、保存用户消息、按预算压缩 Prompt 记忆、术语统一、查询改写和问题拆分、意图识别、歧义引导、检索占位和响应输出
+-> MCP 节点命中时通过 McpToolClient 调用 mcp-server
 -> AiInfraClient
 -> ai-infra /internal/ai/chat 或 /internal/ai/chat/stream
 -> ModelSelector / ModelRoutingExecutor / 供应商 ChatClient
@@ -123,6 +128,7 @@ ConversationPage
 | --- | --- |
 | 网关路由、统一入口、真实 IP、限流、鉴权前置 | [docs/gateway-structure.md](docs/gateway-structure.md) |
 | 模型路由、供应商接入、AI HTTP 契约 | [docs/ai-infra-structure.md](docs/ai-infra-structure.md) |
+| MCP 工具服务、物流轨迹工具、远程调用契约 | [docs/mcp-service.md](docs/mcp-service.md) |
 | 后端接口、数据库、RAG、RocketMQ、RustFS | [docs/backend-structure.md](docs/backend-structure.md) |
 | RAG 会话流水线、记忆压缩、summary 水位线、Prompt 记忆视图 | [docs/rag-conversation-pipeline-flow.md](docs/rag-conversation-pipeline-flow.md) |
 | 前端页面、后台管理、会话 UI | [docs/frontend-structure.md](docs/frontend-structure.md) |
@@ -134,6 +140,7 @@ ConversationPage
 - 网关包名根路径是 `com.yinbo.gateway`，后端业务服务包名根路径是 `com.yinbo.agent`，AI 基础设施服务包名根路径是 `com.yinbo.ai.infra`。
 - 前端 `/api` 请求默认先进入 gateway，再由 gateway 转发到后端业务服务。
 - backend 通过 `AiInfraClient` 远程调用 ai-infra，HTTP 契约放在 `ai-api`，不要让 backend 反向依赖 ai-infra 实现类。
+- backend 通过 `McpToolClient` 远程调用 mcp-server，工具实现放在 `mcp-server`，不要把具体工具逻辑塞回 backend。
 - 会话生成入口由 `ChatService` 接收，阶段化处理放在 `chat/flow`；`ConversationFlowExecutor` 只负责编排，生命周期、记忆加载、记忆压缩、消息持久化、LLM 调用、查询改写、意图识别树、歧义引导、RAG 检索和工具调用分别扩展对应子包服务。
 - 意图识别的多子问题分类走 `intentClassifyExecutor` 专用线程池；结果会写入 `chat_intent_resolve_record` 并打印带 `outcome`、`fallbackReason`、`durationMs` 的 `event=intent_resolved` 日志；意图节点被规则引用时不要直接改 `nodeCode` 或删除节点，先调整规则。
 - 意图强规则回归样例在 `backend/src/test/resources/intent-rule-bad-cases.csv`，新增规则或修 bad case 后同步补样例。

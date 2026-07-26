@@ -1,0 +1,50 @@
+server:
+  port: 8083
+
+spring:
+  config:
+    import: optional:file:./local-secrets.yml,optional:file:../local-secrets.yml
+  application:
+    name: yinbo-mcp-server
+
+app:
+  logistics:
+    provider: ${LOGISTICS_PROVIDER:kuaidi100}
+    request-timeout: ${LOGISTICS_REQUEST_TIMEOUT:10s}
+    kuaidi100:
+      key: ${KUAIDI100_KEY:}
+      customer: ${KUAIDI100_CUSTOMER:}
+      query-url: ${KUAIDI100_QUERY_URL:https://poll.kuaidi100.com/poll/query.do}
+      auto-number-url: ${KUAIDI100_AUTO_NUMBER_URL:http://www.kuaidi100.com/autonumber/auto}
+      result-v2: ${KUAIDI100_RESULT_V2:4}
+      order: ${KUAIDI100_ORDER:desc}
+      lang: ${KUAIDI100_LANG:zh}
+
+management:
+  endpoints:
+    access:
+      default: none
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      access: read-only
+      show-details: never
+      show-components: never
+    info:
+      access: read-only
+
+logging:
+  file:
+    name: .logs/mcp-server.log
+  logback:
+    rollingpolicy:
+      file-name-pattern: .logs/mcp-server.%d{yyyy-MM-dd}.%i.log.gz
+      max-file-size: 20MB
+      max-history: 14
+      total-size-cap: 1GB
+      clean-history-on-start: false
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] app=${spring.application.name} requestId=%X{requestId:-} logger=%logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] app=${spring.application.name} requestId=%X{requestId:-} logger=%logger{36} - %msg%n"
