@@ -32,6 +32,8 @@ frontend/
    │  └─ quietMotion.js
    └─ pages/
       ├─ admin/
+      │  ├─ AdminDateRangeCalendar.vue
+      │  ├─ AdminDateTimeRangeInput.vue
       │  ├─ AdminDashboardSection.vue
       │  ├─ AdminDetailModal.vue
       │  ├─ AdminFilterBar.vue
@@ -40,6 +42,7 @@ frontend/
       │  ├─ AdminIntentRecordsSection.vue
       │  ├─ AdminJsonPreview.vue
       │  ├─ AdminQueryRecordsSection.vue
+      │  ├─ AdminSelect.vue
       │  ├─ AdminSidebar.vue
       │  ├─ AdminTable.vue
       │  ├─ StatusBadge.vue
@@ -127,7 +130,7 @@ DELETE /api/conversations/{conversationId}
 - 规则配置提供强规则 / 弱规则维护，支持包含词、必要词、排除词和 ANY / ALL 匹配模式
 - 意图管理三页分别使用树、列表、条件滑杆图标，Header、窄栏和侧边导航保持一致识别
 - 意图管理 UI 复用后台 `kc-*` 卡片、表格、按钮、弹窗和状态标签，局部样式仅在 `intent-module` 作用域内补充
-- 后台筛选栏、表格、详情弹窗、JSON 预览和状态胶囊优先复用 `admin/AdminFilterBar.vue`、`admin/AdminTable.vue`、`admin/AdminDetailModal.vue`、`admin/AdminJsonPreview.vue`、`admin/StatusBadge.vue`
+- 后台筛选栏、按钮式下拉、时间范围选择、日历面板、表格、详情弹窗、JSON 预览和状态胶囊优先复用 `admin/AdminFilterBar.vue`、`admin/AdminSelect.vue`、`admin/AdminDateTimeRangeInput.vue`、`admin/AdminDateRangeCalendar.vue`、`admin/AdminTable.vue`、`admin/AdminDetailModal.vue`、`admin/AdminJsonPreview.vue`、`admin/StatusBadge.vue`
 - 自定义弹窗、下拉栏、tooltip
 - 根据 `/admin/knowledge/...`、`/admin/tasks/failed`、`/admin/mappings`、`/admin/pipeline`、`/admin/intent-tree`、`/admin/intent-list` 和 `/admin/intent-rules` 解析内部视图
 - 文档处于 `UPLOADING` 或 `PROCESSING` 时轮询刷新

@@ -1,14 +1,28 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { fetchQueryRewriteRecords } from '../../api/adminApi';
+import AdminDateTimeRangeInput from './AdminDateTimeRangeInput.vue';
 import AdminDetailModal from './AdminDetailModal.vue';
 import AdminFilterBar from './AdminFilterBar.vue';
 import AdminJsonPreview from './AdminJsonPreview.vue';
+import AdminSelect from './AdminSelect.vue';
 import AdminTable from './AdminTable.vue';
 import { formatDate, formatDuration, metricText } from './adminPageUtils';
 import StatusBadge from './StatusBadge.vue';
 
 const emit = defineEmits(['error']);
+
+const sourceTypeFilterOptions = [
+  { label: '全部来源', value: 'ALL' },
+  { label: 'llm', value: 'LLM' },
+  { label: 'rule_split', value: 'RULE_SPLIT' },
+  { label: 'fallback', value: 'FALLBACK' }
+];
+const successFilterOptions = [
+  { label: '全部状态', value: 'ALL' },
+  { label: 'success', value: 'true' },
+  { label: 'failed', value: 'false' }
+];
 
 const records = ref([]);
 const page = ref(1);
@@ -206,19 +220,24 @@ function matchedTermLabel(term) {
             type="search"
             placeholder="搜索问题、会话ID、模型、版本或错误"
           />
-          <select v-model="sourceTypeFilter" @change="applyFilters">
-            <option value="ALL">全部来源</option>
-            <option value="LLM">llm</option>
-            <option value="RULE_SPLIT">rule_split</option>
-            <option value="FALLBACK">fallback</option>
-          </select>
-          <select v-model="successFilter" @change="applyFilters">
-            <option value="ALL">全部状态</option>
-            <option value="true">success</option>
-            <option value="false">failed</option>
-          </select>
-          <input v-model="startAt" type="datetime-local" aria-label="开始时间" @change="applyFilters" />
-          <input v-model="endAt" type="datetime-local" aria-label="结束时间" @change="applyFilters" />
+          <AdminSelect
+            v-model="sourceTypeFilter"
+            :options="sourceTypeFilterOptions"
+            aria-label="改写来源"
+            @change="applyFilters"
+          />
+          <AdminSelect
+            v-model="successFilter"
+            :options="successFilterOptions"
+            aria-label="改写状态"
+            @change="applyFilters"
+          />
+          <AdminDateTimeRangeInput
+            v-model:start-value="startAt"
+            v-model:end-value="endAt"
+            aria-label="改写时间范围"
+            @change="applyFilters"
+          />
           <button type="button" class="kc-ghost-button" :disabled="isLoading" @click="resetFilters">重置</button>
           <button type="submit" class="kc-primary-button" :disabled="isLoading">
             {{ isLoading ? '查询中...' : '查询' }}

@@ -43,10 +43,12 @@ import {
   uploadKnowledgeDocument
 } from '../api/adminApi';
 import { createQuietReveal } from '../utils/quietMotion';
+import AdminDateTimeRangeInput from './admin/AdminDateTimeRangeInput.vue';
 import AdminDashboardSection from './admin/AdminDashboardSection.vue';
 import AdminHeader from './admin/AdminHeader.vue';
 import AdminIntentRecordsSection from './admin/AdminIntentRecordsSection.vue';
 import AdminQueryRecordsSection from './admin/AdminQueryRecordsSection.vue';
+import AdminSelect from './admin/AdminSelect.vue';
 import AdminSidebar from './admin/AdminSidebar.vue';
 import {
   canOpenDocumentChunks,
@@ -59,7 +61,6 @@ import {
   defaultMappingForm,
   defaultPipelineForm,
   documentChunkActionLabel,
-  documentStatusFilterText,
   formatBytes,
   formatDate,
   formatDuration,
@@ -82,12 +83,10 @@ import {
   shouldShowDocumentChunkAction,
   sourceText,
   statusClass,
-  statusFilterText,
   statusText,
   taskActionText,
   taskDetailRows,
   taskStatusClass,
-  taskStatusFilterText,
   taskStatusText,
   typeText
 } from './admin/adminPageUtils';
@@ -100,6 +99,66 @@ const props = defineProps({
 });
 
 const emit = defineEmits(['back-to-chat', 'logged-out', 'session-expired']);
+
+const adminPageSizeOptions = [
+  { label: '10 / 页', value: 10 },
+  { label: '20 / 页', value: 20 },
+  { label: '50 / 页', value: 50 },
+  { label: '100 / 页', value: 100 }
+];
+const taskStatusOptions = [
+  { label: '全部状态', value: 'ALL' },
+  { label: 'failed', value: 'FAILED' },
+  { label: 'dead', value: 'DEAD' }
+];
+const documentStatusOptions = [
+  { label: '全部状态', value: 'ALL' },
+  { label: 'uploading', value: 'UPLOADING' },
+  { label: 'uploaded', value: 'UPLOADED' },
+  { label: 'success', value: 'COMPLETED' },
+  { label: 'processing', value: 'PROCESSING' },
+  { label: 'failed', value: 'FAILED' }
+];
+const chunkStatusOptions = [
+  { label: '全部状态', value: 'ALL' },
+  { label: '启用', value: 'ENABLED' },
+  { label: '禁用', value: 'DISABLED' }
+];
+const intentKindFilterOptions = [
+  { label: '全部类型', value: 'ALL' },
+  { label: '知识库', value: 'KB' },
+  { label: 'MCP 工具', value: 'MCP' },
+  { label: '系统直答', value: 'SYSTEM' }
+];
+const intentLevelFilterOptions = [
+  { label: '全部层级', value: 'ALL' },
+  { label: '领域', value: 'DOMAIN' },
+  { label: '分类', value: 'CATEGORY' },
+  { label: '主题', value: 'TOPIC' }
+];
+const intentRuleTypeFilterOptions = [
+  { label: '全部规则', value: 'ALL' },
+  { label: '强规则', value: 'STRONG' },
+  { label: '弱规则', value: 'WEAK' }
+];
+const intentLevelOptions = intentLevelFilterOptions.slice(1);
+const intentKindOptions = intentKindFilterOptions.slice(1);
+const intentRuleTypeOptions = intentRuleTypeFilterOptions.slice(1);
+const intentMatchModeOptions = [
+  { label: '任一命中', value: 'ANY' },
+  { label: '全部命中', value: 'ALL' }
+];
+const mappingTermTypeOptions = [
+  { label: 'TECH', value: 'TECH' },
+  { label: 'MODULE', value: 'MODULE' },
+  { label: 'CAPABILITY', value: 'CAPABILITY' },
+  { label: 'BUSINESS', value: 'BUSINESS' }
+];
+const pipelineFallbackPolicyOptions = [
+  { label: '只保留术语统一', value: 'TERM_ONLY' },
+  { label: '术语统一 + 规则拆分', value: 'RULE_SPLIT' },
+  { label: '跳过预处理', value: 'BYPASS' }
+];
 
 const route = ref(parseAdminRoute());
 const dashboard = ref(null);
@@ -218,9 +277,6 @@ const editChunkForm = ref({
 });
 const editChunkError = ref('');
 const isChunkUpdateNoticeOpen = ref(false);
-const isTaskStatusMenuOpen = ref(false);
-const isDocumentStatusMenuOpen = ref(false);
-const isChunkStatusMenuOpen = ref(false);
 const createForm = ref({
   name: '',
   embeddingModel: 'Qwen/Qwen3-Embedding-8B',
@@ -436,39 +492,20 @@ function clearOverflowTooltip(event) {
   floatingTooltip.value.visible = false;
 }
 
-function toggleTaskStatusMenu() {
-  isTaskStatusMenuOpen.value = !isTaskStatusMenuOpen.value;
-  isDocumentStatusMenuOpen.value = false;
-  isChunkStatusMenuOpen.value = false;
-}
-
-function toggleDocumentStatusMenu() {
-  isDocumentStatusMenuOpen.value = !isDocumentStatusMenuOpen.value;
-  isTaskStatusMenuOpen.value = false;
-  isChunkStatusMenuOpen.value = false;
-}
-
-function toggleChunkStatusMenu() {
-  isChunkStatusMenuOpen.value = !isChunkStatusMenuOpen.value;
-  isTaskStatusMenuOpen.value = false;
-  isDocumentStatusMenuOpen.value = false;
+function syncTableHeaderScroll(event) {
+  const bodyScroller = event.currentTarget;
+  const headerScroller = bodyScroller
+    ?.closest('.kc-table-scroll')
+    ?.querySelector('.kc-table-head-scroll');
+  if (headerScroller) {
+    headerScroller.scrollLeft = bodyScroller.scrollLeft;
+  }
 }
 
 async function setTaskStatus(value) {
   taskStatusFilter.value = value;
-  isTaskStatusMenuOpen.value = false;
   taskPage.value = 1;
   await loadFailedTasks();
-}
-
-function setDocumentStatus(value) {
-  documentStatusFilter.value = value;
-  isDocumentStatusMenuOpen.value = false;
-}
-
-function setChunkStatus(value) {
-  chunkStatusFilter.value = value;
-  isChunkStatusMenuOpen.value = false;
 }
 
 function openCreateKnowledgeBaseModal() {
@@ -1038,7 +1075,11 @@ async function goToTaskPage(nextPage) {
   await loadFailedTasks();
 }
 
-async function changeTaskPageSize() {
+async function changeTaskPageSize(nextPageSize) {
+  const normalizedPageSize = Number(nextPageSize || taskPageSize.value);
+  if (Number.isFinite(normalizedPageSize) && normalizedPageSize > 0) {
+    taskPageSize.value = normalizedPageSize;
+  }
   taskPage.value = 1;
   await loadFailedTasks();
 }
@@ -1849,77 +1890,85 @@ function handleAdminError(error) {
           </article>
         </div>
 
-        <section class="kc-table-card">
-          <div class="kc-card-toolbar">
+        <section class="kc-table-card failed-task-table-card">
+          <div class="kc-card-toolbar failed-task-toolbar">
             <div>
               <strong>失败任务列表</strong>
               <small>第 {{ taskPageStart }}-{{ taskPageEnd }} 条 / 共 {{ formatNumber(taskTotal) }} 条</small>
             </div>
-            <div class="kc-toolbar-actions kc-filter-bar wide">
+            <div class="kc-toolbar-actions kc-filter-bar task-filter-bar">
               <input
                 v-model="taskKeyword"
                 type="search"
                 placeholder="搜索文档、任务或错误原因"
                 @keyup.enter="applyTaskFilters"
               />
-              <div class="kc-select-menu" :class="{ open: isTaskStatusMenuOpen }">
-                <button type="button" class="kc-select-trigger" @click="toggleTaskStatusMenu">
-                  <span>{{ taskStatusFilterText(taskStatusFilter) }}</span>
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
-                </button>
-                <div v-if="isTaskStatusMenuOpen" class="kc-select-options">
-                  <button type="button" :class="{ active: taskStatusFilter === 'ALL' }" @click="setTaskStatus('ALL')">全部状态</button>
-                  <button type="button" :class="{ active: taskStatusFilter === 'FAILED' }" @click="setTaskStatus('FAILED')">failed</button>
-                  <button type="button" :class="{ active: taskStatusFilter === 'DEAD' }" @click="setTaskStatus('DEAD')">dead</button>
-                </div>
-              </div>
-              <input v-model="taskStartAt" type="datetime-local" aria-label="开始时间" @change="applyTaskFilters" />
-              <input v-model="taskEndAt" type="datetime-local" aria-label="结束时间" @change="applyTaskFilters" />
+              <AdminSelect
+                v-model="taskStatusFilter"
+                :options="taskStatusOptions"
+                aria-label="任务状态"
+                @change="setTaskStatus"
+              />
+              <AdminDateTimeRangeInput
+                v-model:start-value="taskStartAt"
+                v-model:end-value="taskEndAt"
+                aria-label="任务时间范围"
+                @change="applyTaskFilters"
+              />
               <button type="button" class="kc-ghost-button" :disabled="isLoadingTasks" @click="resetTaskFilters">重置</button>
               <button type="button" class="kc-primary-button" :disabled="isLoadingTasks" @click="applyTaskFilters">
                 {{ isLoadingTasks ? '查询中...' : '查询' }}
               </button>
             </div>
           </div>
-          <div class="kc-table-head task-grid">
-            <span>文档</span>
-            <span>动作</span>
-            <span>状态</span>
-            <span>重试</span>
-            <span>最近失败</span>
-            <span>操作</span>
-          </div>
-          <div class="kc-table-body">
-            <div v-for="task in failedTasks" :key="task.taskId" class="kc-table-row task-grid">
-              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, task.fileName)" @mouseleave="clearOverflowTooltip">
-                <span class="kc-tooltip-content">{{ task.fileName }}</span>
-              </span>
-              <span>{{ taskActionText(task.action) }}</span>
-              <span class="kc-status" :class="taskStatusClass(task.status)">{{ taskStatusText(task.status) }}</span>
-              <span>{{ task.retryCount }} / {{ task.maxRetries }}</span>
-              <span>{{ formatDate(task.lastFailedAt || task.updatedAt) }}</span>
-              <span class="kc-row-actions compact task-actions">
-                <button type="button" @click="detailTask = task">详情</button>
-                <button v-if="canRetryTask(task)" type="button" :disabled="retryingTaskId === task.taskId || deletingTaskId === task.taskId" @click="retryFailedTask(task)">
-                  {{ retryingTaskId === task.taskId ? '投递中' : '重试' }}
-                </button>
-                <button type="button" class="danger" :disabled="retryingTaskId === task.taskId || deletingTaskId === task.taskId" @click="deleteFailedTask(task)">
-                  {{ deletingTaskId === task.taskId ? '删除中' : '删除' }}
-                </button>
-              </span>
+          <div class="kc-table-scroll">
+            <div class="kc-table-head-scroll">
+              <div class="kc-table-head task-grid">
+                <span>文档 / 任务</span>
+                <span>动作</span>
+                <span>状态</span>
+                <span>重试</span>
+                <span>最近失败</span>
+                <span>操作</span>
+              </div>
+            </div>
+            <div class="kc-table-body-scroll" @scroll="syncTableHeaderScroll">
+              <div class="kc-table-body">
+                <div v-for="task in failedTasks" :key="task.taskId" class="kc-table-row task-grid">
+                  <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, task.fileName)" @mouseleave="clearOverflowTooltip">
+                    <span class="kc-tooltip-content">{{ task.fileName }}</span>
+                  </span>
+                  <span>{{ taskActionText(task.action) }}</span>
+                  <span class="kc-status" :class="taskStatusClass(task.status)">{{ taskStatusText(task.status) }}</span>
+                  <span>{{ task.retryCount }} / {{ task.maxRetries }}</span>
+                  <span>{{ formatDate(task.lastFailedAt || task.updatedAt) }}</span>
+                  <span class="kc-row-actions compact task-actions">
+                    <button type="button" @click="detailTask = task">详情</button>
+                    <button v-if="canRetryTask(task)" type="button" :disabled="retryingTaskId === task.taskId || deletingTaskId === task.taskId" @click="retryFailedTask(task)">
+                      {{ retryingTaskId === task.taskId ? '投递中' : '重试' }}
+                    </button>
+                    <button type="button" class="danger" :disabled="retryingTaskId === task.taskId || deletingTaskId === task.taskId" @click="deleteFailedTask(task)">
+                      {{ deletingTaskId === task.taskId ? '删除中' : '删除' }}
+                    </button>
+                  </span>
+                </div>
+              </div>
+              <p v-if="!isLoadingTasks && failedTasks.length === 0" class="kc-empty">当前没有失败入库任务。</p>
             </div>
           </div>
-          <p v-if="!isLoadingTasks && failedTasks.length === 0" class="kc-empty">当前没有失败入库任务。</p>
 
           <footer class="kc-pagination">
-            <span>第 {{ taskPageStart }}-{{ taskPageEnd }} 条 / 共 {{ formatNumber(taskTotal) }} 条</span>
-            <div>
-              <select v-model.number="taskPageSize" :disabled="isLoadingTasks" @change="changeTaskPageSize">
-                <option :value="10">10 / 页</option>
-                <option :value="20">20 / 页</option>
-                <option :value="50">50 / 页</option>
-                <option :value="100">100 / 页</option>
-              </select>
+            <div class="kc-pagination-start">
+              <span>第 {{ taskPageStart }}-{{ taskPageEnd }} 条 / 共 {{ formatNumber(taskTotal) }} 条</span>
+              <AdminSelect
+                v-model="taskPageSize"
+                :options="adminPageSizeOptions"
+                :disabled="isLoadingTasks"
+                aria-label="每页条数"
+                @change="changeTaskPageSize"
+              />
+            </div>
+            <div class="kc-pagination-actions">
               <button type="button" class="kc-ghost-button" :disabled="isLoadingTasks || taskPage <= 1" @click="goToTaskPage(taskPage - 1)">上一页</button>
               <span>{{ taskPage }} / {{ taskPages || 1 }}</span>
               <button type="button" class="kc-ghost-button" :disabled="isLoadingTasks || taskPage >= (taskPages || 1)" @click="goToTaskPage(taskPage + 1)">下一页</button>
@@ -1979,43 +2028,49 @@ function handleAdminError(error) {
               </button>
             </div>
           </div>
-          <div class="kc-table-head mapping-grid">
-            <span>原始词</span>
-            <span>目标词</span>
-            <span>类型</span>
-            <span>优先级</span>
-            <span>状态</span>
-            <span>备注</span>
-            <span>更新时间</span>
-            <span>操作</span>
-          </div>
-          <div class="kc-table-body">
-            <div v-for="mapping in filteredTerminologyMappings" :key="mapping.aliasId" class="kc-table-row mapping-grid">
-              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, mapping.aliasName)" @mouseleave="clearOverflowTooltip">
-                <span class="kc-tooltip-content">{{ mapping.aliasName }}</span>
-              </span>
-              <span class="kc-tag">{{ mapping.canonicalName }}</span>
-              <span>{{ mapping.termType || 'TECH' }}</span>
-              <span>{{ mapping.priority ?? 0 }}</span>
-              <span class="kc-status" :class="mapping.enabled ? 'success' : 'muted'">{{ mapping.enabled ? '启用' : '禁用' }}</span>
-              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, mapping.description || '-')" @mouseleave="clearOverflowTooltip">
-                <span class="kc-tooltip-content">{{ mapping.description || '-' }}</span>
-              </span>
-              <span>{{ formatDate(mapping.updatedAt || mapping.createdAt) }}</span>
-              <span class="kc-row-actions compact">
-                <button type="button" @click="openEditMappingModal(mapping)">编辑</button>
-                <button type="button" @click="toggleMappingEnabled(mapping)">{{ mapping.enabled ? '禁用' : '启用' }}</button>
-                <button type="button" class="danger" @click="openDeleteMappingDialog(mapping)">删除</button>
-              </span>
+          <div class="kc-table-scroll">
+            <div class="kc-table-head-scroll">
+              <div class="kc-table-head mapping-grid">
+                <span>原始词</span>
+                <span>目标词</span>
+                <span>类型</span>
+                <span>优先级</span>
+                <span>状态</span>
+                <span>备注</span>
+                <span>更新时间</span>
+                <span>操作</span>
+              </div>
+            </div>
+            <div class="kc-table-body-scroll" @scroll="syncTableHeaderScroll">
+              <div class="kc-table-body">
+                <div v-for="mapping in filteredTerminologyMappings" :key="mapping.aliasId" class="kc-table-row mapping-grid">
+                  <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, mapping.aliasName)" @mouseleave="clearOverflowTooltip">
+                    <span class="kc-tooltip-content">{{ mapping.aliasName }}</span>
+                  </span>
+                  <span class="kc-tag">{{ mapping.canonicalName }}</span>
+                  <span>{{ mapping.termType || 'TECH' }}</span>
+                  <span>{{ mapping.priority ?? 0 }}</span>
+                  <span class="kc-status" :class="mapping.enabled ? 'success' : 'muted'">{{ mapping.enabled ? '启用' : '禁用' }}</span>
+                  <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, mapping.description || '-')" @mouseleave="clearOverflowTooltip">
+                    <span class="kc-tooltip-content">{{ mapping.description || '-' }}</span>
+                  </span>
+                  <span>{{ formatDate(mapping.updatedAt || mapping.createdAt) }}</span>
+                  <span class="kc-row-actions compact">
+                    <button type="button" @click="openEditMappingModal(mapping)">编辑</button>
+                    <button type="button" @click="toggleMappingEnabled(mapping)">{{ mapping.enabled ? '禁用' : '启用' }}</button>
+                    <button type="button" class="danger" @click="openDeleteMappingDialog(mapping)">删除</button>
+                  </span>
+                </div>
+              </div>
+              <p v-if="!isLoadingMappings && filteredTerminologyMappings.length === 0" class="kc-empty">还没有关键词映射。</p>
             </div>
           </div>
-          <p v-if="!isLoadingMappings && filteredTerminologyMappings.length === 0" class="kc-empty">还没有关键词映射。</p>
         </section>
       </section>
 
       <section v-else-if="activeModule === 'pipeline'" class="admin-section kc-content">
         <div class="pipeline-layout">
-          <section class="pipeline-card">
+          <section class="pipeline-card pipeline-config-card">
             <header>
               <div>
                 <strong>查询预处理策略</strong>
@@ -2054,11 +2109,7 @@ function handleAdminError(error) {
               <div class="pipeline-field-grid">
                 <label>
                   <span>降级策略</span>
-                  <select v-model="pipelineForm.fallbackPolicy">
-                    <option value="TERM_ONLY">只保留术语统一</option>
-                    <option value="RULE_SPLIT">术语统一 + 规则拆分</option>
-                    <option value="BYPASS">跳过预处理</option>
-                  </select>
+                  <AdminSelect v-model="pipelineForm.fallbackPolicy" :options="pipelineFallbackPolicyOptions" aria-label="降级策略" />
                 </label>
                 <label>
                   <span>改写超时 ms</span>
@@ -2078,7 +2129,7 @@ function handleAdminError(error) {
             </form>
           </section>
 
-          <section class="pipeline-card muted">
+          <section class="pipeline-card pipeline-flow-card muted">
             <header>
               <div>
                 <strong>当前降级链路</strong>
@@ -2268,57 +2319,53 @@ function handleAdminError(error) {
             </div>
             <div class="kc-toolbar-actions">
               <input v-model="intentKeyword" type="search" placeholder="搜索编码、名称、路径或资源" />
-              <select v-model="intentKindFilter">
-                <option value="ALL">全部类型</option>
-                <option value="KB">知识库</option>
-                <option value="MCP">MCP 工具</option>
-                <option value="SYSTEM">系统直答</option>
-              </select>
-              <select v-model="intentLevelFilter">
-                <option value="ALL">全部层级</option>
-                <option value="DOMAIN">领域</option>
-                <option value="CATEGORY">分类</option>
-                <option value="TOPIC">主题</option>
-              </select>
+              <AdminSelect v-model="intentKindFilter" :options="intentKindFilterOptions" aria-label="意图类型" />
+              <AdminSelect v-model="intentLevelFilter" :options="intentLevelFilterOptions" aria-label="意图层级" />
               <button type="button" class="kc-primary-button" @click="openCreateIntentNodeModal()">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
                 <span>新增节点</span>
               </button>
             </div>
           </div>
-          <div class="kc-table-head intent-grid">
-            <span>节点</span>
-            <span>路径</span>
-            <span>层级</span>
-            <span>类型</span>
-            <span>资源</span>
-            <span>状态</span>
-            <span>操作</span>
-          </div>
-          <div class="kc-table-body">
-            <div v-for="node in filteredIntentNodes" :key="node.id" class="kc-table-row intent-grid">
-              <span>
-                <strong>{{ node.name }}</strong>
-                <small>{{ node.nodeCode }}</small>
-              </span>
-              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, node.fullPath)" @mouseleave="clearOverflowTooltip">
-                <span class="kc-tooltip-content">{{ node.fullPath }}</span>
-              </span>
-              <span>{{ intentLevelLabel(node.level) }}</span>
-              <span class="kc-tag">{{ intentKindLabel(node.kind) }}</span>
-              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, node.collectionName || node.mcpToolId || '-')" @mouseleave="clearOverflowTooltip">
-                <span class="kc-tooltip-content">{{ node.collectionName || node.mcpToolId || '-' }}</span>
-              </span>
-              <span class="kc-status" :class="node.enabled ? 'success' : 'muted'">{{ node.enabled ? '启用' : '禁用' }}</span>
-              <span class="kc-row-actions compact">
-                <button type="button" @click="selectIntentNode(node); navigateTo('/admin/intent-tree')">查看</button>
-                <button type="button" @click="openEditIntentNodeModal(node)">编辑</button>
-                <button type="button" @click="toggleIntentNodeEnabled(node)">{{ node.enabled ? '禁用' : '启用' }}</button>
-                <button type="button" class="danger" @click="openDeleteIntentNodeDialog(node)">删除</button>
-              </span>
+          <div class="kc-table-scroll">
+            <div class="kc-table-head-scroll">
+              <div class="kc-table-head intent-grid">
+                <span>节点</span>
+                <span>路径</span>
+                <span>层级</span>
+                <span>类型</span>
+                <span>资源</span>
+                <span>状态</span>
+                <span>操作</span>
+              </div>
+            </div>
+            <div class="kc-table-body-scroll" @scroll="syncTableHeaderScroll">
+              <div class="kc-table-body">
+                <div v-for="node in filteredIntentNodes" :key="node.id" class="kc-table-row intent-grid">
+                  <span>
+                    <strong>{{ node.name }}</strong>
+                    <small>{{ node.nodeCode }}</small>
+                  </span>
+                  <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, node.fullPath)" @mouseleave="clearOverflowTooltip">
+                    <span class="kc-tooltip-content">{{ node.fullPath }}</span>
+                  </span>
+                  <span>{{ intentLevelLabel(node.level) }}</span>
+                  <span class="kc-tag">{{ intentKindLabel(node.kind) }}</span>
+                  <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, node.collectionName || node.mcpToolId || '-')" @mouseleave="clearOverflowTooltip">
+                    <span class="kc-tooltip-content">{{ node.collectionName || node.mcpToolId || '-' }}</span>
+                  </span>
+                  <span class="kc-status" :class="node.enabled ? 'success' : 'muted'">{{ node.enabled ? '启用' : '禁用' }}</span>
+                  <span class="kc-row-actions compact">
+                    <button type="button" @click="selectIntentNode(node); navigateTo('/admin/intent-tree')">查看</button>
+                    <button type="button" @click="openEditIntentNodeModal(node)">编辑</button>
+                    <button type="button" @click="toggleIntentNodeEnabled(node)">{{ node.enabled ? '禁用' : '启用' }}</button>
+                    <button type="button" class="danger" @click="openDeleteIntentNodeDialog(node)">删除</button>
+                  </span>
+                </div>
+              </div>
+              <p v-if="!isLoadingIntents && filteredIntentNodes.length === 0" class="kc-empty">没有匹配的意图节点。</p>
             </div>
           </div>
-          <p v-if="!isLoadingIntents && filteredIntentNodes.length === 0" class="kc-empty">没有匹配的意图节点。</p>
         </section>
       </section>
 
@@ -2355,51 +2402,53 @@ function handleAdminError(error) {
             </div>
             <div class="kc-toolbar-actions">
               <input v-model="intentRuleKeyword" type="search" placeholder="搜索规则、目标节点或关键词" />
-              <select v-model="intentRuleTypeFilter">
-                <option value="ALL">全部规则</option>
-                <option value="STRONG">强规则</option>
-                <option value="WEAK">弱规则</option>
-              </select>
+              <AdminSelect v-model="intentRuleTypeFilter" :options="intentRuleTypeFilterOptions" aria-label="规则类型" />
               <button type="button" class="kc-primary-button" @click="openCreateIntentRuleModal()">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
                 <span>新增规则</span>
               </button>
             </div>
           </div>
-          <div class="kc-table-head intent-rule-grid">
-            <span>规则</span>
-            <span>目标节点</span>
-            <span>类型</span>
-            <span>关键词</span>
-            <span>分数</span>
-            <span>状态</span>
-            <span>操作</span>
-          </div>
-          <div class="kc-table-body">
-            <div v-for="rule in filteredIntentRules" :key="rule.id" class="kc-table-row intent-rule-grid">
-              <span>
-                <strong>{{ rule.name }}</strong>
-                <small>{{ rule.ruleCode }}</small>
-              </span>
-              <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, rule.targetNodePath || rule.targetNodeCode)" @mouseleave="clearOverflowTooltip">
-                <span class="kc-tooltip-content">{{ rule.targetNodePath || rule.targetNodeCode }}</span>
-              </span>
-              <span class="kc-tag">{{ intentRuleTypeLabel(rule.ruleType) }}</span>
-              <span class="intent-rule-keywords">
-                <small>包含 {{ intentMatchModeLabel(rule.includeMatchMode) }}：{{ (rule.includeKeywords || []).join(' / ') || '-' }}</small>
-                <small>必要 {{ intentMatchModeLabel(rule.requireMatchMode) }}：{{ (rule.requireKeywords || []).join(' / ') || '-' }}</small>
-                <small>排除：{{ (rule.excludeKeywords || []).join(' / ') || '-' }}</small>
-              </span>
-              <span>{{ rule.score }}</span>
-              <span class="kc-status" :class="rule.enabled ? 'success' : 'muted'">{{ rule.enabled ? '启用' : '禁用' }}</span>
-              <span class="kc-row-actions compact">
-                <button type="button" @click="openEditIntentRuleModal(rule)">编辑</button>
-                <button type="button" @click="toggleIntentRuleEnabled(rule)">{{ rule.enabled ? '禁用' : '启用' }}</button>
-                <button type="button" class="danger" @click="openDeleteIntentRuleDialog(rule)">删除</button>
-              </span>
+          <div class="kc-table-scroll">
+            <div class="kc-table-head-scroll">
+              <div class="kc-table-head intent-rule-grid">
+                <span>规则</span>
+                <span>目标节点</span>
+                <span>类型</span>
+                <span>关键词</span>
+                <span>分数</span>
+                <span>状态</span>
+                <span>操作</span>
+              </div>
+            </div>
+            <div class="kc-table-body-scroll" @scroll="syncTableHeaderScroll">
+              <div class="kc-table-body">
+                <div v-for="rule in filteredIntentRules" :key="rule.id" class="kc-table-row intent-rule-grid">
+                  <span>
+                    <strong>{{ rule.name }}</strong>
+                    <small>{{ rule.ruleCode }}</small>
+                  </span>
+                  <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, rule.targetNodePath || rule.targetNodeCode)" @mouseleave="clearOverflowTooltip">
+                    <span class="kc-tooltip-content">{{ rule.targetNodePath || rule.targetNodeCode }}</span>
+                  </span>
+                  <span class="kc-tag">{{ intentRuleTypeLabel(rule.ruleType) }}</span>
+                  <span class="intent-rule-keywords">
+                    <small>包含 {{ intentMatchModeLabel(rule.includeMatchMode) }}：{{ (rule.includeKeywords || []).join(' / ') || '-' }}</small>
+                    <small>必要 {{ intentMatchModeLabel(rule.requireMatchMode) }}：{{ (rule.requireKeywords || []).join(' / ') || '-' }}</small>
+                    <small>排除：{{ (rule.excludeKeywords || []).join(' / ') || '-' }}</small>
+                  </span>
+                  <span>{{ rule.score }}</span>
+                  <span class="kc-status" :class="rule.enabled ? 'success' : 'muted'">{{ rule.enabled ? '启用' : '禁用' }}</span>
+                  <span class="kc-row-actions compact">
+                    <button type="button" @click="openEditIntentRuleModal(rule)">编辑</button>
+                    <button type="button" @click="toggleIntentRuleEnabled(rule)">{{ rule.enabled ? '禁用' : '启用' }}</button>
+                    <button type="button" class="danger" @click="openDeleteIntentRuleDialog(rule)">删除</button>
+                  </span>
+                </div>
+              </div>
+              <p v-if="!isLoadingIntents && filteredIntentRules.length === 0" class="kc-empty">没有匹配的意图规则。</p>
             </div>
           </div>
-          <p v-if="!isLoadingIntents && filteredIntentRules.length === 0" class="kc-empty">没有匹配的意图规则。</p>
         </section>
       </section>
 
@@ -2458,40 +2507,46 @@ function handleAdminError(error) {
                 <input v-model="baseKeyword" type="search" placeholder="搜索知识库名称" />
               </div>
             </div>
-            <div class="kc-table-head knowledge-grid">
-              <span>名称</span>
-              <span>Embedding模型</span>
-              <span>Collection</span>
-              <span>文档数</span>
-              <span>操作</span>
-            </div>
-            <div class="kc-table-body">
-              <div v-for="base in filteredKnowledgeBases" :key="base.knowledgeBaseId" class="kc-table-row knowledge-grid">
-                <button type="button" class="kc-link-cell" @click="openDocuments(base)">{{ base.name }}</button>
-                <span>{{ base.embeddingModel }}</span>
-                <span class="kc-tag">{{ base.collectionName }}</span>
-                <span>{{ base.documentCount }}</span>
-                <span class="kc-row-actions">
-                  <button type="button" @click="detailKnowledgeBase = base">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8h.01" /><path d="M11 12h1v4h1" /></svg>
-                    <span>详情</span>
-                  </button>
-                  <button type="button" @click="openEditKnowledgeBaseModal(base)">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
-                    <span>编辑</span>
-                  </button>
-                  <button type="button" @click="openDocuments(base)">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
-                    <span>录入文档</span>
-                  </button>
-                  <button type="button" class="danger" @click="removeKnowledgeBase(base)">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /></svg>
-                    <span>删除</span>
-                  </button>
-                </span>
+            <div class="kc-table-scroll">
+              <div class="kc-table-head-scroll">
+                <div class="kc-table-head knowledge-grid">
+                  <span>名称</span>
+                  <span>Embedding模型</span>
+                  <span>Collection</span>
+                  <span>文档数</span>
+                  <span>操作</span>
+                </div>
+              </div>
+              <div class="kc-table-body-scroll" @scroll="syncTableHeaderScroll">
+                <div class="kc-table-body">
+                  <div v-for="base in filteredKnowledgeBases" :key="base.knowledgeBaseId" class="kc-table-row knowledge-grid">
+                    <button type="button" class="kc-link-cell" @click="openDocuments(base)">{{ base.name }}</button>
+                    <span>{{ base.embeddingModel }}</span>
+                    <span class="kc-tag">{{ base.collectionName }}</span>
+                    <span>{{ base.documentCount }}</span>
+                    <span class="kc-row-actions">
+                      <button type="button" @click="detailKnowledgeBase = base">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8h.01" /><path d="M11 12h1v4h1" /></svg>
+                        <span>详情</span>
+                      </button>
+                      <button type="button" @click="openEditKnowledgeBaseModal(base)">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                        <span>编辑</span>
+                      </button>
+                      <button type="button" @click="openDocuments(base)">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
+                        <span>录入文档</span>
+                      </button>
+                      <button type="button" class="danger" @click="removeKnowledgeBase(base)">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /></svg>
+                        <span>删除</span>
+                      </button>
+                    </span>
+                  </div>
+                </div>
+                <p v-if="!isLoadingKnowledge && filteredKnowledgeBases.length === 0" class="kc-empty">还没有知识库。</p>
               </div>
             </div>
-            <p v-if="!isLoadingKnowledge && filteredKnowledgeBases.length === 0" class="kc-empty">还没有知识库。</p>
           </section>
         </template>
 
@@ -2523,86 +2578,79 @@ function handleAdminError(error) {
               </div>
               <div class="kc-toolbar-actions">
                 <input v-model="documentKeyword" type="search" placeholder="搜索文档名称" />
-                <div class="kc-select-menu" :class="{ open: isDocumentStatusMenuOpen }">
-                  <button type="button" class="kc-select-trigger" @click="toggleDocumentStatusMenu">
-                    <span>{{ documentStatusFilterText(documentStatusFilter) }}</span>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
-                  </button>
-                  <div v-if="isDocumentStatusMenuOpen" class="kc-select-options">
-                    <button type="button" :class="{ active: documentStatusFilter === 'ALL' }" @click="setDocumentStatus('ALL')">全部状态</button>
-                    <button type="button" :class="{ active: documentStatusFilter === 'UPLOADING' }" @click="setDocumentStatus('UPLOADING')">uploading</button>
-                    <button type="button" :class="{ active: documentStatusFilter === 'UPLOADED' }" @click="setDocumentStatus('UPLOADED')">uploaded</button>
-                    <button type="button" :class="{ active: documentStatusFilter === 'COMPLETED' }" @click="setDocumentStatus('COMPLETED')">success</button>
-                    <button type="button" :class="{ active: documentStatusFilter === 'PROCESSING' }" @click="setDocumentStatus('PROCESSING')">processing</button>
-                    <button type="button" :class="{ active: documentStatusFilter === 'FAILED' }" @click="setDocumentStatus('FAILED')">failed</button>
-                  </div>
+                <AdminSelect v-model="documentStatusFilter" :options="documentStatusOptions" aria-label="文档状态" />
+              </div>
+            </div>
+            <div class="kc-table-scroll">
+              <div class="kc-table-head-scroll">
+                <div class="kc-table-head document-grid">
+                  <span>文档</span>
+                  <span>来源</span>
+                  <span>处理模式</span>
+                  <span>状态</span>
+                  <span>分块数</span>
+                  <span>类型</span>
+                  <span>操作</span>
                 </div>
               </div>
-            </div>
-            <div class="kc-table-head document-grid">
-              <span>文档</span>
-              <span>来源</span>
-              <span>处理模式</span>
-              <span>状态</span>
-              <span>分块数</span>
-              <span>类型</span>
-              <span>操作</span>
-            </div>
-            <div class="kc-table-body">
-              <div v-for="doc in filteredDocuments" :key="doc.documentId" class="kc-table-row document-grid">
-                <button
-                  type="button"
-                  class="kc-link-cell kc-cell-tooltip"
-                  :disabled="!canOpenDocumentChunks(doc)"
-                  @mouseenter="showOverflowTooltip($event, doc.fileName)"
-                  @mouseleave="clearOverflowTooltip"
-                  @click="openDocumentChunks(doc)"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" /></svg>
-                  <span class="kc-tooltip-content">{{ doc.fileName }}</span>
-                </button>
-                <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, sourceText(doc))" @mouseleave="clearOverflowTooltip">
-                  <span class="kc-tooltip-content">{{ sourceText(doc) }}</span>
-                </span>
-                <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, doc.chunkStrategy?.toLowerCase() || 'chunk')" @mouseleave="clearOverflowTooltip">
-                  <span class="kc-tooltip-content">{{ doc.chunkStrategy?.toLowerCase() || 'chunk' }}</span>
-                </span>
-                <span class="kc-status kc-cell-tooltip" :class="statusClass(doc.status)" @mouseenter="showOverflowTooltip($event, statusText(doc.status))" @mouseleave="clearOverflowTooltip">
-                  <span class="kc-tooltip-content">{{ statusText(doc.status) }}</span>
-                </span>
-                <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, String(doc.chunkCount))" @mouseleave="clearOverflowTooltip">
-                  <span class="kc-tooltip-content">{{ doc.chunkCount }}</span>
-                </span>
-                <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, typeText(doc))" @mouseleave="clearOverflowTooltip">
-                  <span class="kc-tooltip-content">{{ typeText(doc) }}</span>
-                </span>
-                <span class="kc-row-actions document-actions">
-                  <button
-                    v-if="shouldShowDocumentChunkAction(doc)"
-                    type="button"
-                    :aria-label="documentChunkActionLabel(doc)"
-                    :disabled="!canRechunkDocument(doc)"
-                    @click.stop="openRechunkModal(doc)"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-9 9" /><path d="M3 12a9 9 0 0 1 9-9" /><path d="M21 3v6h-6" /><path d="M3 21v-6h6" /></svg>
-                    <span>{{ documentChunkActionLabel(doc) }}</span>
-                  </button>
-                  <button type="button" aria-label="分块详情" @click="detailDocument = doc">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8h.01" /><path d="M11 12h1v4h1" /></svg>
-                    <span>详情</span>
-                  </button>
-                  <button v-if="!isFailedDocumentStatus(doc.status)" type="button" aria-label="查看分块" :disabled="!canViewDocumentChunks(doc)" @click="openDocumentChunks(doc)">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z" /><path d="M8 8h8" /><path d="M8 12h8" /><path d="M8 16h5" /></svg>
-                    <span>查看分块</span>
-                  </button>
-                  <button type="button" class="danger" aria-label="删除文档" :disabled="isBusyDocumentStatus(doc.status)" @click="removeDocument(doc)">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /></svg>
-                    <span>删除</span>
-                  </button>
-                </span>
+              <div class="kc-table-body-scroll" @scroll="syncTableHeaderScroll">
+                <div class="kc-table-body">
+                  <div v-for="doc in filteredDocuments" :key="doc.documentId" class="kc-table-row document-grid">
+                    <button
+                      type="button"
+                      class="kc-link-cell kc-cell-tooltip"
+                      :disabled="!canOpenDocumentChunks(doc)"
+                      @mouseenter="showOverflowTooltip($event, doc.fileName)"
+                      @mouseleave="clearOverflowTooltip"
+                      @click="openDocumentChunks(doc)"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" /></svg>
+                      <span class="kc-tooltip-content">{{ doc.fileName }}</span>
+                    </button>
+                    <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, sourceText(doc))" @mouseleave="clearOverflowTooltip">
+                      <span class="kc-tooltip-content">{{ sourceText(doc) }}</span>
+                    </span>
+                    <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, doc.chunkStrategy?.toLowerCase() || 'chunk')" @mouseleave="clearOverflowTooltip">
+                      <span class="kc-tooltip-content">{{ doc.chunkStrategy?.toLowerCase() || 'chunk' }}</span>
+                    </span>
+                    <span class="kc-status kc-cell-tooltip" :class="statusClass(doc.status)" @mouseenter="showOverflowTooltip($event, statusText(doc.status))" @mouseleave="clearOverflowTooltip">
+                      <span class="kc-tooltip-content">{{ statusText(doc.status) }}</span>
+                    </span>
+                    <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, String(doc.chunkCount))" @mouseleave="clearOverflowTooltip">
+                      <span class="kc-tooltip-content">{{ doc.chunkCount }}</span>
+                    </span>
+                    <span class="kc-cell-tooltip" @mouseenter="showOverflowTooltip($event, typeText(doc))" @mouseleave="clearOverflowTooltip">
+                      <span class="kc-tooltip-content">{{ typeText(doc) }}</span>
+                    </span>
+                    <span class="kc-row-actions document-actions">
+                      <button
+                        v-if="shouldShowDocumentChunkAction(doc)"
+                        type="button"
+                        :aria-label="documentChunkActionLabel(doc)"
+                        :disabled="!canRechunkDocument(doc)"
+                        @click.stop="openRechunkModal(doc)"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-9 9" /><path d="M3 12a9 9 0 0 1 9-9" /><path d="M21 3v6h-6" /><path d="M3 21v-6h6" /></svg>
+                        <span>{{ documentChunkActionLabel(doc) }}</span>
+                      </button>
+                      <button type="button" aria-label="分块详情" @click="detailDocument = doc">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8h.01" /><path d="M11 12h1v4h1" /></svg>
+                        <span>详情</span>
+                      </button>
+                      <button v-if="!isFailedDocumentStatus(doc.status)" type="button" aria-label="查看分块" :disabled="!canViewDocumentChunks(doc)" @click="openDocumentChunks(doc)">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z" /><path d="M8 8h8" /><path d="M8 12h8" /><path d="M8 16h5" /></svg>
+                        <span>查看分块</span>
+                      </button>
+                      <button type="button" class="danger" aria-label="删除文档" :disabled="isBusyDocumentStatus(doc.status)" @click="removeDocument(doc)">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /></svg>
+                        <span>删除</span>
+                      </button>
+                    </span>
+                  </div>
+                </div>
+                <p v-if="filteredDocuments.length === 0" class="kc-empty">这个知识库还没有文档。</p>
               </div>
             </div>
-            <p v-if="filteredDocuments.length === 0" class="kc-empty">这个知识库还没有文档。</p>
           </section>
         </template>
 
@@ -2627,53 +2675,49 @@ function handleAdminError(error) {
                 <small>共 {{ filteredChunks.length }} 条</small>
               </div>
               <div class="kc-toolbar-actions">
-                <div class="kc-select-menu" :class="{ open: isChunkStatusMenuOpen }">
-                  <button type="button" class="kc-select-trigger" @click="toggleChunkStatusMenu">
-                    <span>{{ statusFilterText(chunkStatusFilter) }}</span>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
-                  </button>
-                  <div v-if="isChunkStatusMenuOpen" class="kc-select-options">
-                    <button type="button" :class="{ active: chunkStatusFilter === 'ALL' }" @click="setChunkStatus('ALL')">全部状态</button>
-                    <button type="button" :class="{ active: chunkStatusFilter === 'ENABLED' }" @click="setChunkStatus('ENABLED')">启用</button>
-                    <button type="button" :class="{ active: chunkStatusFilter === 'DISABLED' }" @click="setChunkStatus('DISABLED')">禁用</button>
-                  </div>
-                </div>
+                <AdminSelect v-model="chunkStatusFilter" :options="chunkStatusOptions" aria-label="分块状态" />
                 <button type="button" class="kc-ghost-button" :disabled="selectedChunkIds.size === 0 || !canMutateSelectedChunks" @click="setSelectedChunksEnabled(true)">批量启用</button>
                 <button type="button" class="kc-ghost-button" :disabled="selectedChunkIds.size === 0 || !canMutateSelectedChunks" @click="setSelectedChunksEnabled(false)">批量禁用</button>
                 <button type="button" class="kc-ghost-button" :disabled="!canMutateSelectedChunks" @click="setAllChunksEnabled(true)">全量启用</button>
                 <button type="button" class="kc-ghost-button" :disabled="!canMutateSelectedChunks" @click="setAllChunksEnabled(false)">全量禁用</button>
               </div>
             </div>
-            <div class="kc-table-head chunk-grid">
-              <span><input type="checkbox" :checked="filteredChunks.length > 0 && filteredChunks.every((chunk) => selectedChunkIds.has(chunk.chunkId))" @change="toggleAllVisibleChunks" /></span>
-              <span>序号</span>
-              <span>内容</span>
-              <span>状态</span>
-              <span>操作</span>
-            </div>
-            <div class="kc-table-body">
-              <div v-for="chunk in filteredChunks" :key="chunk.chunkId" class="kc-table-row chunk-grid">
-                <span><input type="checkbox" :checked="selectedChunkIds.has(chunk.chunkId)" @change="toggleChunkSelected(chunk.chunkId)" /></span>
-                <span>{{ chunk.chunkIndex }}</span>
-                <p>{{ chunk.content }}</p>
-                <span class="kc-status" :class="chunk.enabled ? 'success' : 'muted'">{{ chunk.enabled ? '启用' : '禁用' }}</span>
-                <span class="kc-row-actions compact">
-                  <button type="button" @click="detailChunk = chunk">详情</button>
-                  <button type="button" @click="viewingChunk = chunk">查看</button>
-                  <button type="button" :disabled="!canMutateSelectedChunks" @click="openEditChunkModal(chunk)">修改</button>
-                  <button type="button" :disabled="!canMutateSelectedChunks" @click="toggleChunk(chunk)">{{ chunk.enabled ? '禁用' : '启用' }}</button>
-                  <button type="button" class="danger" :disabled="!canMutateSelectedChunks" @click="removeChunk(chunk)">删除</button>
-                </span>
+            <div class="kc-table-scroll">
+              <div class="kc-table-head-scroll">
+                <div class="kc-table-head chunk-grid">
+                  <span><input type="checkbox" :checked="filteredChunks.length > 0 && filteredChunks.every((chunk) => selectedChunkIds.has(chunk.chunkId))" @change="toggleAllVisibleChunks" /></span>
+                  <span>序号</span>
+                  <span>内容</span>
+                  <span>状态</span>
+                  <span>操作</span>
+                </div>
+              </div>
+              <div class="kc-table-body-scroll" @scroll="syncTableHeaderScroll">
+                <div class="kc-table-body">
+                  <div v-for="chunk in filteredChunks" :key="chunk.chunkId" class="kc-table-row chunk-grid">
+                    <span><input type="checkbox" :checked="selectedChunkIds.has(chunk.chunkId)" @change="toggleChunkSelected(chunk.chunkId)" /></span>
+                    <span>{{ chunk.chunkIndex }}</span>
+                    <p>{{ chunk.content }}</p>
+                    <span class="kc-status" :class="chunk.enabled ? 'success' : 'muted'">{{ chunk.enabled ? '启用' : '禁用' }}</span>
+                    <span class="kc-row-actions compact">
+                      <button type="button" @click="detailChunk = chunk">详情</button>
+                      <button type="button" @click="viewingChunk = chunk">查看</button>
+                      <button type="button" :disabled="!canMutateSelectedChunks" @click="openEditChunkModal(chunk)">修改</button>
+                      <button type="button" :disabled="!canMutateSelectedChunks" @click="toggleChunk(chunk)">{{ chunk.enabled ? '禁用' : '启用' }}</button>
+                      <button type="button" class="danger" :disabled="!canMutateSelectedChunks" @click="removeChunk(chunk)">删除</button>
+                    </span>
+                  </div>
+                </div>
+                <p v-if="filteredChunks.length === 0" class="kc-empty">这个文档还没有分块。</p>
               </div>
             </div>
-            <p v-if="filteredChunks.length === 0" class="kc-empty">这个文档还没有分块。</p>
           </section>
         </template>
       </section>
     </section>
 
     <div v-if="isMappingModalOpen" class="kc-modal-backdrop" @click.self="closeMappingModal">
-      <section class="kc-modal">
+      <section class="kc-modal mapping-modal">
         <header>
           <div>
             <h2>{{ editingMapping ? '编辑关键词映射' : '新增关键词映射' }}</h2>
@@ -2693,12 +2737,7 @@ function handleAdminError(error) {
           </label>
           <label>
             <span>术语类型</span>
-            <select v-model="mappingForm.termType">
-              <option value="TECH">TECH</option>
-              <option value="MODULE">MODULE</option>
-              <option value="CAPABILITY">CAPABILITY</option>
-              <option value="BUSINESS">BUSINESS</option>
-            </select>
+            <AdminSelect v-model="mappingForm.termType" :options="mappingTermTypeOptions" aria-label="术语类型" />
           </label>
           <label>
             <span>优先级</span>
@@ -2756,19 +2795,11 @@ function handleAdminError(error) {
             </label>
             <label>
               <span>层级</span>
-              <select v-model="intentNodeForm.level">
-                <option value="DOMAIN">领域</option>
-                <option value="CATEGORY">分类</option>
-                <option value="TOPIC">主题</option>
-              </select>
+              <AdminSelect v-model="intentNodeForm.level" :options="intentLevelOptions" aria-label="节点层级" />
             </label>
             <label>
               <span>类型</span>
-              <select v-model="intentNodeForm.kind">
-                <option value="KB">知识库</option>
-                <option value="MCP">MCP 工具</option>
-                <option value="SYSTEM">系统直答</option>
-              </select>
+              <AdminSelect v-model="intentNodeForm.kind" :options="intentKindOptions" aria-label="节点类型" />
             </label>
             <label>
               <span>TopK</span>
@@ -2853,10 +2884,7 @@ function handleAdminError(error) {
             </label>
             <label>
               <span>规则类型</span>
-              <select v-model="intentRuleForm.ruleType">
-                <option value="STRONG">强规则</option>
-                <option value="WEAK">弱规则</option>
-              </select>
+              <AdminSelect v-model="intentRuleForm.ruleType" :options="intentRuleTypeOptions" aria-label="规则类型" />
             </label>
             <label>
               <span>分数</span>
@@ -2870,18 +2898,12 @@ function handleAdminError(error) {
           <div class="intent-rule-form-grid">
             <label>
               <span>包含关键词</span>
-              <select v-model="intentRuleForm.includeMatchMode">
-                <option value="ANY">任一命中</option>
-                <option value="ALL">全部命中</option>
-              </select>
+              <AdminSelect v-model="intentRuleForm.includeMatchMode" :options="intentMatchModeOptions" aria-label="包含关键词匹配方式" />
               <textarea v-model="intentRuleForm.includeKeywordsText" rows="5" placeholder="一行一个，例如：&#10;快递&#10;包裹&#10;物流"></textarea>
             </label>
             <label>
               <span>必要关键词</span>
-              <select v-model="intentRuleForm.requireMatchMode">
-                <option value="ANY">任一命中</option>
-                <option value="ALL">全部命中</option>
-              </select>
+              <AdminSelect v-model="intentRuleForm.requireMatchMode" :options="intentMatchModeOptions" aria-label="必要关键词匹配方式" />
               <textarea v-model="intentRuleForm.requireKeywordsText" rows="5" placeholder="一行一个，例如：&#10;到哪&#10;在哪&#10;进度"></textarea>
             </label>
             <label>

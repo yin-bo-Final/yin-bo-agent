@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue';
+import AdminSelect from './AdminSelect.vue';
 import { formatNumber } from './adminPageUtils';
 
 const props = defineProps({
@@ -83,6 +84,10 @@ const normalizedColumns = computed(() => props.columns.map((column) => {
 const pageCount = computed(() => Math.max(1, Number(props.pages || 1)));
 const pageStart = computed(() => props.total === 0 ? 0 : (props.page - 1) * props.pageSize + 1);
 const pageEnd = computed(() => Math.min(props.total, props.page * props.pageSize));
+const pageSizeOptions = computed(() => props.pageSizes.map((size) => ({
+  label: `${size} / 页`,
+  value: size
+})));
 
 function resolveRowKey(row, index) {
   if (typeof props.rowKey === 'function') {
@@ -94,8 +99,18 @@ function resolveRowKey(row, index) {
   return row?.id ?? index;
 }
 
-function changePageSize(event) {
-  emit('page-size-change', Number(event.target.value));
+function changePageSize(nextPageSize) {
+  emit('page-size-change', Number(nextPageSize));
+}
+
+function syncTableHeaderScroll(event) {
+  const bodyScroller = event.currentTarget;
+  const headerScroller = bodyScroller
+    ?.closest('.kc-table-scroll')
+    ?.querySelector('.kc-table-head-scroll');
+  if (headerScroller) {
+    headerScroller.scrollLeft = bodyScroller.scrollLeft;
+  }
 }
 </script>
 
@@ -109,27 +124,40 @@ function changePageSize(event) {
       <slot name="actions" />
     </div>
 
-    <div class="kc-table-head" :class="gridClass">
-      <span v-for="column in normalizedColumns" :key="column.key">{{ column.label }}</span>
-    </div>
-    <div class="kc-table-body">
-      <div
-        v-for="(row, rowIndex) in rows"
-        :key="resolveRowKey(row, rowIndex)"
-        class="kc-table-row"
-        :class="gridClass"
-      >
-        <slot name="row" :row="row" :index="rowIndex" />
+    <div class="kc-table-scroll">
+      <div class="kc-table-head-scroll">
+        <div class="kc-table-head" :class="gridClass">
+          <span v-for="column in normalizedColumns" :key="column.key">{{ column.label }}</span>
+        </div>
+      </div>
+
+      <div class="kc-table-body-scroll" @scroll="syncTableHeaderScroll">
+        <div class="kc-table-body">
+          <div
+            v-for="(row, rowIndex) in rows"
+            :key="resolveRowKey(row, rowIndex)"
+            class="kc-table-row"
+            :class="gridClass"
+          >
+            <slot name="row" :row="row" :index="rowIndex" />
+          </div>
+        </div>
+        <p v-if="!loading && rows.length === 0" class="kc-empty">{{ emptyText }}</p>
       </div>
     </div>
-    <p v-if="!loading && rows.length === 0" class="kc-empty">{{ emptyText }}</p>
 
     <footer v-if="pagination" class="kc-pagination">
-      <span>第 {{ pageStart }}-{{ pageEnd }} 条 / 共 {{ formatNumber(total) }} 条</span>
-      <div>
-        <select :value="pageSize" :disabled="loading" @change="changePageSize">
-          <option v-for="size in pageSizes" :key="size" :value="size">{{ size }} / 页</option>
-        </select>
+      <div class="kc-pagination-start">
+        <span>第 {{ pageStart }}-{{ pageEnd }} 条 / 共 {{ formatNumber(total) }} 条</span>
+        <AdminSelect
+          :model-value="pageSize"
+          :options="pageSizeOptions"
+          :disabled="loading"
+          aria-label="每页条数"
+          @change="changePageSize"
+        />
+      </div>
+      <div class="kc-pagination-actions">
         <button
           type="button"
           class="kc-ghost-button"

@@ -1,14 +1,27 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { fetchIntentResolveRecords } from '../../api/adminApi';
+import AdminDateTimeRangeInput from './AdminDateTimeRangeInput.vue';
 import AdminDetailModal from './AdminDetailModal.vue';
 import AdminFilterBar from './AdminFilterBar.vue';
 import AdminJsonPreview from './AdminJsonPreview.vue';
+import AdminSelect from './AdminSelect.vue';
 import AdminTable from './AdminTable.vue';
 import { formatDate, formatDuration, metricText } from './adminPageUtils';
 import StatusBadge from './StatusBadge.vue';
 
 const emit = defineEmits(['error']);
+
+const outcomeFilterOptions = [
+  { label: '全部结果', value: 'ALL' },
+  { label: 'success', value: 'SUCCESS' },
+  { label: 'fallback', value: 'FALLBACK' }
+];
+const ambiguousFilterOptions = [
+  { label: '全部歧义', value: 'ALL' },
+  { label: '有歧义', value: 'true' },
+  { label: '无歧义', value: 'false' }
+];
 
 const records = ref([]);
 const page = ref(1);
@@ -292,18 +305,24 @@ async function writeClipboard(content) {
             type="search"
             placeholder="搜索问题、会话ID、用户ID、模型或错误"
           />
-          <select v-model="outcomeFilter" @change="applyFilters">
-            <option value="ALL">全部结果</option>
-            <option value="SUCCESS">success</option>
-            <option value="FALLBACK">fallback</option>
-          </select>
-          <select v-model="ambiguousFilter" @change="applyFilters">
-            <option value="ALL">全部歧义</option>
-            <option value="true">有歧义</option>
-            <option value="false">无歧义</option>
-          </select>
-          <input v-model="startAt" type="datetime-local" aria-label="开始时间" @change="applyFilters" />
-          <input v-model="endAt" type="datetime-local" aria-label="结束时间" @change="applyFilters" />
+          <AdminSelect
+            v-model="outcomeFilter"
+            :options="outcomeFilterOptions"
+            aria-label="识别结果"
+            @change="applyFilters"
+          />
+          <AdminSelect
+            v-model="ambiguousFilter"
+            :options="ambiguousFilterOptions"
+            aria-label="歧义状态"
+            @change="applyFilters"
+          />
+          <AdminDateTimeRangeInput
+            v-model:start-value="startAt"
+            v-model:end-value="endAt"
+            aria-label="识别时间范围"
+            @change="applyFilters"
+          />
           <button type="button" class="kc-ghost-button" :disabled="isLoading" @click="resetFilters">重置</button>
           <button type="submit" class="kc-primary-button" :disabled="isLoading">
             {{ isLoading ? '查询中...' : '查询' }}

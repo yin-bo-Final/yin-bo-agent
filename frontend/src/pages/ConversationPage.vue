@@ -14,6 +14,7 @@ import {
 } from '../api/chatApi';
 import AssistantTracePanel from '../components/AssistantTracePanel.vue';
 import { hasAssistantTrace, normalizeAssistantTrace } from '../utils/assistantTrace';
+import { createClientId } from '../utils/clientId';
 import { createQuietReveal } from '../utils/quietMotion';
 
 const props = defineProps({
@@ -355,7 +356,7 @@ async function submitMessage() {
   inputText.value = '';
   shouldAutoScroll.value = true;
   messages.value.push({
-    id: crypto.randomUUID(),
+    id: createClientId(),
     role: 'user',
     content
   });
@@ -374,7 +375,7 @@ async function submitMessage() {
       content: message.content
     }));
   const assistantMessageDraft = {
-    id: crypto.randomUUID(),
+    id: createClientId(),
     role: 'assistant',
     content: '',
     isStreaming: true,
@@ -546,7 +547,7 @@ function upsertMemoryStatusMessage(status) {
   }
 
   const message = {
-    id: `memory-${crypto.randomUUID()}`,
+    id: `memory-${createClientId()}`,
     role: 'memory-status',
     status,
     content: memoryStatusText(status)
@@ -595,7 +596,7 @@ function restoreMemorySummaryDivider(summary) {
 
   memorySummarySnapshot.value = normalizedSummary;
   const message = {
-    id: `memory-${crypto.randomUUID()}`,
+    id: `memory-${createClientId()}`,
     role: 'memory-status',
     status: 'compressed',
     content: memoryStatusText('compressed')

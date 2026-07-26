@@ -174,7 +174,7 @@ box-shadow: 0 1px 2px rgba(76, 79, 105, 0.04);
 - 表头背景：`#F9F9F8`。
 - 行 hover：`#F8F7F4`。
 - 操作列居中，按钮高度稳定。
-- 后台表格工具栏里的状态筛选统一使用 `.kc-select-menu` 按钮式下拉，不能混用浏览器原生 `<select>`；失败任务、文档管理和分块管理的“全部状态”控件必须视觉一致。
+- 后台表格工具栏和后台表单里的下拉统一使用 `AdminSelect`，时间范围选择统一使用 `AdminDateTimeRangeInput`，日历主体复用 `AdminDateRangeCalendar`；不能混用浏览器原生 `<select>` 或裸 `datetime-local`。失败任务、文档管理、分块管理、意图管理和记录筛选的筛选控件必须视觉一致。
 - 后台列表卡片必须跟随主内容区缩小，宽内容优先让文本列压缩和省略；知识库列表操作按钮必须保持单行，不能用按钮换行来适配正常窗口；当最小列宽已经放不下时，表格必须保留横向滚动兜底，不能用 `overflow-x: hidden` 直接裁掉右侧操作区。
 - 文档管理列表第一列图标必须使用固定图标格和固定 SVG 尺寸，文件名长短不能影响图标大小。
 - 文本可省略，但只有实际溢出时才显示 tooltip。
@@ -182,7 +182,7 @@ box-shadow: 0 1px 2px rgba(76, 79, 105, 0.04);
 
 ### 后台通用组件
 
-- 新增后台列表页优先使用 `AdminFilterBar`、`AdminTable`、`AdminDetailModal`、`AdminJsonPreview`、`StatusBadge`，不要直接复制旧页面里的筛选栏、分页、弹窗和 JSON `<pre>` 结构。
+- 新增后台列表页优先使用 `AdminFilterBar`、`AdminSelect`、`AdminDateTimeRangeInput`、`AdminDateRangeCalendar`、`AdminTable`、`AdminDetailModal`、`AdminJsonPreview`、`StatusBadge`，不要直接复制旧页面里的筛选栏、下拉菜单、时间输入、日历、分页、弹窗和 JSON `<pre>` 结构。
 - 页面只保留业务字段、列定义、接口请求和行内容 slot；表格标题区、分页、空状态、详情弹窗头尾和状态胶囊由通用组件承接。
 - `kc-*` CSS 类仍是视觉底座，新增页面只有在通用组件无法表达业务结构时再补局部类。
 
